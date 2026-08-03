@@ -107,7 +107,13 @@ else
 fi
 
 plutil -lint "$STAGING_PATH/Contents/Info.plist"
-codesign --force --sign "$SIGN_IDENTITY" "$STAGING_PATH"
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    codesign --force --sign "$SIGN_IDENTITY" "$STAGING_PATH"
+else
+    # A real distribution identity must opt into Hardened Runtime and a trusted
+    # timestamp before the bundle can be submitted to Apple's notarization service.
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$STAGING_PATH"
+fi
 codesign --verify --strict --verbose=2 "$STAGING_PATH"
 DESIGNATED_REQUIREMENT="$(designated_requirement "$STAGING_PATH")"
 if [[ "$SIGN_IDENTITY" != "-" && "$DESIGNATED_REQUIREMENT" == *"cdhash"* ]]; then

@@ -32,6 +32,9 @@ jobs:
       - name: Validate build script syntax
         run: bash -n build.sh
 
+      - name: Run unit tests with coverage
+        run: swift test --enable-code-coverage
+
       - name: Run core self-tests
         run: swift run CleanNestSelfTest
 
@@ -39,3 +42,33 @@ jobs:
         env:
           CLEANNEST_CODESIGN_IDENTITY: "-"
         run: ./build.sh release
+
+  compatibility:
+    name: Compatibility (${{ matrix.architecture }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: Apple Silicon
+            runner: macos-15
+          - architecture: Intel
+            runner: macos-15-intel
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Show toolchain and architecture
+        run: |
+          swift --version
+          uname -m
+
+      - name: Run unit tests
+        run: swift test
+
+      - name: Compile release executable
+        run: swift build -c release --product CleanNest

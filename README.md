@@ -12,7 +12,7 @@
 ![Swift 5.9+](https://img.shields.io/badge/Swift-5.9%2B-F05138?logo=swift&logoColor=white)
 [![MIT License](https://img.shields.io/badge/License-MIT-2F81F7.svg)](LICENSE)
 
-[查看发布页](https://github.com/n9896027/CleanNest/releases) · [报告问题](https://github.com/n9896027/CleanNest/issues) · [安全报告](SECURITY.md)
+[文档](#文档导航) · [查看发布页](https://github.com/n9896027/CleanNest/releases) · [报告问题](https://github.com/n9896027/CleanNest/issues) · [安全报告](SECURITY.md)
 
 </div>
 
@@ -64,6 +64,8 @@ open build/CleanNest.app
 
 构建完成后，后续扫描、分析、清理、维护以及 Mole 安装都可以在 App 内完成。
 
+当前下载状态：仓库暂时只发布源码，尚无 Developer ID 签名与 Apple 公证的二进制安装包。请勿从第三方下载声称由本项目发布的 CleanNest App。
+
 ## 本机 MLX / Gemma（可选）
 
 CleanNest 可以连接本机 `mlx_lm.server`，为清理候选和磁盘目录补充用途解释、风险提示与查看顺序。模型不是清理引擎：规则扫描在没有 AI 时仍可正常工作，AI 失败也不会影响已有结果。
@@ -90,6 +92,19 @@ CleanNest 可以连接本机 `mlx_lm.server`，为清理候选和磁盘目录补
 
 完整披露范围和报告方式见 [SECURITY.md](SECURITY.md)。
 
+## 文档导航
+
+| 文档 | 内容 |
+| --- | --- |
+| [权限说明](docs/PERMISSIONS.md) | 完全磁盘访问、文件夹授权与签名身份为什么会影响权限 |
+| [本机 AI](docs/LOCAL_AI.md) | MLX/Gemma 配置、发送的数据及模型安全边界 |
+| [故障排查](docs/TROUBLESHOOTING.md) | Mole、权限、AI、构建和电池状态常见问题 |
+| [架构](docs/ARCHITECTURE.md) | 模块、数据流与高风险操作边界 |
+| [隐私](PRIVACY.md) | 本机保存的数据、网络访问及清除方式 |
+| [路线图](ROADMAP.md) | 已完成、近期计划与暂不承诺事项 |
+| [更新记录](CHANGELOG.md) | 版本变化与未发布工作 |
+| [参与贡献](CONTRIBUTING.md) | 开发、测试、PR 与安全约束 |
+
 ## CleanNest 与 Mole
 
 CleanNest 是独立开发的图形客户端，不是 Mole 官方 App，也不捆绑 Mole 二进制。它通过独立本地进程调用用户自行安装的 CLI，并在设置页保留来源署名。
@@ -107,6 +122,7 @@ swift run CleanNest
 运行核心自检：
 
 ```bash
+swift test
 swift run CleanNestSelfTest
 ```
 
@@ -116,4 +132,4 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-项目当前版本为 **0.3.1（Build 7）**。欢迎通过 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可复现的问题或功能建议；安全问题请使用私密漏洞报告渠道。
+项目当前版本为 **0.3.1（Build 7）**。CI 会在 Apple Silicon 与 Intel runner 上编译并运行测试。欢迎通过 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可复现的问题或功能建议；安全问题请使用私密漏洞报告渠道。
