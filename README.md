@@ -65,3 +65,9 @@ CLEANNEST_DEMO=1 swift run CleanNest
 ## 开源与命名
 
 CleanNest 不捆绑 Mole 二进制，也不是 Mole 官方 App。Mole CLI 由 tw93 与贡献者维护，采用 GPL-3.0；其项目与商标说明见 <https://github.com/tw93/Mole>。CleanNest 通过独立进程调用用户自行安装的 CLI，并在设置页保留来源署名。
+
+## 安全与贡献
+
+每个拉取请求都会在 GitHub Actions 中运行 Swift 核心自检、完整 App Bundle 构建和 CodeQL 静态分析；依赖与 Action 更新由 Dependabot 定期检查。
+
+发现可能导致越界删除、错误结束进程、权限绕过或本机数据外传的问题时，请不要公开披露。报告方式和支持范围见 [SECURITY.md](SECURITY.md)。
