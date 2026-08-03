@@ -121,7 +121,11 @@ final class CleanNestCoreTests: XCTestCase {
         XCTAssertEqual(snapshot.tokenToEntryID["d0001"], cache.id)
         XCTAssertFalse(snapshot.payloadJSON.contains(home.path))
         XCTAssertFalse(snapshot.payloadJSON.contains("/tmp/outside"))
-        XCTAssertTrue(snapshot.payloadJSON.contains(#""root_hint":"~/Library""#))
+        let payload = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(snapshot.payloadJSON.utf8)) as? [String: Any]
+        )
+        let scope = try XCTUnwrap(payload["scope"] as? [String: Any])
+        XCTAssertEqual(scope["root_hint"] as? String, "~/Library")
     }
 
     func testDiskAIValidatorReconcilesUnsafeModelAdviceWithLocalPolicy() throws {
@@ -178,7 +182,14 @@ final class CleanNestCoreTests: XCTestCase {
         )
 
         XCTAssertFalse(snapshot.payloadJSON.contains(home.path))
-        XCTAssertTrue(snapshot.payloadJSON.contains("~/Library/Developer/Xcode/DerivedData/Demo"))
+        let payload = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(snapshot.payloadJSON.utf8)) as? [String: Any]
+        )
+        let payloadCandidates = try XCTUnwrap(payload["candidates"] as? [[String: Any]])
+        XCTAssertEqual(
+            payloadCandidates.first?["path_hint"] as? String,
+            "~/Library/Developer/Xcode/DerivedData/Demo"
+        )
 
         let response = #"""
         {"schema_version":1,"summary":"测试","items":[{"token":"c9999","verdict":"keep","risk":"high","priority":3,"reason":"测试","path":"/tmp/new-target"}],"cautions":[]}
