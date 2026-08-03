@@ -1,0 +1,19 @@
+.DS_Store
+.build/
+build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+
+# Local configuration and credentials must never be committed.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+auth.json
+
+# Accidental local command output.
+/:-

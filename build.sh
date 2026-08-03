@@ -1,0 +1,140 @@
+#!/bin/bash
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONFIGURATION="${1:-release}"
+APP_NAME="CleanNest"
+BUNDLE_PATH="$PROJECT_DIR/build/$APP_NAME.app"
+APP_EXECUTABLE="$BUNDLE_PATH/Contents/MacOS/$APP_NAME"
+STAGING_PATH="$PROJECT_DIR/build/.$APP_NAME.app.staging.$$"
+ICON_TOOL="$PROJECT_DIR/build/CleanNestIconGenerator"
+ICONSET_PATH="$PROJECT_DIR/build/AppIcon.iconset"
+ICON_PATH="$PROJECT_DIR/build/AppIcon.icns"
+PREFERRED_SIGNING_IDENTITY="Yuan OS Local Code Signing"
+
+running_bundle_pids() {
+    ps -ww -axo pid=,command= | awk -v executable="$APP_EXECUTABLE" '
+        {
+            pid = $1
+            sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", $0)
+            if ($0 == executable || index($0, executable " ") == 1) {
+                print pid
+            }
+        }
+    '
+}
+
+refuse_if_bundle_is_running() {
+    local running_pids
+    running_pids="$(running_bundle_pids)"
+    if [[ -n "$running_pids" ]]; then
+        echo "拒绝构建：$BUNDLE_PATH 正在运行（PID: $(echo "$running_pids" | tr '\n' ' ' | sed 's/[[:space:]]*$//')）。" >&2
+        echo "为避免破坏 macOS 权限身份与当前进程，请先完全退出 CleanNest，再重新运行 build.sh。" >&2
+        exit 2
+    fi
+}
+
+cleanup_staging_bundle() {
+    if [[ -n "${STAGING_PATH:-}" && "$STAGING_PATH" == "$PROJECT_DIR/build/.$APP_NAME.app.staging."* ]]; then
+        rm -rf -- "$STAGING_PATH"
+    fi
+}
+
+designated_requirement() {
+    local requirement_output
+    local requirement
+    requirement_output="$(codesign -d -r- "$1" 2>&1)"
+    requirement="$(printf '%s\n' "$requirement_output" | sed -n \
+        -e 's/^# designated => /designated => /' \
+        -e '/^designated => /p' \
+        | head -n 1)"
+    if [[ -z "$requirement" ]]; then
+        echo "签名验证失败：未找到 designated requirement。" >&2
+        printf '%s\n' "$requirement_output" >&2
+        return 1
+    fi
+    printf '%s\n' "$requirement"
+}
+
+# Never rebuild or replace an app bundle that still backs a live process. TCC
+# binds grants to the code identity at this path; replacing it underneath a
+# running process produces cdhash mismatches and repeated permission prompts.
+refuse_if_bundle_is_running
+trap cleanup_staging_bundle EXIT
+
+cd "$PROJECT_DIR"
+
+echo "[1/4] 编译 CleanNest ($CONFIGURATION)"
+swift build -c "$CONFIGURATION" --product "$APP_NAME"
+BIN_DIR="$(swift build -c "$CONFIGURATION" --show-bin-path)"
+
+if [[ "$BUNDLE_PATH" != "$PROJECT_DIR/build/CleanNest.app" ]]; then
+    echo "拒绝清理异常构建路径：$BUNDLE_PATH" >&2
+    exit 1
+fi
+
+echo "[2/4] 生成 App 图标"
+mkdir -p "$PROJECT_DIR/build"
+swiftc -framework AppKit "$PROJECT_DIR/Tools/IconGenerator.swift" -o "$ICON_TOOL"
+rm -rf -- "$ICONSET_PATH"
+rm -f -- "$ICON_PATH"
+"$ICON_TOOL" "$ICONSET_PATH"
+iconutil -c icns "$ICONSET_PATH" -o "$ICON_PATH"
+
+echo "[3/4] 组装 App Bundle"
+cleanup_staging_bundle
+mkdir -p "$STAGING_PATH/Contents/MacOS" "$STAGING_PATH/Contents/Resources"
+install -m 755 "$BIN_DIR/$APP_NAME" "$STAGING_PATH/Contents/MacOS/$APP_NAME"
+install -m 644 "$PROJECT_DIR/Resources/Info.plist" "$STAGING_PATH/Contents/Info.plist"
+install -m 644 "$ICON_PATH" "$STAGING_PATH/Contents/Resources/AppIcon.icns"
+
+echo "[4/4] 本地签名"
+if [[ "${CLEANNEST_CODESIGN_IDENTITY+x}" == "x" ]]; then
+    SIGN_IDENTITY="${CLEANNEST_CODESIGN_IDENTITY:-}"
+    if [[ -z "$SIGN_IDENTITY" ]]; then
+        echo "CLEANNEST_CODESIGN_IDENTITY 已设置但为空，拒绝使用不明确的签名身份。" >&2
+        exit 1
+    fi
+    SIGN_IDENTITY_DISPLAY="${SIGN_IDENTITY}（CLEANNEST_CODESIGN_IDENTITY 覆盖）"
+elif security find-identity -v -p codesigning 2>/dev/null | grep -Fq "\"$PREFERRED_SIGNING_IDENTITY\""; then
+    SIGN_IDENTITY="$PREFERRED_SIGNING_IDENTITY"
+    SIGN_IDENTITY_DISPLAY="${PREFERRED_SIGNING_IDENTITY}（自动选择的稳定身份）"
+else
+    SIGN_IDENTITY="-"
+    SIGN_IDENTITY_DISPLAY="ad-hoc（未找到稳定身份）"
+    echo "警告：未找到有效的“${PREFERRED_SIGNING_IDENTITY}”，将使用 ad-hoc 签名。" >&2
+    echo "警告：ad-hoc 的 designated requirement 会绑定每次构建的代码哈希，macOS 授权可能在重建后失效。" >&2
+fi
+
+plutil -lint "$STAGING_PATH/Contents/Info.plist"
+codesign --force --sign "$SIGN_IDENTITY" "$STAGING_PATH"
+codesign --verify --strict --verbose=2 "$STAGING_PATH"
+DESIGNATED_REQUIREMENT="$(designated_requirement "$STAGING_PATH")"
+if [[ "$SIGN_IDENTITY" != "-" && "$DESIGNATED_REQUIREMENT" == *"cdhash"* ]]; then
+    echo "签名验证失败：稳定签名身份仍生成了仅绑定 cdhash 的 designated requirement。" >&2
+    exit 1
+fi
+
+# Re-check immediately before replacing the published bundle. Compilation can
+# take long enough for somebody to launch the old build after the first check.
+refuse_if_bundle_is_running
+if [[ "$BUNDLE_PATH" != "$PROJECT_DIR/build/CleanNest.app" ]]; then
+    echo "拒绝覆盖异常构建路径：$BUNDLE_PATH" >&2
+    exit 1
+fi
+rm -rf -- "$BUNDLE_PATH"
+mv "$STAGING_PATH" "$BUNDLE_PATH"
+STAGING_PATH=""
+
+codesign --verify --strict --verbose=2 "$BUNDLE_PATH"
+FINAL_REQUIREMENT="$(designated_requirement "$BUNDLE_PATH")"
+if [[ "$FINAL_REQUIREMENT" != "$DESIGNATED_REQUIREMENT" ]]; then
+    echo "签名验证失败：发布后 designated requirement 发生变化。" >&2
+    exit 1
+fi
+
+echo "签名身份：$SIGN_IDENTITY_DISPLAY"
+echo "指定要求：$FINAL_REQUIREMENT"
+
+echo "完成：$BUNDLE_PATH"
+echo "运行：open '$BUNDLE_PATH'"
