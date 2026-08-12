@@ -2,9 +2,11 @@
 
 # CleanNest
 
-**看懂 Mac 空间占用，再安全清掉真正可以删除的内容。**
+**先看清 Mac 空间去了哪里，再安全释放真正可回收的部分。**
 
-原生 macOS 图形客户端，整合 Mole 与本机 MLX/Gemma。扫描和分析留在本机，删除默认进入废纸篓。
+原生 macOS 图形客户端，整合 Mole 与可选的本机 MLX/Gemma。核心扫描与模型分析留在 Mac 上，文件默认移入废纸篓。
+
+**简体中文** · [English](README.en.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md)
 
 [![CI](https://github.com/n9896027/CleanNest/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/n9896027/CleanNest/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/n9896027/CleanNest/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/n9896027/CleanNest/actions/workflows/codeql.yml)
@@ -18,7 +20,14 @@
 
 ![CleanNest 总览界面](docs/images/overview.png)
 
-CleanNest 希望把“清理 Mac”从一个黑盒按钮变成可理解、可撤销的过程：先告诉你空间去了哪里、目录通常属于什么，再由你决定是否处理。它提供完整的 SwiftUI/AppKit 界面，普通使用不需要操作终端，也不会因为 AI 建议而自动删除文件。
+CleanNest 希望把“清理 Mac”从一个黑盒按钮变成可理解、可撤销的过程：先告诉你空间去了哪里、目录通常属于什么，再由你决定是否处理。它不是“一键加速器”，也不会因为模型给出建议就自动删除文件。
+
+| 看见 | 理解 | 安全处理 |
+| --- | --- | --- |
+| 浏览目录、缓存、应用和系统状态 | 用确定性规则解释用途，可选本机 AI 补充上下文 | 逐项预览与确认，文件默认进入废纸篓 |
+
+> [!IMPORTANT]
+> 当前项目以源码开放，尚未提供 Developer ID 签名并经 Apple 公证的官方安装包。仓库里的 CI 构建用于验证，不代表可公开分发的可信二进制。
 
 ## 为什么使用 CleanNest
 
@@ -133,3 +142,5 @@ CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
 项目当前版本为 **0.3.1（Build 7）**。CI 会在 Apple Silicon 与 Intel runner 上编译并运行测试。欢迎通过 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可复现的问题或功能建议；安全问题请使用私密漏洞报告渠道。
+
+当前 App 界面及详细维护文档主要使用简体中文；English、繁體中文、日本語和한국어 README 用于帮助更多用户了解项目范围。界面本地化仍在路线图中。

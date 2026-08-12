@@ -1,0 +1,138 @@
+<div align="center">
+
+# CleanNest
+
+**Mac 저장 공간이 어디에 쓰이는지 먼저 이해하고, 실제로 정리해도 되는 항목만 안전하게 처리하세요.**
+
+Mole과 선택형 온디바이스 MLX/Gemma 분석을 하나로 묶은 네이티브 macOS 앱입니다. 핵심 스캔과 모델 분석은 Mac 안에서 수행되며, 파일은 기본적으로 휴지통으로 이동합니다.
+
+[简体中文](README.md) · [English](README.en.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · **한국어**
+
+[![CI](https://github.com/n9896027/CleanNest/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/n9896027/CleanNest/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/n9896027/CleanNest/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/n9896027/CleanNest/actions/workflows/codeql.yml)
+![macOS 14+](https://img.shields.io/badge/macOS-14%2B-111111?logo=apple)
+![Swift 5.9+](https://img.shields.io/badge/Swift-5.9%2B-F05138?logo=swift&logoColor=white)
+[![MIT License](https://img.shields.io/badge/License-MIT-2F81F7.svg)](LICENSE)
+
+[문서](#문서) · [릴리스](https://github.com/n9896027/CleanNest/releases) · [문제 보고](https://github.com/n9896027/CleanNest/issues) · [보안](SECURITY.md)
+
+</div>
+
+![로컬 디스크 사용량, 정리 제안, 시스템 상태와 최근 활동을 보여 주는 CleanNest 개요 화면](docs/images/overview.png)
+
+CleanNest는 Mac 정리를 정체를 알 수 없는 “한 번에 실행” 버튼이 아니라, 이해할 수 있고 되돌리기 쉬운 과정으로 만들고자 합니다. 저장 공간이 어디에 쓰이고 각 디렉터리가 일반적으로 무엇을 위한 것인지 보여 준 뒤, 실제 처리 여부는 사용자가 결정합니다. 모델의 제안만으로 파일이 삭제되는 일은 없습니다.
+
+| 확인 | 이해 | 안전한 처리 |
+| --- | --- | --- |
+| 디렉터리, 캐시, 앱, 시스템 상태 탐색 | 결정론적 규칙으로 용도를 설명하고, 필요하면 로컬 AI로 맥락 보완 | 항목별 미리보기와 확인을 거치며 파일은 기본적으로 휴지통으로 이동 |
+
+> [!IMPORTANT]
+> CleanNest는 현재 소스 코드로만 배포됩니다. Developer ID로 서명되고 Apple 공증을 받은 공식 다운로드는 아직 없습니다. CI 빌드는 프로젝트 검증용이며, 신뢰할 수 있는 공개 배포 바이너리가 아닙니다.
+
+## CleanNest를 사용하는 이유
+
+| 겪고 있는 문제 | CleanNest의 접근 방식 |
+| --- | --- |
+| 디스크가 갑자기 가득 찼지만 원인을 모르겠음 | 폴더와 파일 크기를 단계별로 살펴보고 일반적인 macOS 디렉터리의 용도를 설명 |
+| 다시 만들 수 있는 캐시와 다운로드, 개인 데이터가 뒤섞임 | 저위험 생성 데이터, 검토가 필요한 항목, 보관해야 할 내용을 구분 |
+| 활성 상태 보기의 정보가 지나치게 기술적임 | 메모리 압력, 스왑 사용량, 고메모리 프로세스를 설명한 뒤 종료 여부 판단 지원 |
+| 앱 삭제 후 남는 파일이 걱정됨 | 앱 본체와 정확한 Bundle ID로 일치한 관련 파일을 미리 표시 |
+| 파일 목록을 클라우드 모델에 보내고 싶지 않음 | 제한되고 비식별화된 메타데이터만 로컬 MLX/Gemma로 선택 분석 |
+
+## 핵심 기능
+
+- **저장 공간 정리**: 개발 캐시, 로그, 설치 파일 등의 후보를 스캔하고 항목별로 선택해 macOS 휴지통으로 이동합니다.
+- **디스크 브라우저**: 폴더 크기를 단계별로 탐색해 공간 사용 원인을 찾고, 선택적으로 로컬 AI가 현재 디렉터리 구성을 설명합니다.
+- **시스템 상태**: CPU, 메모리, 디스크, 배터리, 온도와 상태 정보를 표시하고 메모리 압력 및 프로세스 설명을 덧붙입니다.
+- **프로세스 관리**: 프로세스 신원 확인, 시스템 프로세스 보호, 사용자 확인을 거친 뒤 정상 종료를 요청하며 자동 강제 종료하지 않습니다.
+- **앱 제거**: 설치된 앱을 탐색하고 앱 본체와 정확한 Bundle ID로 일치한 관련 파일을 미리 보여 줍니다.
+- **시스템 유지 관리**: 선택한 저위험 유지 관리 작업을 실행하고 결과를 활동 기록에 모읍니다.
+- **Mole 연동**: Apple Silicon 또는 Intel Homebrew로 설치된 `mo`를 찾고, 앱 안에서 Mole을 설치하거나 업데이트할 수 있습니다.
+- **네이티브 macOS 경험**: SwiftUI/AppKit 인터페이스, 라이트/다크 모드, 권한 복구 안내, 활동 기록, 안전한 데모 모드를 제공합니다.
+
+## 다운로드 및 실행
+
+요구 사항:
+
+- macOS 14 Sonoma 이상
+- Xcode Command Line Tools(소스 빌드 시에만 필요)
+- Mole CLI(선택 사항, 앱 내부의 Homebrew 절차로 설치 가능)
+- Apple Silicon 및 `mlx-lm`(선택형 로컬 AI에만 필요)
+
+소스에서 빌드:
+
+```bash
+git clone https://github.com/n9896027/CleanNest.git
+cd CleanNest
+./build.sh
+open build/CleanNest.app
+```
+
+소스에서 한 번 빌드한 뒤에는 일반 스캔, 분석, 정리, 유지 관리와 Mole 설치를 그래픽 앱 안에서 수행할 수 있습니다.
+
+현재 공식 저장소가 제공하는 것은 소스 코드뿐입니다. CleanNest 공식 빌드라고 주장하는 제3자 다운로드를 신뢰하지 마세요.
+
+## 온디바이스 MLX / Gemma(선택 사항)
+
+CleanNest는 로컬 `mlx_lm.server`에 연결해 정리 후보와 디스크 디렉터리에 용도 설명, 위험 참고 사항, 검토 순서를 추가할 수 있습니다. 모델은 설명 계층이며 정리 엔진이 아닙니다. AI를 꺼도 결정론적 스캔과 안전 규칙은 계속 작동합니다.
+
+개인정보 및 실행 경계:
+
+- 명시적인 `http://127.0.0.1:<포트>/v1`만 허용하며 LAN 및 공개 모델 엔드포인트는 거부합니다.
+- 요청에는 유형, 크기, 경과 시간, 일회용 token, 비식별화된 경로 힌트 등 제한된 메타데이터만 포함되며 파일 내용은 포함되지 않습니다.
+- 디스크 설명은 전체 디렉터리 트리가 아닌 제한된 수의 바로 아래 항목 샘플을 사용합니다.
+- Swift 클라이언트가 필드, 열거형, 응답 크기, 항목 신원을 엄격히 검증합니다.
+- AI는 스캔 범위 확대, 항목 선택, 프로세스 종료, 명령 실행, 파일 삭제를 할 수 없습니다.
+
+현재 중국어 UI에서 “设置 → 本机 AI 分析”을 열고 기존 MLX 모델 디렉터리와 `mlx_lm.server`를 선택합니다. 호환되는 루프백 서비스를 재사용하거나 선택한 로컬 서버를 시작할 수 있습니다. 대형 모델을 자동으로 다운로드하거나 사용자를 대신해 모델 약관에 동의하지 않습니다.
+
+## 안전 설계
+
+- `/System`, `/Library`, 사용자 홈 디렉터리 자체, 시스템 루트, 허용 범위의 루트 자체는 정리 대상이 될 수 없습니다.
+- 네이티브 정리는 검증된 하위 경로만 허용하고 심볼릭 링크를 거부합니다.
+- 파일은 기본적으로 macOS 휴지통으로 이동하며 되돌릴 수 없는 `rm -rf` 정리 경로를 사용하지 않습니다.
+- 시스템 수준 앱 제거에 관리자 권한이 필요하면 현재 버전은 그 제한을 명확히 표시하며 권한을 우회하지 않습니다.
+- 위험도가 높은 Mole 대화형 명령을 키보드 입력 시뮬레이션으로 자동 승인하지 않습니다.
+- 각 Pull Request에서 핵심 테스트, 전체 App Bundle 빌드, 아키텍처 확인, 종속성 검토, CodeQL을 실행합니다.
+- GitHub Actions는 최소 권한과 변경 불가능한 Action 참조를 사용하며 Dependabot이 종속성과 Action 업데이트를 확인합니다.
+
+공개 범위와 비공개 신고 방법은 [SECURITY.md](SECURITY.md)를 참고하세요.
+
+## 문서
+
+상세 유지 관리자 문서는 현재 주로 중국어 간체로 작성되어 있습니다.
+
+| 문서 | 내용 |
+| --- | --- |
+| [권한](docs/PERMISSIONS.md) | 전체 디스크 접근 권한, 폴더 승인, 코드 신원과 macOS 권한의 관계 |
+| [로컬 AI](docs/LOCAL_AI.md) | MLX/Gemma 설정, 전송 메타데이터, 모델 안전 경계 |
+| [문제 해결](docs/TROUBLESHOOTING.md) | Mole, 권한, AI, 빌드, 프로세스, 배터리 상태 문제 |
+| [아키텍처](docs/ARCHITECTURE.md) | 모듈, 데이터 흐름, 고위험 작업 경계 |
+| [개인정보 보호](PRIVACY.md) | 로컬 데이터, 네트워크 접근, 보관, 삭제 |
+| [로드맵](ROADMAP.md) | 완료된 작업, 단기 우선순위, 명시적 비목표 |
+| [변경 내역](CHANGELOG.md) | 릴리스 및 미릴리스 변경 사항 |
+| [기여](CONTRIBUTING.md) | 개발, 테스트, Pull Request, 안전 요구 사항 |
+
+## CleanNest와 Mole
+
+CleanNest는 독립적으로 개발된 그래픽 클라이언트입니다. Mole 공식 앱이 아니며 Mole 바이너리를 포함하지 않습니다. 사용자가 별도로 설치한 CLI를 격리된 로컬 프로세스로 호출하고 설정 화면에 출처를 표시합니다.
+
+[Mole](https://github.com/tw93/Mole)은 tw93 및 기여자들이 GPL-3.0으로 유지 관리합니다. CleanNest 자체 소스 코드는 [MIT License](LICENSE)로 제공됩니다. MLX와 Gemma 정보는 [제3자 고지](THIRD_PARTY_NOTICES.md)를 확인하세요.
+
+## 개발 및 검증
+
+```bash
+swift run CleanNest
+swift test
+swift run CleanNestSelfTest
+```
+
+실제 파일을 건드리지 않는 데모 데이터로 UI 확인:
+
+```bash
+CLEANNEST_DEMO=1 swift run CleanNest
+```
+
+현재 프로젝트 버전은 **0.3.1(Build 7)** 입니다. CI는 Apple Silicon 및 Intel runner에서 빌드와 테스트를 수행합니다. 재현 가능한 버그와 기능 제안은 [Issues](https://github.com/n9896027/CleanNest/issues)에 남기고, 보안 취약점은 비공개로 신고해 주세요.
+
+앱 UI와 상세 유지 관리자 문서는 현재 주로 중국어 간체로 제공됩니다. 이 한국어 README는 프로젝트 범위를 정확히 설명하기 위한 것이며, 전체 UI 한국어 현지화가 완료되었다는 의미는 아닙니다.
