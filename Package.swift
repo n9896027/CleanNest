@@ -21,6 +21,10 @@ let package = Package(
         .executableTarget(
             name: "CleanNestSelfTest",
             dependencies: ["CleanNestCore"]
+        ),
+        .testTarget(
+            name: "CleanNestCoreTests",
+            dependencies: ["CleanNestCore"]
         )
     ]
 )

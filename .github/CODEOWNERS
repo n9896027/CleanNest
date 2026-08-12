@@ -1,0 +1,8 @@
+# Default reviewer for every repository path.
+* @n9896027
+
+# Security and automation changes always require the repository owner.
+/.github/ @n9896027
+/SECURITY.md @n9896027
+/Sources/CleanNestCore/ @n9896027
+/build.sh @n9896027

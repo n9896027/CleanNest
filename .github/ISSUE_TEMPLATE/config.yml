@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 私密报告安全漏洞
+    url: https://github.com/n9896027/CleanNest/security/advisories/new
+    about: 不要在公开 Issue 中披露漏洞、凭据或私人文件信息。
+  - name: 支持与故障排查
+    url: https://github.com/n9896027/CleanNest/blob/main/SUPPORT.md
+    about: 提交前先查看已知问题、权限和本机 AI 排查说明。
