@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-23
+
 ### Added
 
 - 增加面向公开用户的“检查更新”：从 App 菜单或关于页读取 GitHub 最新正式 Release，进行语义版本比较，区分无正式版本、已最新、有更新、开发构建领先与网络失败，并且只打开经过官方仓库校验的发布页。
@@ -45,5 +47,6 @@
 - 完全磁盘访问探测、受保护目录阻断、符号链接保护和废纸篓恢复策略。
 - CodeQL、Dependabot、分支保护和完整 App Bundle CI。
 
-[Unreleased]: https://github.com/n9896027/CleanNest/compare/f321556b258666ac5f700fbd6bb4e60b4c3cf93d...HEAD
+[Unreleased]: https://github.com/n9896027/CleanNest/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/n9896027/CleanNest/compare/f321556b258666ac5f700fbd6bb4e60b4c3cf93d...v0.4.0
 [0.3.1]: https://github.com/n9896027/CleanNest/commit/f321556b258666ac5f700fbd6bb4e60b4c3cf93d
