@@ -8,11 +8,15 @@ let package = Package(
     ],
     products: [
         .executable(name: "CleanNest", targets: ["CleanNest"]),
-        .executable(name: "CleanNestSelfTest", targets: ["CleanNestSelfTest"])
+        .executable(name: "CleanNestSelfTest", targets: ["CleanNestSelfTest"]),
+        .executable(name: "CleanNestMCP", targets: ["CleanNestMCP"])
     ],
     targets: [
         .target(
-            name: "CleanNestCore"
+            name: "CleanNestCore",
+            linkerSettings: [
+                .linkedLibrary("sqlite3")
+            ]
         ),
         .executableTarget(
             name: "CleanNest",
@@ -20,6 +24,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "CleanNestSelfTest",
+            dependencies: ["CleanNestCore"]
+        ),
+        .executableTarget(
+            name: "CleanNestMCP",
             dependencies: ["CleanNestCore"]
         ),
         .testTarget(

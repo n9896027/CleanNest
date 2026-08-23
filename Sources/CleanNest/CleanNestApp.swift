@@ -33,7 +33,14 @@ struct CleanNestApp: App {
         .windowToolbarStyle(.unifiedCompact)
         .commands {
             CommandGroup(replacing: .newItem) { }
-            CommandMenu("CleanNest") {
+            CommandGroup(after: .appInfo) {
+                Button("检查更新…") {
+                    store.presentUpdateChecker()
+                }
+                .disabled(store.appUpdateState.isChecking)
+                Divider()
+            }
+            CommandMenu("操作") {
                 Button("重新扫描") {
                     Task {
                         switch store.selection {

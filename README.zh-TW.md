@@ -4,7 +4,7 @@
 
 **先看清 Mac 空間去了哪裡，再安全釋放真正可回收的部分。**
 
-原生 macOS 圖形應用程式，整合 Mole 與可選的本機 MLX/Gemma。核心掃描與模型分析留在 Mac 上，檔案預設移到垃圾桶。
+原生 macOS 圖形應用程式，整合 Mole 與可替換的本機 MLX 模型。核心掃描與模型分析留在 Mac 上，檔案預設移到垃圾桶。
 
 [简体中文](README.md) · [English](README.en.md) · **繁體中文** · [日本語](README.ja.md) · [한국어](README.ko.md)
 
@@ -37,18 +37,23 @@ CleanNest 希望把「清理 Mac」從黑盒按鈕變成可理解、可復原的
 | 可重建快取、下載內容與個人資料混在一起 | 區分低風險產生資料、需要檢查的項目與應保留內容 |
 | 活動監視器資訊太技術化 | 說明記憶體壓力、交換空間與高用量程序，讓你先理解再決定是否結束 |
 | 解除安裝 App 後擔心殘留 | 預覽 App 本體及以精確 Bundle ID 配對的相關檔案 |
-| 不想把檔案清單傳給雲端模型 | 可選用本機 MLX/Gemma，只分析受限制且已脫敏的中繼資料 |
+| 不想把檔案清單傳給雲端模型 | 可選用你指定的本機 MLX 模型，只分析受限制且已脫敏的中繼資料 |
 
 ## 核心能力
 
 - **空間清理**：掃描開發快取、記錄檔、安裝檔等候選項目，逐項選擇後移入 macOS 垃圾桶。
 - **磁碟瀏覽**：從資料夾大小逐層找出空間占用，並可選用本機 AI 解讀目前目錄構成。
-- **系統狀態**：顯示 CPU、記憶體、磁碟、電池、溫度與健康狀態，並補充記憶體壓力與程序說明。
+- **磁碟證據**：可取消掃描、麵包屑下鑽、原生 Treemap，並說明用途、來源、類型、時間、可恢復性與清理邊界。
+- **系統狀態**：顯示 CPU、記憶體、磁碟、電池、溫度與健康狀態，每 60 秒在本機保存趨勢。
 - **程序管理**：通過身分複核、系統程序保護及使用者確認後，才請求程序正常結束；不會自動強制結束。
 - **應用程式解除安裝**：瀏覽已安裝 App，預覽 App 本體及以精確 Bundle ID 配對的相關檔案。
 - **系統維護**：按項目執行低風險維護工作，並集中保留執行結果。
+- **本機學習**：記住你明確選擇的「優先清理／優先保留」與模型評價；下次只調整排序與說明，不會自動勾選或刪除。
 - **Mole 整合**：自動尋找 Apple Silicon 或 Intel Homebrew 安裝的 `mo`，也可從 App 內安裝或更新 Mole。
+- **檢查更新**：可從 App 選單或「關於」頁主動查詢 GitHub 最新正式 Release；只比較版本並開啟經倉庫驗證的發布頁，不會靜默下載或安裝。
 - **原生體驗**：SwiftUI/AppKit 介面、明暗模式、權限恢復引導、活動記錄與安全展示模式。
+- **唯讀 MCP**：透過 App 內建的 stdio 程序提供有界、脫敏的本機證據；沒有 HTTP、刪除、程序控制或設定工具。
+- **三語資源**：核心導覽與主要頁面以 String Catalog 提供 English、简体中文與繁體中文。
 
 ## 下載與執行
 
@@ -70,9 +75,9 @@ open build/CleanNest.app
 
 完成一次原始碼建置後，日常掃描、分析、清理、維護和 Mole 安裝都可在圖形介面內進行。
 
-目前倉庫只發佈原始碼。請勿信任第三方聲稱是 CleanNest 官方版本的下載。
+目前仍沒有 Developer ID 簽署並通過 Apple 公證的官方安裝檔。維護者可手動產生附 SBOM、校驗值與來源證明的 Universal 2 CI 驗證成品，但它使用 ad-hoc 簽署、不會自動建立 Release，也不是可信的一般使用者安裝檔。
 
-## 本機 MLX / Gemma（可選）
+## 可替換的本機 MLX 模型（可選）
 
 CleanNest 可以連接本機 `mlx_lm.server`，為清理候選與磁碟目錄補充用途說明、風險提示和檢查順序。模型只是解釋層，不是清理引擎；關閉 AI 後，確定性掃描與安全規則仍可運作。
 
@@ -84,7 +89,7 @@ CleanNest 可以連接本機 `mlx_lm.server`，為清理候選與磁碟目錄補
 - Swift 用戶端嚴格驗證欄位、列舉值、回應大小與項目身分。
 - AI 不能擴大掃描、勾選項目、結束程序、執行指令或刪除檔案。
 
-在目前的簡體中文介面開啟「设置 → 本机 AI 分析」，選擇既有的 MLX 模型目錄與 `mlx_lm.server`。CleanNest 可重用相容的回環服務或啟動所選本機服務；不會自動下載大型模型，也不會代替使用者接受模型條款。
+在「设置 → 本机 AI 分析」中，CleanNest 可重用 oMLX 等既有回環服務，或啟動所選的 `mlx_lm.server`。App 會從 `/v1/models` 讀取實際 API 模型短名，並把它與自啟所需的本機目錄分開，避免把檔案路徑誤傳給 oMLX。掃描範圍包含 `~/.omlx/models`；App 不會自動下載大型模型、修改 DFlash 設定或代替使用者接受模型條款。
 
 ## 安全設計
 
@@ -105,7 +110,7 @@ CleanNest 可以連接本機 `mlx_lm.server`，為清理候選與磁碟目錄補
 | 文件 | 內容 |
 | --- | --- |
 | [權限說明](docs/PERMISSIONS.md) | 完全磁碟存取、資料夾授權及程式碼身分為何影響 macOS 權限 |
-| [本機 AI](docs/LOCAL_AI.md) | MLX/Gemma 設定、傳送的中繼資料及模型安全邊界 |
+| [本機 AI](docs/LOCAL_AI.md) | MLX 模型選擇、切換、傳送的中繼資料及安全邊界 |
 | [疑難排解](docs/TROUBLESHOOTING.md) | Mole、權限、AI、建置、程序與電池狀態問題 |
 | [架構](docs/ARCHITECTURE.md) | 模組、資料流與高風險操作邊界 |
 | [隱私](PRIVACY.md) | 本機資料、網路存取、保留與清除方式 |
@@ -117,7 +122,7 @@ CleanNest 可以連接本機 `mlx_lm.server`，為清理候選與磁碟目錄補
 
 CleanNest 是獨立開發的圖形用戶端，不是 Mole 官方 App，也不捆綁 Mole 二進位檔。它以獨立本機程序呼叫使用者另外安裝的 CLI，並在設定中保留來源標示。
 
-[Mole](https://github.com/tw93/Mole) 由 tw93 與貢獻者維護，採用 GPL-3.0。CleanNest 自身原始碼採用 [MIT License](LICENSE)。MLX 與 Gemma 資訊請見[第三方專案說明](THIRD_PARTY_NOTICES.md)。
+[Mole](https://github.com/tw93/Mole) 由 tw93 與貢獻者維護，採用 GPL-3.0。CleanNest 自身原始碼採用 [MIT License](LICENSE)。MLX 與使用者所選模型資訊請見[第三方專案說明](THIRD_PARTY_NOTICES.md)。
 
 ## 開發與驗證
 
@@ -133,6 +138,6 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-目前專案版本為 **0.3.1（Build 7）**。CI 會在 Apple Silicon 與 Intel runner 上建置並執行測試。歡迎透過 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可重現問題或功能建議；安全漏洞請私密回報。
+目前專案版本為 **0.4.0（Build 8）**。CI 會在 Apple Silicon 與 Intel runner 上建置並執行測試。歡迎透過 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可重現問題或功能建議；安全漏洞請私密回報。
 
 目前 App 介面與詳細維護文件仍以簡體中文為主。本繁體中文 README 用於正確說明專案範圍，不代表介面本地化已完成。

@@ -1,3 +1,4 @@
+import Charts
 import SwiftUI
 import CleanNestCore
 
@@ -52,7 +53,7 @@ struct SystemStatusView: View {
                             title: "CPU",
                             symbol: "cpu",
                             value: snapshot.cpuUsage,
-                            detail: snapshot.logicalCPUCount.map { "\($0) 个逻辑核心" } ?? "核心数未知",
+                            detail: snapshot.logicalCPUCount.map { CNL10n.format("%d 个逻辑核心", $0) } ?? "核心数未知",
                             tint: CNTheme.accent
                         )
                         ResourceCard(
@@ -66,18 +67,19 @@ struct SystemStatusView: View {
                             title: "磁盘",
                             symbol: "internaldrive",
                             value: snapshot.diskUsedPercent,
-                            detail: snapshot.diskFreeBytes.map { "可用 \(CleanNestFormatting.bytes($0))" } ?? "可用空间未知",
+                            detail: snapshot.diskFreeBytes.map { CNL10n.format("可用 %@", CleanNestFormatting.bytes($0)) } ?? "可用空间未知",
                             tint: CNTheme.success
                         )
                         ResourceCard(
                             title: "电池",
                             symbol: "battery.75percent",
                             value: snapshot.batteryLevel,
-                            detail: snapshot.batteryStatus ?? "状态未知",
+                            detail: snapshot.batteryStatus.map(CNL10n.batteryStatus) ?? "状态未知",
                             tint: CNTheme.accent
                         )
                     }
 
+                    metricHistoryCard
                     memoryAnalysisCard(snapshot)
                     memoryProcessesCard(snapshot)
 
@@ -128,6 +130,86 @@ struct SystemStatusView: View {
         }
     }
 
+    private var metricHistoryCard: some View {
+        SurfaceCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label("资源趋势", systemImage: "chart.xyaxis.line")
+                            .font(.headline)
+                        Text(CNL10n.metricsDiagnostic(store.metricsDiagnostic))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    StatusPill(
+                        text: store.metricsSamplingIsActive ? "持续采样" : "等待引擎",
+                        symbol: store.metricsSamplingIsActive ? "dot.radiowaves.left.and.right" : "pause",
+                        style: store.metricsSamplingIsActive ? .success : .neutral
+                    )
+                    Picker("时间范围", selection: $store.metricHistoryRange) {
+                        Text("1 小时").tag(MetricHistoryRange.hour)
+                        Text("24 小时").tag(MetricHistoryRange.day)
+                        Text("7 天").tag(MetricHistoryRange.week)
+                        Text("30 天").tag(MetricHistoryRange.month)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 290)
+                    .onChange(of: store.metricHistoryRange) {
+                        Task { await store.refreshMetricHistory() }
+                    }
+                }
+
+                if store.metricHistory.isEmpty {
+                    InlineBanner(
+                        title: "等待连续样本",
+                        detail: "CleanNest 每 60 秒在本机记录一次 CPU、内存与磁盘占用。首次启动后稍等片刻即可看到趋势。",
+                        kind: .info
+                    )
+                } else {
+                    Chart(store.metricHistory) { sample in
+                        if let value = sample.cpuUsage {
+                            LineMark(
+                                x: .value(CNL10n.string("时间"), sample.sampledAt),
+                                y: .value(CNL10n.string("占用"), value),
+                                series: .value(CNL10n.string("指标"), "CPU")
+                            )
+                            .foregroundStyle(by: .value(CNL10n.string("指标"), "CPU"))
+                            .interpolationMethod(.catmullRom)
+                        }
+                        if let value = sample.memoryUsedPercent {
+                            LineMark(
+                                x: .value(CNL10n.string("时间"), sample.sampledAt),
+                                y: .value(CNL10n.string("占用"), value),
+                                series: .value(CNL10n.string("指标"), CNL10n.string("内存"))
+                            )
+                            .foregroundStyle(by: .value(CNL10n.string("指标"), CNL10n.string("内存")))
+                            .interpolationMethod(.catmullRom)
+                        }
+                        if let value = sample.diskUsedPercent {
+                            LineMark(
+                                x: .value(CNL10n.string("时间"), sample.sampledAt),
+                                y: .value(CNL10n.string("占用"), value),
+                                series: .value(CNL10n.string("指标"), CNL10n.string("磁盘"))
+                            )
+                            .foregroundStyle(by: .value(CNL10n.string("指标"), CNL10n.string("磁盘")))
+                            .interpolationMethod(.catmullRom)
+                        }
+                    }
+                    .chartYScale(domain: 0...100)
+                    .chartYAxisLabel(CNL10n.string("占用 %"))
+                    .chartLegend(position: .top, alignment: .leading, spacing: 14)
+                    .frame(height: 220)
+                    .accessibilityLabel(CNL10n.string("CPU、内存与磁盘历史趋势图"))
+
+                    Text("数据仅保存在这台 Mac 的 CleanNest 数据目录中，不包含文件内容，也不会上传。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
     private func memoryAnalysisCard(_ snapshot: SystemSnapshot) -> some View {
         SurfaceCard {
             VStack(alignment: .leading, spacing: 14) {
@@ -163,7 +245,7 @@ struct SystemStatusView: View {
                 }
 
                 if let analysis = store.memoryAnalysis {
-                    Text(analysis.detail)
+                    Text(CNL10n.memoryAnalysisText(analysis.detail))
                         .font(.subheadline)
                         .fixedSize(horizontal: false, vertical: true)
 
@@ -174,7 +256,7 @@ struct SystemStatusView: View {
                                     Image(systemName: "info.circle")
                                         .foregroundStyle(CNTheme.accent)
                                         .padding(.top, 1)
-                                    Text(note)
+                                    Text(CNL10n.memoryAnalysisText(note))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)
@@ -220,7 +302,7 @@ struct SystemStatusView: View {
                     }
                     Spacer()
                     if let count = snapshot.processCount {
-                        StatusPill(text: "已探测 \(count) 个进程", symbol: "dot.radiowaves.left.and.right", style: .neutral)
+                        StatusPill(text: CNL10n.format("已探测 %d 个进程", count), symbol: "dot.radiowaves.left.and.right", style: .neutral)
                     }
                 }
 
@@ -290,7 +372,7 @@ struct SystemStatusView: View {
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    Text(process.purpose)
+                    Text(CNL10n.processPurpose(process.purpose))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -302,7 +384,7 @@ struct SystemStatusView: View {
                     Text(approximateFootprint(process))
                         .font(.subheadline.weight(.semibold))
                         .monospacedMetric()
-                    Text("近似内存足迹")
+                    Text(CNL10n.string("近似内存足迹"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -337,7 +419,7 @@ struct SystemStatusView: View {
     ) -> some View {
         if let reason = process.protectionReason ?? (process.canTerminate ? nil : "受保护进程") {
             StatusPill(text: reason, symbol: "lock.fill", style: .neutral)
-                .help(reason)
+                .help(CNL10n.string(reason))
         } else if isTerminating {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
@@ -362,13 +444,13 @@ struct SystemStatusView: View {
 
     private func memoryMetric(_ title: String, bytes: Int64?, detail: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title)
+            Text(CNL10n.string(title))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(bytes.map(CleanNestFormatting.bytes) ?? "—")
                 .font(.system(size: 17, weight: .semibold, design: .rounded))
                 .monospacedMetric()
-            Text(detail ?? (bytes == nil ? "未能读取" : "当前采样"))
+            Text(CNL10n.string(detail ?? (bytes == nil ? "未能读取" : "当前采样")))
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
@@ -379,7 +461,7 @@ struct SystemStatusView: View {
     }
 
     private func memoryTotalDetail(_ total: Int64?) -> String {
-        total.map { "总计 \(CleanNestFormatting.bytes($0))" } ?? "总量未能读取"
+        total.map { CNL10n.format("总计 %@", CleanNestFormatting.bytes($0)) } ?? "总量未能读取"
     }
 
     private func processDisplayName(_ process: MemoryProcessSnapshot) -> String {
@@ -454,7 +536,7 @@ struct SystemStatusView: View {
                 .frame(width: 104, height: 104)
 
                 VStack(alignment: .leading, spacing: 7) {
-                    Text(healthSummary(snapshot.healthScore))
+                    Text(CNL10n.string(healthSummary(snapshot.healthScore)))
                         .font(.title3.weight(.semibold))
                     Text("状态分数只是资源占用的即时参考，不等同于硬件健康诊断。")
                         .font(.caption)
@@ -473,7 +555,7 @@ struct SystemStatusView: View {
                 .foregroundStyle(CNTheme.accent)
                 .frame(width: 26)
             VStack(alignment: .leading, spacing: 2) {
-                Text(label).font(.caption).foregroundStyle(.secondary)
+                Text(CNL10n.string(label)).font(.caption).foregroundStyle(.secondary)
                 Text(value).font(.subheadline.weight(.medium)).lineLimit(1)
             }
             Spacer()
@@ -518,13 +600,13 @@ private struct ResourceCard: View {
         SurfaceCard {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Label(title, systemImage: symbol)
+                    Label(CNL10n.string(title), systemImage: symbol)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(tint)
                     Text(CleanNestFormatting.percent(value))
                         .font(.system(size: 28, weight: .semibold, design: .rounded))
                         .monospacedMetric()
-                    Text(detail)
+                    Text(CNL10n.string(detail))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

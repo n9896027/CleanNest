@@ -74,9 +74,60 @@ public struct LocalAIEndpoint: Equatable, Sendable {
 
 public struct LocalAIProbeResult: Equatable, Sendable {
     public let modelIDs: [String]
+    public let defaultModelID: String?
 
-    public init(modelIDs: [String]) {
-        self.modelIDs = modelIDs
+    public init(modelIDs: [String], defaultModelID: String? = nil) {
+        var seen = Set<String>()
+        self.modelIDs = modelIDs.compactMap { rawValue in
+            let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { return nil }
+            let key = value.lowercased()
+            guard seen.insert(key).inserted else { return nil }
+            return value
+        }
+        let normalizedDefault = defaultModelID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.defaultModelID = normalizedDefault?.isEmpty == false ? normalizedDefault : nil
+    }
+
+    public func listedModelID(matching rawModelID: String) -> String? {
+        let modelID = rawModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !modelID.isEmpty else { return nil }
+        return modelIDs.first { $0.caseInsensitiveCompare(modelID) == .orderedSame }
+    }
+
+    /// Resolves the exact ID that must be sent back to the OpenAI-compatible API.
+    /// A user-selected service ID is fail-closed; an invalid explicit selection
+    /// never silently falls back to another model.
+    public func resolvedModelID(
+        preferredModelID: String?,
+        selectedLocalModel: LocalModelDescriptor?
+    ) -> String? {
+        let preferred = preferredModelID?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !preferred.isEmpty {
+            return listedModelID(matching: preferred)
+        }
+
+        if let selectedLocalModel,
+           let matched = modelIDs.first(where: selectedLocalModel.matches(serviceModelID:)) {
+            return matched
+        }
+
+        if let defaultModelID,
+           let matched = listedModelID(matching: defaultModelID) {
+            return matched
+        }
+
+        return modelIDs.count == 1 ? modelIDs[0] : nil
+    }
+}
+
+public enum LocalAIHealthStatus {
+    public static func isReady(_ rawValue: String) -> Bool {
+        switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "ok", "healthy": return true
+        default: return false
+        }
     }
 }
 
@@ -589,6 +640,9 @@ public enum DiskAISafetyPolicy {
             || hasPrefix(components, ["Library", "Rime"]) {
             return DiskAIInputPolicy(category: .userContent, boundary: .protected, minimumRisk: .high)
         }
+        if let generated = generatedProjectPolicy(for: url) {
+            return generated
+        }
         if let first = components.first,
            ["Desktop", "Documents", "Movies", "Music", "Pictures"].contains(first) {
             return DiskAIInputPolicy(category: .userContent, boundary: .protected, minimumRisk: .high)
@@ -604,6 +658,35 @@ public enum DiskAISafetyPolicy {
 
     private static func hasPrefix(_ values: [String], _ prefix: [String]) -> Bool {
         values.count >= prefix.count && zip(values, prefix).allSatisfy(==)
+    }
+
+    /// Recognizes generated directories only when adjacent project manifests
+    /// provide deterministic provenance. A directory name alone is not enough.
+    private static func generatedProjectPolicy(for url: URL) -> DiskAIInputPolicy? {
+        let name = url.lastPathComponent.lowercased()
+        if name == ".git" {
+            return DiskAIInputPolicy(category: .userContent, boundary: .protected, minimumRisk: .high)
+        }
+        let parent = url.deletingLastPathComponent()
+        let fileManager = FileManager.default
+        func hasMarker(_ names: [String]) -> Bool {
+            names.contains { fileManager.fileExists(atPath: parent.appendingPathComponent($0).path) }
+        }
+
+        if name == ".build", hasMarker(["Package.swift"]) {
+            return DiskAIInputPolicy(category: .developerArtifacts, boundary: .reviewable, minimumRisk: .low)
+        }
+        if name == "node_modules", hasMarker(["package.json"]) {
+            return DiskAIInputPolicy(category: .packageManagerData, boundary: .reviewable, minimumRisk: .medium)
+        }
+        if name == "target", hasMarker(["Cargo.toml"]) {
+            return DiskAIInputPolicy(category: .developerArtifacts, boundary: .reviewable, minimumRisk: .low)
+        }
+        if ["build", "dist", ".next", "coverage"].contains(name),
+           hasMarker(["Package.swift", "package.json", "Cargo.toml", "project.yml"]) {
+            return DiskAIInputPolicy(category: .developerArtifacts, boundary: .reviewable, minimumRisk: .medium)
+        }
+        return nil
     }
 }
 

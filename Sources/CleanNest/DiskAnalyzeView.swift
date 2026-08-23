@@ -25,10 +25,15 @@ struct DiskAnalyzeView: View {
                         Button {
                             Task { await store.analyze() }
                         } label: {
-                            Label(store.diskHasScanned ? "重新分析" : "开始分析", systemImage: "arrow.clockwise")
+                            Label(CNL10n.string(store.diskHasScanned ? "重新分析" : "开始分析"), systemImage: "arrow.clockwise")
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(store.isWorking)
+                        if store.diskScanProgress != nil || store.diskEvidenceProgress != nil {
+                            Button("取消", role: .cancel) {
+                                store.cancelDiskAnalysis()
+                            }
+                        }
                     }
                 }
 
@@ -44,6 +49,10 @@ struct DiskAnalyzeView: View {
                 }
 
                 pathBar
+
+                if store.diskScanProgress != nil || store.diskEvidenceProgress != nil {
+                    diskProgressCard
+                }
 
                 if let detail = store.diskPrivacyNoticeDetail {
                     InlineBanner(
@@ -72,10 +81,11 @@ struct DiskAnalyzeView: View {
                 } else if let report = store.diskReport {
                     HStack(spacing: 12) {
                         MetricCard(label: "已分析", value: CleanNestFormatting.bytes(report.totalBytes), detail: report.root.path, symbol: "folder", tint: CNTheme.accent)
-                        MetricCard(label: "当前层级", value: "\(report.entries.count) 项", detail: "按占用从大到小排列", symbol: "list.bullet.rectangle", tint: CNTheme.success)
+                        MetricCard(label: "当前层级", value: CNL10n.format("%d 项", report.entries.count), detail: "按占用从大到小排列", symbol: "list.bullet.rectangle", tint: CNTheme.success)
                         MetricCard(label: "文件计数", value: report.totalFiles > 0 ? "\(report.totalFiles)" : "—", detail: "由分析引擎报告", symbol: "doc.on.doc", tint: CNTheme.warning)
                     }
 
+                    DiskTreemapView(report: report)
                     DiskAIInsightCard()
 
                     SurfaceCard(title: "空间分布", symbol: "chart.bar.xaxis") {
@@ -106,43 +116,231 @@ struct DiskAnalyzeView: View {
     }
 
     private var pathBar: some View {
-        HStack(spacing: 9) {
-            Image(systemName: "internaldrive").foregroundStyle(CNTheme.accent)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 5) {
+                Image(systemName: "internaldrive").foregroundStyle(CNTheme.accent)
+                ForEach(Array(breadcrumbs.enumerated()), id: \.element.path) { index, item in
+                    if index > 0 {
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    Button(breadcrumbLabel(item, index: index)) {
+                        Task { await store.analyze(item) }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(index == breadcrumbs.count - 1 ? .semibold : .regular))
+                    .foregroundStyle(index == breadcrumbs.count - 1 ? .primary : CNTheme.accent)
+                    .disabled(index == breadcrumbs.count - 1 || store.isWorking)
+                }
+                Spacer()
+                Button {
+                    store.revealInFinder(store.diskRoot)
+                } label: {
+                    Label("Finder", systemImage: "folder")
+                }
+                .buttonStyle(.borderless)
+                .help(CNL10n.string("在 Finder 中显示"))
+                if store.diskRoot != FileManager.default.homeDirectoryForCurrentUser {
+                    Button("主目录") {
+                        Task { await store.analyze(FileManager.default.homeDirectoryForCurrentUser) }
+                    }
+                    .controlSize(.small)
+                }
+            }
             Text(store.diskRoot.path)
-                .font(.caption.monospaced())
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Spacer()
-            Button {
-                store.revealInFinder(store.diskRoot)
-            } label: {
-                Image(systemName: "folder")
-            }
-            .buttonStyle(.borderless)
-            .help("在 Finder 中显示")
-            if store.diskRoot != FileManager.default.homeDirectoryForCurrentUser {
-                Button("主目录") {
-                    Task { await store.analyze(FileManager.default.homeDirectoryForCurrentUser) }
-                }
-                .controlSize(.small)
-            }
         }
-        .padding(.horizontal, 12)
-        .frame(height: 38)
+        .padding(12)
         .background(CNTheme.surface, in: RoundedRectangle(cornerRadius: 9))
         .overlay(RoundedRectangle(cornerRadius: 9).stroke(CNTheme.divider, lineWidth: 0.7))
     }
 
+    private var diskProgressCard: some View {
+        SurfaceCard {
+            HStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.small)
+                VStack(alignment: .leading, spacing: 4) {
+                    if let progress = store.diskEvidenceProgress {
+                        Text("正在建立用途与可清理性证据")
+                            .font(.subheadline.weight(.semibold))
+                        ProgressView(value: progress.fraction)
+                        Text(progress.currentName.isEmpty
+                            ? "正在汇总文件类型、时间与来源…"
+                            : "正在检查 \(progress.currentName) · \(progress.completed)/\(progress.total)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if let progress = store.diskScanProgress {
+                        Text("正在计算当前层级")
+                            .font(.subheadline.weight(.semibold))
+                        if progress.total > 0 { ProgressView(value: progress.fraction) }
+                        Text(progress.currentName.isEmpty
+                            ? "正在等待分析引擎返回…"
+                            : "正在分析 \(progress.currentName)" + (progress.total > 0 ? " · \(progress.completed)/\(progress.total)" : ""))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Button("取消") { store.cancelDiskAnalysis() }
+            }
+        }
+    }
+
+    private var breadcrumbs: [URL] {
+        let target = store.diskRoot.standardizedFileURL
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        let targetPath = target.path
+        let base: URL
+        if targetPath == home.path || targetPath.hasPrefix(home.path + "/") {
+            base = home
+        } else {
+            base = URL(fileURLWithPath: "/", isDirectory: true)
+        }
+        if target.path == base.path { return [base] }
+        let relative = String(target.path.dropFirst(base.path == "/" ? 1 : base.path.count + 1))
+        var result = [base]
+        var current = base
+        for component in relative.split(separator: "/") {
+            current.appendPathComponent(String(component), isDirectory: true)
+            result.append(current)
+        }
+        return result
+    }
+
+    private func breadcrumbLabel(_ url: URL, index: Int) -> String {
+        if index == 0, url.standardizedFileURL == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL {
+            return CNL10n.string("主目录")
+        }
+        if url.path == "/" { return "Mac" }
+        return url.lastPathComponent
+    }
+
     private func chooseFolder() {
         let panel = NSOpenPanel()
-        panel.title = "选择要分析的文件夹"
-        panel.prompt = "分析此文件夹"
+        panel.title = CNL10n.string("选择要分析的文件夹")
+        panel.prompt = CNL10n.string("分析此文件夹")
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.directoryURL = store.diskRoot
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await store.analyze(url) }
+    }
+}
+
+private struct DiskTreemapView: View {
+    @EnvironmentObject private var store: AppStore
+    let report: DiskReport
+
+    private var entriesByID: [String: DiskEntry] {
+        Dictionary(uniqueKeysWithValues: report.entries.map { ($0.id, $0) })
+    }
+
+    var body: some View {
+        SurfaceCard(title: "空间地图", symbol: "square.grid.3x3.fill") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("面积代表占用大小；点击文件夹继续下钻，点击文件在 Finder 中确认。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    StatusPill(text: "只读浏览", symbol: "lock.shield", style: .success)
+                }
+
+                GeometryReader { proxy in
+                    let placements = TreemapLayout.layout(
+                        items: report.entries.map {
+                            TreemapItem(id: $0.id, weight: Double(max(0, $0.bytes)))
+                        },
+                        in: CGRect(origin: .zero, size: proxy.size)
+                    )
+                    ZStack(alignment: .topLeading) {
+                        ForEach(placements) { placement in
+                            if let entry = entriesByID[placement.id] {
+                                treemapTile(entry, placement: placement)
+                            }
+                        }
+                    }
+                }
+                .frame(height: 330)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(CNTheme.divider, lineWidth: 0.7))
+
+                HStack(spacing: 12) {
+                    legend("可再生成", color: CNTheme.success)
+                    legend("需逐项确认", color: CNTheme.warning)
+                    legend("用户内容", color: CNTheme.accent)
+                    legend("受保护/未知", color: CNTheme.danger)
+                }
+            }
+        }
+    }
+
+    private func treemapTile(_ entry: DiskEntry, placement: TreemapPlacement) -> some View {
+        let rect = placement.rect.insetBy(dx: 1.5, dy: 1.5)
+        let evidence = store.diskEvidence(for: entry)
+        return Button {
+            if entry.isDirectory {
+                Task { await store.analyze(entry.url) }
+            } else {
+                store.revealInFinder(entry.url)
+            }
+        } label: {
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: min(8, max(3, rect.width / 10)))
+                    .fill(color(for: evidence).opacity(0.78))
+                if rect.width > 64, rect.height > 38 {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.name)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(rect.height > 70 ? 2 : 1)
+                        Text(CleanNestFormatting.bytes(entry.bytes))
+                            .font(.caption2.monospacedDigit())
+                            .opacity(0.82)
+                    }
+                    .foregroundStyle(.white)
+                    .padding(7)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(width: max(0, rect.width), height: max(0, rect.height))
+        .position(x: rect.midX, y: rect.midY)
+        .help("\(entry.name) · \(CleanNestFormatting.bytes(entry.bytes))")
+        .accessibilityLabel("\(entry.name)，\(CleanNestFormatting.bytes(entry.bytes))")
+        .disabled(store.isWorking)
+        .contextMenu {
+            Button("在 Finder 中显示") { store.revealInFinder(entry.url) }
+            if entry.isDirectory {
+                Button("进入此文件夹") { Task { await store.analyze(entry.url) } }
+            }
+        }
+    }
+
+    private func color(for evidence: DiskEvidenceEntry?) -> Color {
+        guard let evidence else { return CNTheme.danger }
+        switch evidence.category {
+        case .cache, .developerArtifacts, .packageManagerData:
+            return CNTheme.success
+        case .logs, .installerOrArchive:
+            return CNTheme.warning
+        case .userContent, .cloudDocuments:
+            return CNTheme.accent
+        case .appSandboxData, .appSupportData, .systemData, .unknown:
+            return CNTheme.danger
+        }
+    }
+
+    private func legend(_ title: String, color: Color) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(CNL10n.string(title)).font(.caption2).foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -162,7 +360,7 @@ private struct DiskAIInsightCard: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("本机 AI 深度解读")
                             .font(.headline)
-                        Text("Mole 可用时先读取最大的 4 个目录的直接子项，再由 Gemma 判断用途、风险和查看优先级。")
+                        Text("Mole 可用时先读取最大的 4 个目录的直接子项，再由你选择的本机模型判断用途、风险和查看优先级。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -211,7 +409,7 @@ private struct DiskAIInsightCard: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         case .analyzing:
-            Label("Gemma 正在根据实际子项和体积判断用途与风险…", systemImage: "sparkles")
+            Label("所选本机模型正在根据实际子项和体积判断用途与风险…", systemImage: "sparkles")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         case .failed(let detail):
@@ -249,6 +447,9 @@ private struct DiskAIInsightCard: View {
                     }
                     .font(.caption.weight(.medium))
                 }
+                AIFeedbackControl(feedback: store.diskAIFeedback) { helpful in
+                    store.recordDiskAIFeedback(helpful: helpful)
+                }
             }
         case .idle:
             Text("容量扫描已经完成。点击“AI 深度分析”，即可看到大目录的实际主要构成和安全处理建议。")
@@ -270,6 +471,7 @@ private struct DiskEntryRow: View {
 
     private var aiAdvice: DiskAIAdvice? { store.diskAIAdvice(for: entry) }
     private var childContext: DiskAIChildContext? { store.diskAIChildContext(for: entry) }
+    private var evidence: DiskEvidenceEntry? { store.diskEvidence(for: entry) }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -305,6 +507,42 @@ private struct DiskEntryRow: View {
                     Text(childSummary(childContext))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let evidence {
+                    HStack(spacing: 7) {
+                        StatusPill(
+                            text: evidenceCategoryLabel(evidence.category),
+                            symbol: "checkmark.seal",
+                            style: .neutral
+                        )
+                        StatusPill(
+                            text: boundaryLabel(evidence.cleanupBoundary),
+                            symbol: evidence.cleanupBoundary == .reviewable ? "eye" : "lock.shield",
+                            style: boundaryStyle(evidence.cleanupBoundary)
+                        )
+                        if let growth = evidence.growthBytes, growth != 0 {
+                            Text(growth > 0
+                                ? "较上次 +\(CleanNestFormatting.bytes(growth))"
+                                : "较上次 −\(CleanNestFormatting.bytes(abs(growth)))")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(growth > 0 ? CNTheme.warning : CNTheme.success)
+                        }
+                    }
+                    Text(CNL10n.string(evidence.purpose))
+                        .font(.caption.weight(.medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(CNL10n.format("来源：%@", CNL10n.string(evidence.provenance)))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(CNL10n.format("可恢复性：%@", CNL10n.string(evidence.regeneration)))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(evidenceSummary(evidence))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let aiAdvice {
@@ -356,6 +594,63 @@ private struct DiskEntryRow: View {
                 Button("分析此文件夹") { Task { await store.analyze(entry.url) } }
                     .disabled(store.diskAIPhase.isBusy || store.isWorking)
             }
+        }
+    }
+
+    private func evidenceCategoryLabel(_ category: DiskAIContentCategory) -> String {
+        switch category {
+        case .cache: return "下载/运行缓存"
+        case .logs: return "日志"
+        case .developerArtifacts: return "开发产物"
+        case .packageManagerData: return "包管理器数据"
+        case .appSandboxData: return "应用沙盒"
+        case .appSupportData: return "应用支持数据"
+        case .cloudDocuments: return "云端同步文件"
+        case .userContent: return "用户内容"
+        case .systemData: return "系统数据"
+        case .installerOrArchive: return "安装包/归档"
+        case .unknown: return "用途未知"
+        }
+    }
+
+    private func boundaryLabel(_ boundary: DiskAICleanupBoundary) -> String {
+        switch boundary {
+        case .reviewable: return "可逐项复核"
+        case .inspectOnly: return "只可继续查看"
+        case .protected: return "受保护"
+        }
+    }
+
+    private func boundaryStyle(_ boundary: DiskAICleanupBoundary) -> StatusPill.Style {
+        switch boundary {
+        case .reviewable: return .warning
+        case .inspectOnly: return .neutral
+        case .protected: return .danger
+        }
+    }
+
+    private func evidenceSummary(_ evidence: DiskEvidenceEntry) -> String {
+        let types = evidence.typeDistribution.prefix(3).map {
+            "\(fileKindLabel($0.kind)) \(CleanNestFormatting.bytes($0.allocatedBytes))"
+        }.joined(separator: " · ")
+        let observed = evidence.observedFileCount > 0
+            ? "已抽样 \(evidence.observedFileCount) 个文件" + (evidence.scanWasLimited ? "（达到安全上限）" : "")
+            : "未发现可统计文件"
+        return types.isEmpty ? observed : "\(observed) · \(types)"
+    }
+
+    private func fileKindLabel(_ kind: DiskEvidenceFileKind) -> String {
+        switch kind {
+        case .image: return "图片"
+        case .video: return "视频"
+        case .audio: return "音频"
+        case .document: return "文档"
+        case .archive: return "归档"
+        case .installer: return "安装包"
+        case .sourceCode: return "源码"
+        case .database: return "数据库"
+        case .log: return "日志"
+        case .other: return "其他"
         }
     }
 

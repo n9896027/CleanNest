@@ -37,9 +37,9 @@ public final class MLXOpenAIClient: @unchecked Sendable {
             healthRequest.httpMethod = "GET"
             healthRequest.timeoutInterval = 4
             let healthData = try await perform(healthRequest, maximumBytes: 16 * 1_024)
-            guard let health = try JSONSerialization.jsonObject(with: healthData) as? [String: Any],
-                  health["status"] as? String == "ok" else {
-                throw LocalAIError.serviceUnavailable("健康检查没有返回 ok")
+            let health = try JSONDecoder().decode(HealthResponse.self, from: healthData)
+            guard LocalAIHealthStatus.isReady(health.status) else {
+                throw LocalAIError.serviceUnavailable("健康检查返回了未知状态：\(health.status)")
             }
 
             var modelsRequest = URLRequest(url: endpoint.modelsURL)
@@ -47,7 +47,10 @@ public final class MLXOpenAIClient: @unchecked Sendable {
             modelsRequest.timeoutInterval = 6
             let modelsData = try await perform(modelsRequest, maximumBytes: 256 * 1_024)
             let models = try JSONDecoder().decode(ModelsResponse.self, from: modelsData)
-            return LocalAIProbeResult(modelIDs: models.data.map(\.id))
+            return LocalAIProbeResult(
+                modelIDs: models.data.map(\.id),
+                defaultModelID: health.defaultModelID
+            )
         } catch let error as LocalAIError {
             throw error
         } catch {
@@ -239,6 +242,16 @@ private final class NoRedirectSessionDelegate: NSObject, URLSessionTaskDelegate,
 
 private struct ModelsResponse: Decodable {
     let data: [ModelEntry]
+}
+
+private struct HealthResponse: Decodable {
+    let status: String
+    let defaultModelID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case defaultModelID = "default_model"
+    }
 }
 
 private struct ModelEntry: Decodable {

@@ -1,25 +1,33 @@
-# 本机 MLX / Gemma
+# 可替换的本机 MLX 模型
 
 本机 AI 是可选的解释层，不是扫描或删除引擎。关闭 AI 后，确定性扫描、磁盘浏览和安全规则仍能工作。
 
 ## 要求
 
 - Apple Silicon Mac；`mlx-lm` 不用于 Intel Mac。
-- 一个已下载并转换为 MLX 格式的模型目录，至少包含 `config.json` 和一个 `.safetensors` 文件。
-- 可执行的 `mlx_lm.server`。CleanNest 默认查找 `~/.mlx-env/bin/mlx_lm.server`，也可在设置中选择其他位置。
+- 若复用 oMLX 等现有回环服务，只需服务能提供 `/health`、`/v1/models` 与 `/v1/chat/completions`；不要求再选择模型目录。
+- 若由 CleanNest 自己启动服务，则需要一个已下载并转换为 MLX 格式的模型目录（至少含 `config.json` 和 `.safetensors` 权重），以及可执行的 `mlx_lm.server`。CleanNest 默认查找 `~/.mlx-env/bin/mlx_lm.server`。
 - 足够的统一内存。27B 级模型即使量化后也会占用大量内存；出现内存压力或交换空间持续增长时，应改用更小模型。
 
-CleanNest 不自动下载模型，也不替用户接受 Gemma 或模型托管站点条款。
+CleanNest 不自动下载或载入模型，也不替用户接受任何模型托管站点或模型发布者的条款。
 
 ## 连接方式
 
-在“设置 → 本机 AI 分析”中填写：
+在“设置 → 本机 AI 分析”中：
 
 - 服务地址：只允许 `http://127.0.0.1:<端口>/v1`；
-- 模型目录：选择完整 MLX 模型目录；
+- API 模型：读取 `/v1/models` 公布的模型 ID；可以保持“自动”使用服务默认模型，也可以明确选择某个 ID；
+- 自启模型：App 会有界扫描 `~/Models/MLX`、`~/mlx-models`、`~/.omlx/models` 与 Hugging Face 本机缓存，列出完整模型；
+- 模型目录：也可手动选择其他包含 `config.json` 与 `.safetensors` 权重的目录；
 - 运行程序：选择 `mlx_lm.server`。
 
-保存后，CleanNest 会先探测已有回环服务；模型 ID 匹配时复用该服务，否则可由 App 启动所选本机进程。关闭开关时只停止由 CleanNest 自己启动的服务，不会结束用户独立启动的服务。
+选择器会显示模型架构、量化方式与权重大小。仅保存时不会自动载入大模型；选择“切换并启动”后，CleanNest 会先安全停止由 App 管理的旧模型，再启动新模型并记住选择。App 会优先探测已有回环服务并直接复用。关闭开关时只停止由 CleanNest 自己启动的服务，不会结束用户独立启动的服务。
+
+### oMLX 的模型短名
+
+发给 OpenAI 兼容接口的 `model` 必须是 `/v1/models` 实际返回的 ID，例如 `Qwen3.8-27B-Uncensored-8bit`，不能把 `/Users/.../模型目录` 当作 API 模型 ID。CleanNest 将两者分开保存：短名用于请求，目录只用于 App 自己启动 `mlx_lm.server`。显式选择的短名若已不在服务列表中，App 会报错并要求重新选择，不会悄悄切换到另一模型。
+
+oMLX 的 DFlash 是目标模型内部的推测解码加速设置；启用后，请求仍应使用目标模型的短名，而不是 DFlash 草稿模型路径或草稿模型 ID。CleanNest 只读取服务公开的 ID，不修改 oMLX 的 DFlash 设置。
 
 ## 会发送给模型什么
 
@@ -37,6 +45,6 @@ CleanNest 不自动下载模型，也不替用户接受 Gemma 或模型托管站
 
 ## 选择模型
 
-优先考虑指令遵循稳定、能输出严格 JSON 且与你的统一内存匹配的 MLX 模型。大模型不一定让目录判断更可靠：CleanNest 故意不提供文件正文，最终结论仍受观测范围限制。Gemma 27B/26B 级模型适合内存充足的机器；资源紧张时，小型量化模型通常响应更快、更稳定。
+优先考虑指令遵循稳定、能输出严格 JSON 且与你的统一内存匹配的 MLX 模型。大模型不一定让目录判断更可靠：CleanNest 故意不提供文件正文，最终结论仍受观测范围限制。27B/30B 级模型即使量化后也可能占用大量统一内存；资源紧张时，小型量化模型通常响应更快、更稳定。
 
 项目只验证协议与安全边界，不保证某个第三方模型版本的输出质量。相关许可证见 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。

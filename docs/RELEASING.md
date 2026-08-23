@@ -13,6 +13,7 @@
    swift test
    swift run CleanNestSelfTest
    CLEANNEST_CODESIGN_IDENTITY="-" ./build.sh release
+   swift Tools/SBOMGenerator.swift build/CleanNest.app build/CleanNest.spdx.json
    ```
 
 4. PR 的 CI、双架构兼容性、CodeQL 和依赖审查全部通过，安全告警为零。
@@ -28,7 +29,13 @@ codesign --verify --deep --strict --verbose=2 build/CleanNest.app
 spctl --assess --type execute --verbose=2 build/CleanNest.app
 ```
 
-使用真实身份时，构建脚本会启用 Hardened Runtime 和可信时间戳。当前脚本按本机架构生成 App；在 Universal 2 流水线落地前，产物名称和发布说明必须明确标注 `arm64` 或 `x86_64`，不得误称通用包。
+使用真实身份时，构建脚本会分别签署内置 `CleanNestMCP` 和外层 App，并启用 Hardened Runtime 与可信时间戳。本机直接运行脚本仍生成当前架构版本。
+
+## 免费 Universal 2 验证产物
+
+维护者可手动运行 `Universal macOS artifact` 工作流。它分别在 Apple Silicon 与 Intel runner 测试和编译 App/MCP，用 `lipo` 组装 Universal 2，生成 SPDX SBOM 与 SHA-256，并使用 GitHub OIDC 写入来源证明。
+
+该工作流有意不创建 tag 或 Release，产物使用 ad-hoc 签名且未 Apple 公证，只适合验证与测试。它不能称为官方可信安装包，也不能取代下方 Developer ID、公证、装订和 Gatekeeper 实测。Action 均固定到完整提交，工作流保持最小权限。
 
 ## 公证与封装
 
@@ -49,4 +56,5 @@ spctl --assess --type execute --verbose=2 build/CleanNest.app
 - 使用与 Info.plist 一致的 `vX.Y.Z` annotated tag。
 - Tag 必须指向已通过保护检查的 `main` 提交。
 - 先创建 Draft Release，人工核对产物签名、公证、架构和校验值后再公开。
+- 同时核对内置 `CleanNestMCP` 的签名、架构与实际 stdio 响应。
 - 发现问题时发布新版本，不移动已经公开的版本 tag。
