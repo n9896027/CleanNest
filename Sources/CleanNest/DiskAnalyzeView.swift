@@ -25,10 +25,27 @@ struct DiskAnalyzeView: View {
                         Button {
                             Task { await store.analyze() }
                         } label: {
-                            Label(CNL10n.string(store.diskHasScanned ? "重新分析" : "开始分析"), systemImage: "arrow.clockwise")
+                            Label(CNL10n.string(store.diskHasScanned ? "刷新变化" : "开始分析"), systemImage: "arrow.clockwise")
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(store.isWorking)
+                        Menu {
+                            Button {
+                                Task { await store.analyze(deepRefresh: true) }
+                            } label: {
+                                Label("深度刷新（忽略缓存）", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            .disabled(store.isWorking)
+                            Button {
+                                store.clearDiskScanCache()
+                            } label: {
+                                Label("清空增量索引", systemImage: "trash")
+                            }
+                            .disabled(store.isWorking)
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .menuStyle(.borderlessButton)
                         if store.diskScanProgress != nil || store.diskEvidenceProgress != nil {
                             Button("取消", role: .cancel) {
                                 store.cancelDiskAnalysis()
@@ -37,16 +54,11 @@ struct DiskAnalyzeView: View {
                     }
                 }
 
-                if store.engine == nil {
-                    InlineBanner(
-                        title: "正在使用原生扫描",
-                        detail: "安装 Mole CLI 后可获得更快的分析与大文件索引；当前结果仍只在本机生成。",
-                        kind: .info,
-                        actionTitle: "设置引擎"
-                    ) {
-                        store.selection = .settings
-                    }
-                }
+                InlineBanner(
+                    title: "原生增量索引",
+                    detail: "扫描会持续显示已完成的部分结果；15 分钟内只复用元数据签名未变化的项目。需要实时重算时可选择“深度刷新”。",
+                    kind: .info
+                )
 
                 pathBar
 
@@ -69,7 +81,7 @@ struct DiskAnalyzeView: View {
                     }
                 }
 
-                if !store.diskHasScanned {
+                if !store.diskHasScanned && store.diskPartialReport == nil {
                     EmptyPanel(
                         symbol: "chart.pie",
                         title: "选择一个位置开始",
@@ -78,15 +90,20 @@ struct DiskAnalyzeView: View {
                     ) {
                         Task { await store.analyze() }
                     }
-                } else if let report = store.diskReport {
+                } else if let report = store.diskPartialReport ?? store.diskReport {
                     HStack(spacing: 12) {
-                        MetricCard(label: "已分析", value: CleanNestFormatting.bytes(report.totalBytes), detail: report.root.path, symbol: "folder", tint: CNTheme.accent)
-                        MetricCard(label: "当前层级", value: CNL10n.format("%d 项", report.entries.count), detail: "按占用从大到小排列", symbol: "list.bullet.rectangle", tint: CNTheme.success)
-                        MetricCard(label: "文件计数", value: report.totalFiles > 0 ? "\(report.totalFiles)" : "—", detail: "由分析引擎报告", symbol: "doc.on.doc", tint: CNTheme.warning)
+                        MetricCard(label: store.diskPartialReport == nil ? "已分析" : "已发现", value: CleanNestFormatting.bytes(report.totalBytes), detail: store.diskPartialReport == nil ? report.root.path : "扫描进行中，数值仍会变化", symbol: "folder", tint: CNTheme.accent)
+                        MetricCard(label: "当前层级", value: CNL10n.format("%d 项", report.entries.count), detail: store.diskPartialReport == nil ? "按占用从大到小排列" : "实时部分结果", symbol: "list.bullet.rectangle", tint: CNTheme.success)
+                        MetricCard(label: "索引状态", value: scanModeValue, detail: scanModeDetail, symbol: "bolt.horizontal.circle", tint: CNTheme.warning)
                     }
 
+                    if store.diskPartialReport == nil {
+                        DiskDecisionCenter(report: report)
+                    }
                     DiskTreemapView(report: report)
-                    DiskAIInsightCard()
+                    if store.diskPartialReport == nil {
+                        DiskAIInsightCard()
+                    }
 
                     SurfaceCard(title: "空间分布", symbol: "chart.bar.xaxis") {
                         if report.entries.isEmpty {
@@ -104,15 +121,35 @@ struct DiskAnalyzeView: View {
                         }
                     }
 
-                    InlineBanner(
-                        title: "浏览页保持只读",
-                        detail: "首版不会从任意文件夹直接删除内容。请先在 Finder 中确认，或使用“清理空间”里的安全范围。",
-                        kind: .success
-                    )
+                    if store.diskPartialReport == nil {
+                        InlineBanner(
+                            title: "浏览页保持只读",
+                            detail: "这里负责解释和决策，不会从任意文件夹直接删除内容。请先在 Finder 中确认，或使用“清理空间”里的安全范围。",
+                            kind: .success
+                        )
+                    }
                 }
             }
             .padding(CNTheme.pagePadding)
         }
+    }
+
+    private var scanModeValue: String {
+        if store.diskPartialReport != nil { return "实时更新" }
+        if store.diskScanCacheHitCount > 0 {
+            return "复用 \(store.diskScanCacheHitCount) 项"
+        }
+        return store.diskScanScannedCount > 0 ? "实扫 \(store.diskScanScannedCount) 项" : "完整结果"
+    }
+
+    private var scanModeDetail: String {
+        if let elapsed = store.diskScanElapsedSeconds {
+            let mode = store.diskScanCacheHitCount > 0
+                ? "另实扫 \(store.diskScanScannedCount) 项"
+                : "未使用缓存"
+            return "\(String(format: "%.2f", elapsed)) 秒 · \(mode)"
+        }
+        return "缓存命中会明确标注"
     }
 
     private var pathBar: some View {
@@ -175,12 +212,12 @@ struct DiskAnalyzeView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else if let progress = store.diskScanProgress {
-                        Text("正在计算当前层级")
+                        Text("正在计算当前层级 · 已出现的结果可先查看")
                             .font(.subheadline.weight(.semibold))
                         if progress.total > 0 { ProgressView(value: progress.fraction) }
                         Text(progress.currentName.isEmpty
                             ? "正在等待分析引擎返回…"
-                            : "正在分析 \(progress.currentName)" + (progress.total > 0 ? " · \(progress.completed)/\(progress.total)" : ""))
+                            : "正在分析 \(progress.currentName)" + (progress.total > 0 ? " · \(progress.completed)/\(progress.total) · 复用 \(progress.cacheHitCount) · 实扫 \(progress.scannedCount)" : ""))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -230,6 +267,305 @@ struct DiskAnalyzeView: View {
         panel.directoryURL = store.diskRoot
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await store.analyze(url) }
+    }
+}
+
+private enum DiskDecisionFilter: String, CaseIterable, Identifiable {
+    case all = "全部"
+    case review = "可复核"
+    case ownerApp = "App 内管理"
+    case keep = "保留"
+
+    var id: String { rawValue }
+}
+
+private struct DiskDecisionItem: Identifiable {
+    let entry: DiskEntry
+    let evidence: DiskEvidenceEntry
+    var id: String { entry.id }
+}
+
+private struct DiskDecisionCenter: View {
+    @EnvironmentObject private var store: AppStore
+    let report: DiskReport
+    @State private var filter: DiskDecisionFilter = .all
+    @State private var selectedID: String?
+
+    private var items: [DiskDecisionItem] {
+        report.entries.compactMap { entry in
+            guard let evidence = store.diskEvidence(for: entry) else { return nil }
+            return DiskDecisionItem(entry: entry, evidence: evidence)
+        }
+    }
+
+    private var filteredItems: [DiskDecisionItem] {
+        items.filter { item in
+            switch filter {
+            case .all:
+                return true
+            case .review:
+                return [.reviewCandidate, .inspectFurther].contains(item.evidence.cleanupDecision.disposition)
+            case .ownerApp:
+                return item.evidence.cleanupDecision.disposition == .manageInOwnerApp
+            case .keep:
+                return item.evidence.cleanupDecision.disposition == .keep
+            }
+        }
+    }
+
+    private var selectedItem: DiskDecisionItem? {
+        if let selectedID, let item = items.first(where: { $0.id == selectedID }) {
+            return item
+        }
+        return filteredItems.first ?? items.first
+    }
+
+    var body: some View {
+        SurfaceCard(
+            title: "清理决策中心",
+            symbol: "scope",
+            prominence: .prominent,
+            tint: CNTheme.cyan
+        ) {
+            VStack(alignment: .leading, spacing: 16) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .center, spacing: 12) {
+                        decisionIntroduction
+                        Spacer()
+                        decisionFilter
+                            .frame(width: 420)
+                    }
+                    VStack(alignment: .leading, spacing: 10) {
+                        decisionIntroduction
+                        decisionFilter
+                    }
+                }
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 16) {
+                        decisionList
+                            .frame(width: 300)
+                        if let selectedItem {
+                            decisionDetail(selectedItem)
+                                .frame(width: 540, alignment: .topLeading)
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 14) {
+                        decisionList
+                        if let selectedItem { decisionDetail(selectedItem) }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            if selectedID == nil { selectedID = filteredItems.first?.id ?? items.first?.id }
+        }
+        .onChange(of: filter) {
+            if let selectedID, filteredItems.contains(where: { $0.id == selectedID }) { return }
+            selectedID = filteredItems.first?.id
+        }
+    }
+
+    private var decisionIntroduction: some View {
+        Text("先看确定性证据，再决定下一步。模型无法改变这里的风险下限或动作边界。")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var decisionFilter: some View {
+        Picker("决策筛选", selection: $filter) {
+            ForEach(DiskDecisionFilter.allCases) { value in
+                Text(value.rawValue).tag(value)
+            }
+        }
+        .pickerStyle(.segmented)
+    }
+
+    private var decisionList: some View {
+        VStack(spacing: 0) {
+            if filteredItems.isEmpty {
+                Text("这个筛选下没有项目。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 120)
+            } else {
+                ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
+                    decisionRow(item)
+                    if index < filteredItems.count - 1 { Divider().padding(.leading, 40) }
+                }
+            }
+        }
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .stroke(Color.white.opacity(0.09), lineWidth: 0.7)
+        )
+    }
+
+    private func decisionRow(_ item: DiskDecisionItem) -> some View {
+        let decision = item.evidence.cleanupDecision
+        let selected = selectedItem?.id == item.id
+        return Button {
+            selectedID = item.id
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: dispositionSymbol(decision.disposition))
+                    .foregroundStyle(dispositionTint(decision.disposition))
+                    .frame(width: 28, height: 28)
+                    .background(
+                        dispositionTint(decision.disposition).opacity(0.10),
+                        in: RoundedRectangle(cornerRadius: 8)
+                    )
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.entry.name)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    Text(decision.headline)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                Text(CleanNestFormatting.bytes(item.entry.bytes))
+                    .font(.caption.weight(.semibold))
+                    .monospacedMetric()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(selected ? CNTheme.accent.opacity(0.10) : Color.clear)
+        .accessibilityLabel("\(item.entry.name)，\(decision.headline)，\(CleanNestFormatting.bytes(item.entry.bytes))")
+    }
+
+    private func decisionDetail(_ item: DiskDecisionItem) -> some View {
+        let decision = item.evidence.cleanupDecision
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                CNIconTile(
+                    symbol: dispositionSymbol(decision.disposition),
+                    tint: dispositionTint(decision.disposition),
+                    size: 42
+                )
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.entry.name)
+                        .font(.title3.weight(.semibold))
+                        .lineLimit(1)
+                    Text(decision.headline)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(dispositionTint(decision.disposition))
+                }
+                Spacer()
+                StatusPill(
+                    text: confidenceLabel(decision.confidence),
+                    symbol: "checkmark.seal",
+                    style: decision.confidence == .high ? .success : (decision.confidence == .medium ? .warning : .neutral)
+                )
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 12) {
+                    decisionFact("用途", item.evidence.purpose, symbol: "questionmark.folder")
+                    decisionFact("为何变大", decision.whyLarge, symbol: "arrow.up.right")
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    decisionFact("用途", item.evidence.purpose, symbol: "questionmark.folder")
+                    decisionFact("为何变大", decision.whyLarge, symbol: "arrow.up.right")
+                }
+            }
+            decisionFact("处理影响", decision.impact, symbol: "exclamationmark.shield")
+            decisionFact("可恢复性", decision.recovery, symbol: "arrow.uturn.backward.circle")
+            decisionFact("下一步", decision.nextStep, symbol: "arrow.right.circle")
+
+            DisclosureGroup("查看本机证据（\(decision.evidence.count)）") {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(decision.evidence, id: \.self) { signal in
+                        Label(signal, systemImage: "checkmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.top, 7)
+            }
+            .font(.caption.weight(.medium))
+
+            HStack(spacing: 8) {
+                if item.entry.isDirectory {
+                    Button {
+                        Task { await store.analyze(item.entry.url) }
+                    } label: {
+                        Label("进入下一层", systemImage: "arrow.right")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.isWorking)
+                }
+                Button {
+                    store.revealInFinder(item.entry.url)
+                } label: {
+                    Label("在 Finder 中确认", systemImage: "folder")
+                }
+                Spacer()
+                StatusPill(text: "此页只读", symbol: "lock.shield", style: .success)
+            }
+        }
+        .padding(17)
+        .background(
+            LinearGradient(
+                colors: [dispositionTint(decision.disposition).opacity(0.11), Color.clear],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(dispositionTint(decision.disposition).opacity(0.16), lineWidth: 0.7)
+        )
+    }
+
+    private func decisionFact(_ title: String, _ detail: String, symbol: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: symbol)
+                .foregroundStyle(CNTheme.accent)
+                .frame(width: 18)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.caption.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private func dispositionSymbol(_ disposition: DiskCleanupDisposition) -> String {
+        switch disposition {
+        case .reviewCandidate: return "checkmark.shield"
+        case .inspectFurther: return "arrow.down.right.and.arrow.up.left"
+        case .manageInOwnerApp: return "app.badge"
+        case .keep: return "lock.shield"
+        }
+    }
+
+    private func dispositionTint(_ disposition: DiskCleanupDisposition) -> Color {
+        switch disposition {
+        case .reviewCandidate: return CNTheme.success
+        case .inspectFurther: return CNTheme.warning
+        case .manageInOwnerApp: return CNTheme.violet
+        case .keep: return CNTheme.danger
+        }
+    }
+
+    private func confidenceLabel(_ confidence: DiskDecisionConfidence) -> String {
+        switch confidence {
+        case .high: return "高证据"
+        case .medium: return "中等证据"
+        case .low: return "证据不足"
+        }
     }
 }
 

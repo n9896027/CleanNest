@@ -81,7 +81,9 @@ final class LocalModelCatalogTests: XCTestCase {
         let probe = LocalAIProbeResult(
             modelIDs: [
                 "Qwen3.8-27B-Uncensored-8bit",
-                "z-lab--Qwen3.8-27B-DFlash2"
+                "z-lab--Qwen3.8-27B-DFlash2",
+                "/Users/example/Qwen3.8-27B-Uncensored-8bit",
+                "file:///Users/example/Qwen3.8-27B-Uncensored-8bit"
             ],
             defaultModelID: "Qwen3.8-27B-Uncensored-8bit"
         )
@@ -102,6 +104,16 @@ final class LocalModelCatalogTests: XCTestCase {
                 preferredModelID: "/Users/example/model",
                 selectedLocalModel: selected
             )
+        )
+        XCTAssertEqual(
+            probe.modelIDs,
+            ["Qwen3.8-27B-Uncensored-8bit", "z-lab--Qwen3.8-27B-DFlash2"]
+        )
+        XCTAssertNil(
+            LocalAIProbeResult(
+                modelIDs: ["/Users/example/model"],
+                defaultModelID: "/Users/example/model"
+            ).defaultModelID
         )
     }
 

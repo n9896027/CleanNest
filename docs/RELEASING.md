@@ -58,3 +58,14 @@ spctl --assess --type execute --verbose=2 build/CleanNest.app
 - 先创建 Draft Release，人工核对产物签名、公证、架构和校验值后再公开。
 - 同时核对内置 `CleanNestMCP` 的签名、架构与实际 stdio 响应。
 - 发现问题时发布新版本，不移动已经公开的版本 tag。
+
+### 源码正式版与 App 内更新检查
+
+在尚无 Developer ID 与 Apple 公证时，可以发布“仅源码”的正式 GitHub Release，但必须同时满足：
+
+- Release 不是 Draft 或预发布，tag 指向已通过保护检查的 `main`。
+- 发布说明第一屏明确标注“源码发布，未提供 Developer ID 签名和 Apple 公证的 App”。
+- 不附加 ad-hoc 签名的 `.app` 或 ZIP，不把 Actions 临时产物描述为普通用户可信安装包。
+- 发布说明包含从源码构建命令、版本变化、已知限制和对应提交 SHA。
+
+CleanNest 的“检查更新”只读取该仓库最新的非 Draft、非预发布 Release。因此，tag 或已合并代码本身不会让 App 识别为“最新正式版本”；维护者仍需在明确授权后创建正式 GitHub Release。

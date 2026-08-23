@@ -203,6 +203,9 @@ private struct CleanupRow: View {
     private var learningSignal: CleanupLearningSignal? {
         store.cleanupLearningSignal(for: candidate)
     }
+    private var ruleProposal: CleanupRuleProposal? {
+        store.cleanupRuleProposal(for: candidate)
+    }
 
     var body: some View {
         HStack(spacing: 11) {
@@ -256,6 +259,18 @@ private struct CleanupRow: View {
                             .foregroundStyle(.secondary)
                     }
                     .padding(.top, 1)
+                } else if let ruleProposal {
+                    HStack(spacing: 7) {
+                        StatusPill(
+                            text: ruleProposal.state == .pending ? "待审核规则" : "规则已暂停",
+                            symbol: ruleProposal.state == .pending ? "doc.badge.clock" : "pause.circle",
+                            style: ruleProposal.state == .pending ? .warning : .neutral
+                        )
+                        Text("不会改变排序，需到本机学习页确认")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 1)
                 }
             }
 
@@ -285,7 +300,7 @@ private struct CleanupRow: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("记住你的清理偏好")
+            .help("创建或管理本机学习规则")
         }
         .padding(.vertical, 10)
         .contentShape(Rectangle())
@@ -306,19 +321,24 @@ private struct CleanupRow: View {
         Button {
             store.rememberCleanupPreference(candidate, preference: .preferCleanup)
         } label: {
-            Label("记住：以后优先清理", systemImage: "sparkles")
+            Label("提议：以后优先清理", systemImage: "sparkles")
         }
         Button {
             store.rememberCleanupPreference(candidate, preference: .preferKeep)
         } label: {
-            Label("记住：以后优先保留", systemImage: "hand.raised")
+            Label("提议：以后优先保留", systemImage: "hand.raised")
         }
-        if learningSignal?.explicitPreference != nil {
+        if ruleProposal != nil {
             Divider()
+            Button {
+                store.selection = .evolution
+            } label: {
+                Label("打开规则审核", systemImage: "checklist")
+            }
             Button {
                 store.forgetCleanupPreference(candidate)
             } label: {
-                Label("忘记这条偏好", systemImage: "arrow.uturn.backward")
+                Label("撤销这条提案/规则", systemImage: "arrow.uturn.backward")
             }
         }
     }

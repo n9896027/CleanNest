@@ -80,13 +80,22 @@ public struct LocalAIProbeResult: Equatable, Sendable {
         var seen = Set<String>()
         self.modelIDs = modelIDs.compactMap { rawValue in
             let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !value.isEmpty else { return nil }
+            guard !value.isEmpty,
+                  !(value as NSString).isAbsolutePath,
+                  !value.lowercased().hasPrefix("file://") else { return nil }
             let key = value.lowercased()
             guard seen.insert(key).inserted else { return nil }
             return value
         }
         let normalizedDefault = defaultModelID?.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.defaultModelID = normalizedDefault?.isEmpty == false ? normalizedDefault : nil
+        if let normalizedDefault,
+           !normalizedDefault.isEmpty,
+           !(normalizedDefault as NSString).isAbsolutePath,
+           !normalizedDefault.lowercased().hasPrefix("file://") {
+            self.defaultModelID = normalizedDefault
+        } else {
+            self.defaultModelID = nil
+        }
     }
 
     public func listedModelID(matching rawModelID: String) -> String? {
@@ -119,6 +128,33 @@ public struct LocalAIProbeResult: Equatable, Sendable {
         }
 
         return modelIDs.count == 1 ? modelIDs[0] : nil
+    }
+}
+
+public struct LocalAIBenchmarkResult: Equatable, Sendable {
+    public let modelID: String
+    public let firstTokenMilliseconds: Double
+    public let totalMilliseconds: Double
+    public let outputTokens: Int?
+    public let outputCharacters: Int
+
+    public init(
+        modelID: String,
+        firstTokenMilliseconds: Double,
+        totalMilliseconds: Double,
+        outputTokens: Int?,
+        outputCharacters: Int
+    ) {
+        self.modelID = modelID
+        self.firstTokenMilliseconds = max(0, firstTokenMilliseconds)
+        self.totalMilliseconds = max(0, totalMilliseconds)
+        self.outputTokens = outputTokens.map { max(0, $0) }
+        self.outputCharacters = max(0, outputCharacters)
+    }
+
+    public var tokensPerSecond: Double? {
+        guard let outputTokens, outputTokens > 0, totalMilliseconds > 0 else { return nil }
+        return Double(outputTokens) / (totalMilliseconds / 1_000)
     }
 }
 

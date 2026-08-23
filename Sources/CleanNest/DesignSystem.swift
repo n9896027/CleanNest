@@ -58,10 +58,15 @@ enum AppMetadata {
 
 struct AppCanvas: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         ZStack {
-            CNVisualEffectBackground(material: .underWindowBackground, blendingMode: .behindWindow)
+            if reduceTransparency {
+                Color(nsColor: .windowBackgroundColor)
+            } else {
+                CNVisualEffectBackground(material: .underWindowBackground, blendingMode: .behindWindow)
+            }
 
             Color(nsColor: .windowBackgroundColor)
                 .opacity(colorScheme == .dark ? 0.55 : 0.30)
@@ -85,6 +90,9 @@ struct AppCanvas: View {
                         .frame(width: proxy.size.width * 0.36, height: proxy.size.height * 0.42)
                         .blur(radius: 104)
                         .offset(x: proxy.size.width * 0.42, y: proxy.size.height * 0.39)
+
+                    CNContourField()
+                        .opacity(colorScheme == .dark ? 0.34 : 0.20)
                 }
             }
 
@@ -95,6 +103,75 @@ struct AppCanvas: View {
             )
         }
         .ignoresSafeArea()
+    }
+}
+
+private struct CNContourField: View {
+    var body: some View {
+        Canvas { context, size in
+            let center = CGPoint(x: size.width * 0.72, y: size.height * 0.16)
+            for index in 0..<7 {
+                let expansion = CGFloat(index) * min(size.width, size.height) * 0.075
+                let rect = CGRect(
+                    x: center.x - size.width * 0.18 - expansion,
+                    y: center.y - size.height * 0.12 - expansion * 0.62,
+                    width: size.width * 0.36 + expansion * 2,
+                    height: size.height * 0.24 + expansion * 1.24
+                )
+                var path = Path()
+                path.addEllipse(in: rect)
+                context.stroke(
+                    path,
+                    with: .color(CNTheme.accent.opacity(0.07 - Double(index) * 0.006)),
+                    style: StrokeStyle(lineWidth: 0.7, dash: index.isMultiple(of: 2) ? [3, 8] : [])
+                )
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+struct CNNestMark: View {
+    var size: CGFloat = 40
+    var tint: Color = CNTheme.accent
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [CNTheme.cyan.opacity(0.92), tint, CNTheme.accentStrong],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+            ForEach(0..<3, id: \.self) { index in
+                Ellipse()
+                    .trim(from: 0.08, to: 0.84)
+                    .stroke(
+                        Color.white.opacity(0.46 - Double(index) * 0.10),
+                        style: StrokeStyle(lineWidth: max(0.8, size * 0.045), lineCap: .round)
+                    )
+                    .frame(
+                        width: size * (0.68 - CGFloat(index) * 0.14),
+                        height: size * (0.42 - CGFloat(index) * 0.07)
+                    )
+                    .rotationEffect(.degrees(-12))
+                    .offset(y: size * (0.11 + CGFloat(index) * 0.015))
+            }
+            Image(systemName: "leaf.fill")
+                .font(.system(size: size * 0.28, weight: .semibold))
+                .foregroundStyle(.white)
+                .offset(x: size * 0.13, y: -size * 0.12)
+        }
+        .frame(width: size, height: size)
+        .overlay(
+            RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+                .stroke(Color.white.opacity(0.30), lineWidth: 0.7)
+        )
+        .shadow(color: tint.opacity(0.25), radius: size * 0.28, y: size * 0.11)
+        .accessibilityHidden(true)
     }
 }
 
@@ -185,6 +262,7 @@ enum CNSurfaceProminence {
 
 private struct CNGlassSurfaceModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let prominence: CNSurfaceProminence
     let tint: Color
 
@@ -205,8 +283,13 @@ private struct CNGlassSurfaceModifier: ViewModifier {
             .padding(prominence == .prominent ? 25 : CNTheme.cardPadding)
             .background {
                 ZStack {
-                    RoundedRectangle(cornerRadius: radius, style: .continuous)
-                        .fill(prominence == .quiet ? .ultraThinMaterial : .thinMaterial)
+                    if reduceTransparency {
+                        RoundedRectangle(cornerRadius: radius, style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                    } else {
+                        RoundedRectangle(cornerRadius: radius, style: .continuous)
+                            .fill(prominence == .quiet ? .ultraThinMaterial : .thinMaterial)
+                    }
                     RoundedRectangle(cornerRadius: radius, style: .continuous)
                         .fill(
                             LinearGradient(

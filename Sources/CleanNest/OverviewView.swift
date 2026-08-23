@@ -29,6 +29,7 @@ struct OverviewView: View {
                     }
                 }
 
+                InsightLoopRail()
                 storageWorkspace
                 nextActions
                 activityAndLearning
@@ -316,6 +317,133 @@ struct OverviewView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct InsightLoopRail: View {
+    @EnvironmentObject private var store: AppStore
+
+    private var completed: [Bool] {
+        [
+            store.diskHasScanned,
+            store.diskEvidenceReport != nil,
+            store.selectedCleanupCount > 0,
+            store.activities.contains { $0.outcome == .success && $0.affectedItems > 0 },
+            store.evolutionMemory.enabledRuleCount > 0
+        ]
+    }
+
+    private var currentIndex: Int {
+        completed.firstIndex(of: false) ?? max(0, completed.count - 1)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("你的洞察闭环")
+                        .font(.system(size: 15.5, weight: .semibold))
+                    Text("每一步都对应真实本机状态；点击任一步可继续。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                StatusPill(
+                    text: completed.allSatisfy { $0 } ? "闭环已建立" : "第 \(currentIndex + 1) / 5 步",
+                    symbol: completed.allSatisfy { $0 } ? "checkmark.circle" : "scope",
+                    style: completed.allSatisfy { $0 } ? .success : .neutral
+                )
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 0) {
+                    stage(0, "定位", "看见占用", "magnifyingglass") { openDisk() }
+                    connector(after: 0)
+                    stage(1, "解释", "确定性证据", "doc.text.magnifyingglass") { openDisk() }
+                    connector(after: 1)
+                    stage(2, "决策", "逐项选择", "checklist") { openCleanup() }
+                    connector(after: 2)
+                    stage(3, "验证", "实际结果", "checkmark.shield") { store.selection = .activity }
+                    connector(after: 3)
+                    stage(4, "学习", "审核规则", "sparkles.rectangle.stack") { store.selection = .evolution }
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    stage(0, "定位", "看见占用", "magnifyingglass") { openDisk() }
+                    stage(1, "解释", "确定性证据", "doc.text.magnifyingglass") { openDisk() }
+                    stage(2, "决策", "逐项选择", "checklist") { openCleanup() }
+                    stage(3, "验证", "实际结果", "checkmark.shield") { store.selection = .activity }
+                    stage(4, "学习", "审核规则", "sparkles.rectangle.stack") { store.selection = .evolution }
+                }
+            }
+        }
+        .padding(17)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [CNTheme.cyan.opacity(0.28), Color.white.opacity(0.08), CNTheme.violet.opacity(0.16)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    ),
+                    lineWidth: 0.75
+                )
+        )
+    }
+
+    private func stage(
+        _ index: Int,
+        _ title: String,
+        _ detail: String,
+        _ symbol: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        let isComplete = completed[index]
+        let isCurrent = index == currentIndex && !isComplete
+        let tint = isComplete ? CNTheme.success : (isCurrent ? CNTheme.accent : Color.secondary)
+        return Button(action: action) {
+            HStack(spacing: 9) {
+                ZStack {
+                    Circle()
+                        .fill(tint.opacity(isCurrent ? 0.18 : 0.10))
+                    Image(systemName: isComplete ? "checkmark" : symbol)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(tint)
+                }
+                .frame(width: 30, height: 30)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(isCurrent || isComplete ? Color.primary : Color.secondary)
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(isCurrent ? CNTheme.accent.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityLabel("\(title)，\(detail)，\(isComplete ? "已完成" : (isCurrent ? "当前步骤" : "尚未完成"))")
+    }
+
+    private func connector(after index: Int) -> some View {
+        Capsule()
+            .fill(completed[index] ? CNTheme.success.opacity(0.45) : Color.secondary.opacity(0.14))
+            .frame(width: 18, height: 2)
+    }
+
+    private func openDisk() {
+        store.selection = .analyze
+        if !store.diskHasScanned { Task { await store.analyze() } }
+    }
+
+    private func openCleanup() {
+        store.selection = .cleanup
+        if !store.cleanupHasScanned { Task { await store.scanCleanup() } }
     }
 }
 

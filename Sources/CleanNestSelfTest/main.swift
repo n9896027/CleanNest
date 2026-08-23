@@ -715,7 +715,8 @@ func runEvolutionMemoryTests() throws {
     try check(memory.cleanupPreference(for: candidate) == .preferKeep, "安全清理记录不应覆盖用户的明确保留偏好")
 
     memory.clearExplicitPreference(for: candidate)
-    try check(memory.cleanupPreference(for: candidate) == .preferCleanup, "撤销明确偏好后应保留成功清理证据")
+    try check(memory.cleanupPreference(for: candidate) == nil, "撤销明确偏好后，成功记录不应自动变成清理规则")
+    try check(memory.ruleProposal(for: candidate)?.state == .pending, "成功清理应只生成待审核规则")
     try check(memory.events.first?.title == "已撤销清理偏好", "撤销清理偏好没有留下可审计记录")
     memory.recordModelFeedback(
         modelID: "/Users/private-selftest/models/Qwen-27B",
@@ -738,7 +739,8 @@ func runEvolutionMemoryTests() throws {
     try check(!persistedText.contains("/Users/private-selftest"), "本机学习文件泄露了模型完整路径")
 
     let loaded = try EvolutionMemoryPersistence.load(from: memoryURL)
-    try check(loaded.cleanupPreference(for: candidate) == .preferCleanup, "本机学习偏好持久化往返失败")
+    try check(loaded.cleanupPreference(for: candidate) == nil, "未审核规则不应在持久化后自动生效")
+    try check(loaded.ruleProposal(for: candidate)?.state == .pending, "待审核规则持久化往返失败")
     try check(loaded.modelFeedbackCount == 2, "模型评价持久化往返失败")
 }
 
@@ -795,6 +797,46 @@ func runAppUpdatePolicyTests() throws {
     } catch GitHubReleaseParsingError.untrustedReleaseURL {
         // Expected: only the official repository's HTTPS release page may be opened.
     }
+}
+
+func runV05BoundaryTests() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("CleanNestV05Boundary-\(UUID().uuidString)", isDirectory: true)
+    let cacheURL = root.appendingPathComponent("disk-scan-cache.json")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let rootID = DiskEvidenceIndexer.fingerprint(for: root)
+    let entry = DiskScanCacheEntry(
+        id: "entry-hash",
+        name: "Caches",
+        metadataSignature: "metadata-hash",
+        allocatedBytes: 4_096,
+        isDirectory: true,
+        sampledAt: Date()
+    )
+    var cache = DiskScanCacheStore()
+    cache.replaceRoot(DiskScanCacheRoot(id: rootID, generatedAt: Date(), entries: [entry]))
+    try DiskScanCachePersistence.save(cache, to: cacheURL)
+    let rawCache = try String(contentsOf: cacheURL, encoding: .utf8)
+    try check(!rawCache.contains(root.path), "增量索引泄露了绝对根路径")
+    let loadedCache = try DiskScanCachePersistence.load(from: cacheURL)
+    let loadedRoot = loadedCache.root(for: root)
+    try check(loadedRoot?.entries.map(\.id) == [entry.id], "增量索引持久化往返失败")
+    try check(loadedRoot?.entries.first?.metadataSignature == entry.metadataSignature, "增量索引签名持久化失败")
+
+    let desktopPower = PowerSourceProbe.interpret(output: "Now drawing from 'AC Power'\n")
+    try check(desktopPower.availability == .noInternalBattery, "台式 Mac 无电池状态被误判")
+    try check(desktopPower.detail.contains("不需要授予文件访问权限"), "无电池状态没有说明权限边界")
+
+    let benchmark = LocalAIBenchmarkResult(
+        modelID: "Qwen3.8-27B-Uncensored-8bit",
+        firstTokenMilliseconds: 250,
+        totalMilliseconds: 500,
+        outputTokens: 2,
+        outputCharacters: 2
+    )
+    try check(benchmark.tokensPerSecond == 4, "模型最小测速吞吐计算错误")
 }
 
 do {
@@ -929,6 +971,7 @@ do {
     try runLocalModelCatalogTests()
     try runEvolutionMemoryTests()
     try runAppUpdatePolicyTests()
+    try runV05BoundaryTests()
 
     let privateHome = URL(fileURLWithPath: "/Users/private-selftest", isDirectory: true)
 

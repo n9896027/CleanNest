@@ -6,11 +6,13 @@ import Foundation
 enum SBOMError: LocalizedError {
     case usage
     case missingInput(String)
+    case missingVersion
 
     var errorDescription: String? {
         switch self {
         case .usage: return "usage: SBOMGenerator.swift <app-bundle> <output.spdx.json>"
         case .missingInput(let path): return "input bundle does not exist: \(path)"
+        case .missingVersion: return "input bundle does not contain a valid CFBundleShortVersionString"
         }
     }
 }
@@ -25,6 +27,13 @@ func run() throws {
     let output = URL(fileURLWithPath: CommandLine.arguments[2]).standardizedFileURL
     guard FileManager.default.fileExists(atPath: root.path) else {
         throw SBOMError.missingInput(root.path)
+    }
+    let infoURL = root.appendingPathComponent("Contents/Info.plist")
+    let infoData = try Data(contentsOf: infoURL)
+    guard let info = try PropertyListSerialization.propertyList(from: infoData, format: nil) as? [String: Any],
+          let appVersion = info["CFBundleShortVersionString"] as? String,
+          !appVersion.isEmpty else {
+        throw SBOMError.missingVersion
     }
 
     let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
@@ -73,7 +82,7 @@ func run() throws {
         "spdxVersion": "SPDX-2.3",
         "dataLicense": "CC0-1.0",
         "SPDXID": "SPDXRef-DOCUMENT",
-        "name": "CleanNest-0.4.0",
+        "name": "CleanNest-\(appVersion)",
         "documentNamespace": "https://github.com/n9896027/CleanNest/sbom/\(namespaceHash)",
         "creationInfo": [
             "created": formatter.string(from: Date()),
@@ -82,7 +91,7 @@ func run() throws {
         "packages": [[
             "name": "CleanNest",
             "SPDXID": "SPDXRef-Package-CleanNest",
-            "versionInfo": "0.4.0",
+            "versionInfo": appVersion,
             "downloadLocation": "NOASSERTION",
             "filesAnalyzed": true,
             "licenseConcluded": "MIT",

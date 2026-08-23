@@ -94,21 +94,7 @@ private struct SidebarView: View {
 
     private var brand: some View {
         HStack(spacing: 11) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [CNTheme.cyan, CNTheme.accent, CNTheme.accentStrong],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                Image(systemName: "leaf.fill")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 40, height: 40)
-            .shadow(color: CNTheme.accent.opacity(0.26), radius: 12, y: 5)
+            CNNestMark(size: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text("CleanNest")
                     .font(.system(size: 16, weight: .semibold, design: .rounded))

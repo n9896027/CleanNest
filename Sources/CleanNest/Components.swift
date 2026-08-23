@@ -38,7 +38,7 @@ struct PageHeader<Accessory: View>: View {
                         )
                     )
                     .frame(width: 18, height: 3)
-                Text(CNL10n.string("本机工作台"))
+                Text(CNL10n.string("洞察闭环 · 只在本机"))
                     .font(.system(size: 10, weight: .semibold))
                     .tracking(0.8)
                     .foregroundStyle(.tertiary)

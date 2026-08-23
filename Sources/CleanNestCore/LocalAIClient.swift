@@ -86,6 +86,94 @@ public final class MLXOpenAIClient: @unchecked Sendable {
         )
     }
 
+    /// Runs a tiny, user-triggered streaming request to measure this exact
+    /// loopback service/model pair. It sends no file metadata.
+    public func benchmark(modelID rawModelID: String) async throws -> LocalAIBenchmarkResult {
+        let modelID = rawModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !modelID.isEmpty,
+              modelID.count <= 512,
+              !(modelID as NSString).isAbsolutePath,
+              !modelID.lowercased().hasPrefix("file://"),
+              modelID.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+            throw LocalAIError.modelUnavailable("API 模型必须使用 oMLX 列出的短名，不能使用文件路径")
+        }
+        let body = ChatRequest(
+            model: modelID,
+            messages: [ChatMessage(role: "user", content: "只输出 OK")],
+            temperature: 0,
+            maxTokens: 8,
+            stream: true,
+            chatTemplateArguments: ChatTemplateArguments(enableThinking: false),
+            streamOptions: ChatStreamOptions(includeUsage: true)
+        )
+        var request = URLRequest(url: endpoint.chatCompletionsURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+        do {
+            let (bytes, response) = try await session.bytes(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw LocalAIError.serviceUnavailable("没有收到 HTTP 响应")
+            }
+            guard (200...299).contains(http.statusCode) else {
+                throw LocalAIError.requestFailed("HTTP \(http.statusCode)")
+            }
+
+            var firstTokenAt: ContinuousClock.Instant?
+            var output = ""
+            var outputTokens: Int?
+            var receivedBytes = 0
+            for try await line in bytes.lines {
+                try Task.checkCancellation()
+                receivedBytes += line.utf8.count
+                guard receivedBytes <= 128 * 1_024 else {
+                    throw LocalAIError.invalidResponse("测速响应超过允许大小")
+                }
+                guard line.hasPrefix("data:") else { continue }
+                let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                if payload == "[DONE]" { break }
+                guard let data = payload.data(using: .utf8),
+                      let chunk = try? JSONDecoder().decode(ChatStreamResponse.self, from: data) else {
+                    continue
+                }
+                if let tokens = chunk.usage?.completionTokens { outputTokens = tokens }
+                for choice in chunk.choices {
+                    let piece = choice.delta.content ?? choice.delta.reasoningContent ?? ""
+                    guard !piece.isEmpty else { continue }
+                    if firstTokenAt == nil { firstTokenAt = clock.now }
+                    output.append(contentsOf: piece)
+                    guard output.count <= 512 else {
+                        throw LocalAIError.invalidResponse("测速输出超过允许大小")
+                    }
+                }
+            }
+            guard let firstTokenAt, !output.isEmpty else {
+                throw LocalAIError.invalidResponse("测速没有收到可见输出")
+            }
+            let finishedAt = clock.now
+            return LocalAIBenchmarkResult(
+                modelID: modelID,
+                firstTokenMilliseconds: Self.milliseconds(startedAt.duration(to: firstTokenAt)),
+                totalMilliseconds: Self.milliseconds(startedAt.duration(to: finishedAt)),
+                outputTokens: outputTokens,
+                outputCharacters: output.count
+            )
+        } catch let error as LocalAIError {
+            throw error
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError {
+            throw LocalAIError.serviceUnavailable(error.localizedDescription)
+        } catch {
+            throw LocalAIError.requestFailed(error.localizedDescription)
+        }
+    }
+
     private func requestAnalysisContent(
         prompt: String,
         modelID: String,
@@ -153,6 +241,11 @@ public final class MLXOpenAIClient: @unchecked Sendable {
             throw LocalAIError.invalidResponse("服务响应超过允许大小")
         }
         return data
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Double {
+        let parts = duration.components
+        return Double(parts.seconds) * 1_000 + Double(parts.attoseconds) / 1_000_000_000_000_000
     }
 
     private static let analysisInstructions = """
@@ -265,11 +358,21 @@ private struct ChatRequest: Encodable {
     let maxTokens: Int
     let stream: Bool
     let chatTemplateArguments: ChatTemplateArguments
+    var streamOptions: ChatStreamOptions? = nil
 
     enum CodingKeys: String, CodingKey {
         case model, messages, temperature, stream
         case maxTokens = "max_tokens"
         case chatTemplateArguments = "chat_template_kwargs"
+        case streamOptions = "stream_options"
+    }
+}
+
+private struct ChatStreamOptions: Encodable {
+    let includeUsage: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case includeUsage = "include_usage"
     }
 }
 
@@ -302,4 +405,31 @@ private struct ChatChoice: Decodable {
 
 private struct ChatResponseMessage: Decodable {
     let content: String?
+}
+
+private struct ChatStreamResponse: Decodable {
+    let choices: [ChatStreamChoice]
+    let usage: ChatUsage?
+}
+
+private struct ChatStreamChoice: Decodable {
+    let delta: ChatStreamDelta
+}
+
+private struct ChatStreamDelta: Decodable {
+    let content: String?
+    let reasoningContent: String?
+
+    enum CodingKeys: String, CodingKey {
+        case content
+        case reasoningContent = "reasoning_content"
+    }
+}
+
+private struct ChatUsage: Decodable {
+    let completionTokens: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case completionTokens = "completion_tokens"
+    }
 }
