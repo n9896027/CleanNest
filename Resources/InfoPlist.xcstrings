@@ -1,0 +1,13 @@
+{
+  "sourceLanguage" : "zh-Hans",
+  "strings" : {
+    "NSAppDataUsageDescription" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "CleanNest reads file names, directory structure, and disk usage only when you explicitly analyze app-data folders. It does not read file contents or delete automatically." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "CleanNest 仅在你主动分析应用数据目录时读取文件名、目录结构与占用空间，不读取文件内容，也不会自动删除。" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "CleanNest 僅在你主動分析 App 資料目錄時讀取檔名、目錄結構與佔用空間，不讀取檔案內容，也不會自動刪除。" } }
+      }
+    }
+  },
+  "version" : "1.0"
+}

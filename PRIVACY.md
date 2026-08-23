@@ -1,6 +1,6 @@
 # 隐私说明
 
-最后更新：2026-08-03。
+最后更新：2026-08-23。
 
 CleanNest 是本机 macOS 工具。当前开源版本没有账号系统、广告、遥测、崩溃上报或项目自建云服务。
 
@@ -19,21 +19,27 @@ CleanNest 是本机 macOS 工具。当前开源版本没有账号系统、广告
 
 - 设置项由 macOS `UserDefaults` 保存，包括开发者模式、本机 AI 开关、回环服务地址以及用户选择的本地路径。
 - 最近最多 100 条操作结果保存于用户 `Application Support/CleanNest/activity.json`。
+- 每 60 秒系统指标保存于 `Application Support/CleanNest/metrics.sqlite3`（SQLite WAL），默认保留 30 天，可改为 7、30、90 或 365 天并随时清空。
+- 最近一次磁盘分析的脱敏、元数据证据保存于 `disk-evidence.json`；最近一次清理候选的 token 化预览保存于 `cleanup-preview.json`。两者不包含文件正文。
+- 用户明确的清理 / 保留偏好、成功清理次数和模型评价保存于 `evolution-memory.json`。它只使用候选项类型、规范化名称和不可逆路径指纹，不保存候选项完整路径、文件正文或模型完整路径；可在“本机学习”页清空。
 - 模型、Mole 与扫描结果不会上传到 CleanNest 服务器；项目不存在这样的服务器。
 
-卸载 App 不一定自动移除上述偏好和活动记录。可在 Finder 的“前往文件夹”中打开 `~/Library/Application Support/CleanNest` 后删除活动记录；偏好由 macOS 管理，通常位于用户 Library 的 Preferences 范围。
+卸载 App 不一定自动移除上述偏好和本机记录。历史指标可在设置页清空；其他 CleanNest 数据可在退出 App 后，从 `~/Library/Application Support/CleanNest` 删除。偏好由 macOS 管理，通常位于用户 Library 的 Preferences 范围。
 
 ## 网络访问
 
 - 本机 AI 客户端只接受 `http://127.0.0.1:<端口>/v1`，使用临时会话，不保存 Cookie/凭据、不使用代理并拒绝 HTTP 重定向。
+- 只有在用户点击“检查更新”时，CleanNest 才通过临时、无 Cookie、无登录令牌的 HTTPS 会话请求 GitHub 公开的最新正式 Release。请求的 User-Agent 包含当前 App 版本；GitHub 会看到 IP 地址等常规网络元数据，但不会收到文件清单、扫描结果、本机模型信息或 CleanNest 历史记录。App 只比较版本并打开经过官方仓库校验的发布页，不会自动下载或安装更新。
 - 点击 Mole 项目链接会由浏览器打开 GitHub。
 - 在 App 内选择 Homebrew 安装或更新 Mole 时，Homebrew 会访问自己的软件源；其网络与隐私行为由 Homebrew 和 Mole 项目负责。
 - CleanNest 不会自动下载 MLX 模型。你自行使用的模型仓库、Python 包管理器或本机服务有各自的条款。
+- 内置 MCP 不联网，只通过本机标准输入/输出响应。启用后，你选择的 MCP 客户端可以读取上述有界指标和脱敏证据；CleanNest 无法控制该客户端之后如何处理数据。
 
 ## 删除与进程操作
 
 - 原生文件处理默认移入 macOS 废纸篓，是否清空由用户决定。
 - AI 结果不能勾选项目、执行命令、关闭进程或删除文件。
+- 本机学习只调整后续候选项的显示顺序与解释标签，不会自动选择、删除、下载模型或修改 App 源码。
 - 关闭进程前会显示确认，并复核进程身份；系统与关键进程受保护。
 
 如发现实现与本文不一致，请按 [SECURITY.md](SECURITY.md) 私密报告可能的数据泄露，普通文案或界面问题可提交 Issue。

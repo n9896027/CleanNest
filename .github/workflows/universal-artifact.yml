@@ -1,0 +1,147 @@
+name: Universal macOS artifact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: universal-artifact-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  compile:
+    name: Compile ${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: arm64
+            runner: macos-15
+          - architecture: x86_64
+            runner: macos-15-intel
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Confirm runner architecture
+        run: |
+          test "$(uname -m)" = "${{ matrix.architecture }}"
+          swift --version
+
+      - name: Test core and protocol boundaries
+        run: |
+          swift test
+          swift run CleanNestSelfTest
+
+      - name: Compile release binaries
+        run: |
+          swift build -c release --product CleanNest
+          swift build -c release --product CleanNestMCP
+          bin_dir="$(swift build -c release --show-bin-path)"
+          mkdir -p artifact
+          install -m 755 "$bin_dir/CleanNest" artifact/CleanNest
+          install -m 755 "$bin_dir/CleanNestMCP" artifact/CleanNestMCP
+          test "$(lipo -archs artifact/CleanNest)" = "${{ matrix.architecture }}"
+          test "$(lipo -archs artifact/CleanNestMCP)" = "${{ matrix.architecture }}"
+
+      - name: Upload architecture binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cleannest-${{ matrix.architecture }}-binaries
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 7
+
+  assemble:
+    name: Assemble and attest Universal 2 app
+    needs: compile
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download arm64 binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cleannest-arm64-binaries
+          path: architecture/arm64
+
+      - name: Download x86_64 binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cleannest-x86_64-binaries
+          path: architecture/x86_64
+
+      - name: Assemble Universal 2 binaries
+        run: |
+          mkdir -p universal
+          lipo -create architecture/arm64/CleanNest architecture/x86_64/CleanNest -output universal/CleanNest
+          lipo -create architecture/arm64/CleanNestMCP architecture/x86_64/CleanNestMCP -output universal/CleanNestMCP
+          chmod 755 universal/CleanNest universal/CleanNestMCP
+          test "$(lipo -archs universal/CleanNest)" = "x86_64 arm64"
+          test "$(lipo -archs universal/CleanNestMCP)" = "x86_64 arm64"
+
+      - name: Build ad-hoc signed app bundle
+        env:
+          CLEANNEST_CODESIGN_IDENTITY: "-"
+          CLEANNEST_PREBUILT_EXECUTABLE: ${{ github.workspace }}/universal/CleanNest
+          CLEANNEST_PREBUILT_MCP_EXECUTABLE: ${{ github.workspace }}/universal/CleanNestMCP
+        run: ./build.sh release
+
+      - name: Verify bundle and embedded MCP
+        run: |
+          test "$(lipo -archs build/CleanNest.app/Contents/MacOS/CleanNest)" = "x86_64 arm64"
+          test "$(lipo -archs build/CleanNest.app/Contents/MacOS/CleanNestMCP)" = "x86_64 arm64"
+          codesign --verify --strict --verbose=2 build/CleanNest.app
+          codesign --verify --strict --verbose=2 build/CleanNest.app/Contents/MacOS/CleanNestMCP
+          test -f build/CleanNest.app/Contents/Resources/en.lproj/Localizable.strings
+          test -f build/CleanNest.app/Contents/Resources/zh-Hans.lproj/Localizable.strings
+          test -f build/CleanNest.app/Contents/Resources/zh-Hant.lproj/Localizable.strings
+
+      - name: Package checksums and SPDX SBOM
+        run: |
+          ditto -c -k --keepParent build/CleanNest.app CleanNest-0.4.0-universal2-macos.zip
+          swift Tools/SBOMGenerator.swift build/CleanNest.app CleanNest-0.4.0.spdx.json
+          jq empty CleanNest-0.4.0.spdx.json
+          shasum -a 256 CleanNest-0.4.0-universal2-macos.zip CleanNest-0.4.0.spdx.json > SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            CleanNest-0.4.0-universal2-macos.zip
+            CleanNest-0.4.0.spdx.json
+            SHA256SUMS
+
+      - name: Upload verified Universal 2 artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: CleanNest-0.4.0-universal2-adhoc
+          path: |
+            CleanNest-0.4.0-universal2-macos.zip
+            CleanNest-0.4.0.spdx.json
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Explain trust boundary
+        run: |
+          printf '%s\n' '### Artifact trust boundary' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' '- Universal 2 (arm64 + x86_64)' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' '- Ad-hoc signed and provenance-attested' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' '- Not Developer ID signed or Apple-notarized; this workflow does not create a public Release' >> "$GITHUB_STEP_SUMMARY"

@@ -60,7 +60,7 @@ private struct ActivityRow: View {
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
-                    Text(entry.title)
+                    Text(CNL10n.string(entry.title))
                         .font(.subheadline.weight(.semibold))
                     StatusPill(
                         text: entry.outcome.rawValue,

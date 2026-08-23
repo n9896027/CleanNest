@@ -13,16 +13,43 @@ struct PageHeader<Accessory: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(title)
-                    .font(.system(size: 27, weight: .semibold, design: .rounded))
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 16) {
+                titleBlock
+                Spacer(minLength: 12)
+                accessory
             }
-            Spacer(minLength: 12)
-            accessory
+            VStack(alignment: .leading, spacing: 13) {
+                titleBlock
+                accessory
+            }
+        }
+    }
+
+    private var titleBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [CNTheme.cyan, CNTheme.accent],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: 18, height: 3)
+                Text(CNL10n.string("本机工作台"))
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.8)
+                    .foregroundStyle(.tertiary)
+            }
+            Text(CNL10n.string(title))
+                .font(.system(size: 34, weight: .semibold, design: .rounded))
+                .tracking(-0.72)
+            Text(CNL10n.string(subtitle))
+                .font(.system(size: 13.5))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: 680, alignment: .leading)
         }
     }
 }
@@ -36,30 +63,85 @@ extension PageHeader where Accessory == EmptyView {
 struct SurfaceCard<Content: View>: View {
     let title: String?
     let symbol: String?
+    let prominence: CNSurfaceProminence
+    let tint: Color
     @ViewBuilder let content: Content
 
-    init(title: String? = nil, symbol: String? = nil, @ViewBuilder content: () -> Content) {
+    init(
+        title: String? = nil,
+        symbol: String? = nil,
+        prominence: CNSurfaceProminence = .standard,
+        tint: Color = CNTheme.accent,
+        @ViewBuilder content: () -> Content
+    ) {
         self.title = title
         self.symbol = symbol
+        self.prominence = prominence
+        self.tint = tint
         self.content = content()
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             if let title {
-                HStack(spacing: 7) {
+                HStack(spacing: 10) {
                     if let symbol {
-                        Image(systemName: symbol)
-                            .foregroundStyle(CNTheme.accent)
+                        CNIconTile(symbol: symbol, tint: tint, size: 29)
                     }
-                    Text(title)
-                        .font(.headline)
+                    Text(CNL10n.string(title))
+                        .font(.system(size: 15.5, weight: .semibold))
+                        .tracking(-0.08)
                 }
             }
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .cnCard()
+        .cnCard(prominence: prominence, tint: tint)
+    }
+}
+
+struct ContentSectionHeader<Accessory: View>: View {
+    let title: String
+    let detail: String?
+    let symbol: String
+    let tint: Color
+    @ViewBuilder let accessory: Accessory
+
+    init(
+        _ title: String,
+        detail: String? = nil,
+        symbol: String,
+        tint: Color = CNTheme.accent,
+        @ViewBuilder accessory: () -> Accessory
+    ) {
+        self.title = title
+        self.detail = detail
+        self.symbol = symbol
+        self.tint = tint
+        self.accessory = accessory()
+    }
+
+    var body: some View {
+        HStack(spacing: 11) {
+            CNIconTile(symbol: symbol, tint: tint, size: 32)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(CNL10n.string(title))
+                    .font(.system(size: 15, weight: .semibold))
+                if let detail {
+                    Text(CNL10n.string(detail))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 12)
+            accessory
+        }
+    }
+}
+
+extension ContentSectionHeader where Accessory == EmptyView {
+    init(_ title: String, detail: String? = nil, symbol: String, tint: Color = CNTheme.accent) {
+        self.init(title, detail: detail, symbol: symbol, tint: tint) { EmptyView() }
     }
 }
 
@@ -71,22 +153,19 @@ struct MetricCard: View {
     var tint: Color = CNTheme.accent
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Image(systemName: symbol)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(tint)
-                    .frame(width: 30, height: 30)
-                    .background(tint.opacity(0.11), in: RoundedRectangle(cornerRadius: 8))
+                CNIconTile(symbol: symbol, tint: tint, size: 34)
                 Spacer()
-                Text(label)
-                    .font(.caption)
+                Text(CNL10n.string(label))
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
             }
             Text(value)
-                .font(.system(size: 24, weight: .semibold, design: .rounded))
+                .font(.system(size: 26, weight: .semibold, design: .rounded))
+                .tracking(-0.25)
                 .monospacedMetric()
-            Text(detail)
+            Text(CNL10n.string(detail))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -111,12 +190,18 @@ struct CapacityBar: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.secondary.opacity(0.13))
                 Capsule()
-                    .fill(tint)
+                    .fill(
+                        LinearGradient(
+                            colors: [tint, tint.opacity(0.72)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
                     .frame(width: max(6, proxy.size.width * fraction))
             }
         }
         .frame(height: 8)
-        .accessibilityLabel("磁盘已使用 \(Int(fraction * 100)) 百分比")
+        .accessibilityLabel(CNL10n.format("磁盘已使用 %d 百分比", Int(fraction * 100)))
     }
 }
 
@@ -139,13 +224,50 @@ struct StatusPill: View {
     var body: some View {
         HStack(spacing: 5) {
             if let symbol { Image(systemName: symbol) }
-            Text(text)
+            Text(CNL10n.string(text))
         }
         .font(.caption.weight(.medium))
         .foregroundStyle(tint)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(tint.opacity(0.1), in: Capsule())
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background {
+            Capsule().fill(.ultraThinMaterial)
+            Capsule().fill(tint.opacity(0.105))
+        }
+        .overlay(Capsule().stroke(tint.opacity(0.18), lineWidth: 0.65))
+    }
+}
+
+struct AIFeedbackControl: View {
+    let feedback: Bool?
+    let onSelect: (Bool) -> Void
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Text(feedback == nil ? "这次建议有帮助吗？" : "已记住本次评价")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button {
+                onSelect(true)
+            } label: {
+                Label("有帮助", systemImage: "hand.thumbsup")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(feedback == true ? CNTheme.success : nil)
+            .disabled(feedback != nil)
+
+            Button {
+                onSelect(false)
+            } label: {
+                Label("不准确", systemImage: "hand.thumbsdown")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(feedback == false ? CNTheme.warning : nil)
+            .disabled(feedback != nil)
+        }
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -183,12 +305,12 @@ struct InlineBanner: View {
                 .font(.system(size: 17))
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.subheadline.weight(.semibold))
-                Text(detail).font(.caption).foregroundStyle(.secondary)
+                Text(CNL10n.string(title)).font(.subheadline.weight(.semibold))
+                Text(CNL10n.string(detail)).font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 12)
             if let actionTitle, let action {
-                Button(actionTitle, action: action)
+                Button(action: action) { Text(CNL10n.string(actionTitle)) }
                     .controlSize(.small)
             }
         }
@@ -214,23 +336,43 @@ struct EmptyPanel: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: symbol)
-                .font(.system(size: 34, weight: .light))
-                .foregroundStyle(CNTheme.accent)
-            Text(title).font(.headline)
-            Text(detail)
+        VStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(CNTheme.accent.opacity(0.13))
+                    .frame(width: 96, height: 96)
+                    .blur(radius: 18)
+                Circle()
+                    .stroke(CNTheme.accent.opacity(0.16), lineWidth: 1)
+                    .frame(width: 82, height: 82)
+                Circle()
+                    .fill(.ultraThinMaterial)
+                    .frame(width: 62, height: 62)
+                    .overlay(Circle().stroke(Color.white.opacity(0.13), lineWidth: 0.7))
+                Image(systemName: symbol)
+                    .font(.system(size: 28, weight: .medium))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [CNTheme.cyan, CNTheme.accent],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+            Text(CNL10n.string(title))
+                .font(.system(size: 17, weight: .semibold))
+            Text(CNL10n.string(detail))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
             if let actionTitle, let action {
-                Button(actionTitle, action: action)
+                Button(action: action) { Text(CNL10n.string(actionTitle)) }
                     .buttonStyle(.borderedProminent)
                     .padding(.top, 4)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 300)
+        .frame(maxWidth: .infinity, minHeight: 310)
         .cnCard()
     }
 }
@@ -274,8 +416,15 @@ struct OperationBanner: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(tint.opacity(0.08))
-            .overlay(alignment: .top) { Divider() }
+            .background {
+                ZStack {
+                    Rectangle().fill(.ultraThinMaterial)
+                    Rectangle().fill(tint.opacity(0.075))
+                }
+            }
+            .overlay(alignment: .top) {
+                Rectangle().fill(tint.opacity(0.22)).frame(height: 0.7)
+            }
         }
     }
 }
@@ -297,7 +446,7 @@ struct ReviewBar: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button(actionTitle, action: action)
+            Button(action: action) { Text(CNL10n.string(actionTitle)) }
                 .buttonStyle(.borderedProminent)
                 .disabled(disabled)
         }

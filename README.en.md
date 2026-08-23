@@ -4,7 +4,7 @@
 
 **See where your Mac storage went, then reclaim only what is genuinely safe to remove.**
 
-A native macOS app that brings together Mole and optional on-device MLX/Gemma analysis. Core scans and model analysis stay on your Mac, and files go to the Trash by default.
+A native macOS app that brings together Mole and a replaceable on-device MLX model. Core scans and model analysis stay on your Mac, and files go to the Trash by default.
 
 [简体中文](README.md) · **English** · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md)
 
@@ -37,18 +37,23 @@ CleanNest turns Mac cleanup from a black-box button into an understandable, reve
 | Rebuildable caches are mixed with downloads and personal data | Separate low-risk generated data from items that require review or should be kept |
 | Activity Monitor is too technical | Explain memory pressure, swap usage, and high-memory processes before you decide whether to quit anything |
 | App uninstallers leave files behind | Preview the app and related files matched by its exact Bundle ID |
-| You do not want a file inventory sent to a cloud model | Optionally use MLX/Gemma on the Mac with a deliberately limited, redacted metadata snapshot |
+| You do not want a file inventory sent to a cloud model | Optionally use your chosen MLX model on the Mac with a deliberately limited, redacted metadata snapshot |
 
 ## Core capabilities
 
 - **Storage cleanup** — scan developer caches, logs, installers, and other candidates; select items individually and move them to the macOS Trash.
 - **Disk browser** — drill into folder sizes and optionally ask a local model to explain the current directory composition.
-- **System status** — show CPU, memory, disk, battery, temperature, and health information, including plain-language memory-pressure and process guidance.
+- **Disk evidence** — cancellable scans, breadcrumb drill-down, a native treemap, and deterministic explanations of purpose, provenance, type, age, regeneration, and cleanup boundaries.
+- **System status** — show CPU, memory, disk, battery, temperature, and health information, with 60-second local history plus plain-language memory-pressure and process guidance.
 - **Process management** — request a normal process quit only after identity checks, system-process protection, and user confirmation; CleanNest does not automatically force-quit it.
 - **App uninstall** — browse installed apps and preview the app bundle plus related files matched by exact Bundle ID.
 - **System maintenance** — run selected low-risk maintenance tasks and keep their results in one activity history.
+- **Local learning** — remember your explicit “prioritize cleanup / prioritize keeping” choices and model feedback; future scans only reorder and explain, never auto-select or delete.
 - **Mole integration** — discover `mo` installed through Apple Silicon or Intel Homebrew, or install/update Mole from inside the app.
+- **Update checks** — manually query the latest official GitHub Release from the app menu or About page; CleanNest only compares versions and opens a validated repository page, never silently downloading or installing.
 - **Native macOS experience** — SwiftUI/AppKit interface, light and dark appearance, permission recovery guidance, activity history, and a safe demo mode.
+- **Read-only MCP** — expose bounded, redacted local evidence to a trusted AI client over bundled stdio only; no HTTP listener, deletion, process control, or settings tools.
+- **Three-language resources** — a String Catalog provides English, Simplified Chinese, and Traditional Chinese for core navigation and primary screens.
 
 ## Download and run
 
@@ -70,9 +75,9 @@ open build/CleanNest.app
 
 After the one-time source build, regular scanning, analysis, cleanup, maintenance, and Mole installation are available in the graphical app.
 
-The repository currently publishes source only. Do not trust third-party downloads claiming to be an official CleanNest build.
+There is still no official Developer ID-signed and Apple-notarized download. Maintainers can manually create an ad-hoc-signed Universal 2 CI verification artifact with an SBOM, checksums, and provenance, but the workflow does not publish a Release and the artifact is not a trusted end-user installer. Do not trust third-party downloads claiming otherwise.
 
-## Optional on-device MLX / Gemma
+## Optional, replaceable on-device MLX model
 
 CleanNest can connect to a local `mlx_lm.server` to add purpose explanations, risk notes, and a suggested review order to cleanup candidates and disk directories. The model is an explanation layer, not the cleanup engine. Deterministic scans still work without AI, and an AI failure does not change existing results.
 
@@ -83,8 +88,9 @@ Privacy and execution boundaries:
 - Disk explanations use a bounded sample of direct child items rather than the full directory tree.
 - The Swift client strictly validates fields, enums, response size, and item identity.
 - AI cannot expand a scan, select an item, quit a process, run a command, or delete a file.
+- Local learning stores only the item category, normalized display name, a one-way path fingerprint, successful-cleanup count, and model feedback. It excludes full candidate paths and file contents, and can be reviewed or cleared in the app.
 
-In the current Chinese UI, open **Settings (`设置`) → Local AI Analysis (`本机 AI 分析`)** and select an existing MLX model directory plus `mlx_lm.server`. CleanNest can reuse a compatible loopback service or start the selected local server. It does not automatically download large models or accept model terms on your behalf.
+In **Settings (`设置`) → Local AI Analysis (`本机 AI 分析`)**, CleanNest can reuse an existing loopback service such as oMLX or launch the selected `mlx_lm.server`. It reads the exact API model ID from `/v1/models` and keeps that short name separate from the local folder used for self-launch, so a filesystem path is never sent to oMLX as `model`. Common folders, including `~/.omlx/models`, are scanned with strict bounds. CleanNest never downloads a large model automatically, changes DFlash settings, or accepts model terms on your behalf.
 
 ## Safety model
 
@@ -105,7 +111,10 @@ Detailed maintainer documentation is currently written primarily in Simplified C
 | Document | What it covers |
 | --- | --- |
 | [Permissions](docs/PERMISSIONS.md) | Full Disk Access, folder authorization, and why code identity affects macOS permissions |
-| [Local AI](docs/LOCAL_AI.md) | MLX/Gemma setup, transmitted metadata, and model safety boundaries |
+| [Local AI](docs/LOCAL_AI.md) | MLX model discovery, switching, transmitted metadata, and safety boundaries |
+| [Metric history](docs/METRICS.md) | 60-second sampling, SQLite WAL, retention, and field boundaries |
+| [Read-only MCP](docs/MCP.md) | Local stdio configuration, seven tools, and the read-only trust boundary |
+| [Threat model](docs/THREAT_MODEL.md) | Protected assets, attack surfaces, controls, and exclusions |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Mole, permissions, AI, build, process, and battery-status issues |
 | [Architecture](docs/ARCHITECTURE.md) | Modules, data flow, and dangerous-operation boundaries |
 | [Privacy](PRIVACY.md) | Local data, network access, retention, and removal |
@@ -117,7 +126,7 @@ Detailed maintainer documentation is currently written primarily in Simplified C
 
 CleanNest is an independently developed graphical client. It is not the official Mole app and does not bundle the Mole binary. It invokes the user's separately installed CLI as an isolated local process and keeps attribution visible in Settings.
 
-[Mole](https://github.com/tw93/Mole) is maintained by tw93 and contributors under GPL-3.0. CleanNest's own source code is available under the [MIT License](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for MLX and Gemma details.
+[Mole](https://github.com/tw93/Mole) is maintained by tw93 and contributors under GPL-3.0. CleanNest's own source code is available under the [MIT License](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for MLX and user-selected model details.
 
 ## Development and verification
 
@@ -140,6 +149,6 @@ Preview the UI with synthetic data only:
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-The current project version is **0.3.1 (Build 7)**. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
+The current project version is **0.4.0 (Build 8)**. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
 
-The app UI and detailed maintainer documentation are currently primarily in Simplified Chinese. This English README describes the product accurately, but it does not imply that full UI localization is complete.
+Core navigation and the main overview, disk, status, and settings surfaces now include English, Simplified Chinese, and Traditional Chinese resources. Some runtime diagnostics and path-dependent copy can still fall back to the source language; Japanese and Korean currently have localized project overviews rather than full UI resources.

@@ -43,6 +43,12 @@ jobs:
           CLEANNEST_CODESIGN_IDENTITY: "-"
         run: ./build.sh release
 
+      - name: Smoke-test bundled read-only MCP
+        run: |
+          response="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}' | build/CleanNest.app/Contents/MacOS/CleanNestMCP)"
+          test "$(printf '%s' "$response" | jq -r '.result.supportedVersions[0]')" = "2026-07-28"
+          test "$(printf '%s' "$response" | jq -r '.result.capabilities.tools.listChanged')" = "false"
+
   compatibility:
     name: Compatibility (${{ matrix.architecture }})
     runs-on: ${{ matrix.runner }}
@@ -71,4 +77,6 @@ jobs:
         run: swift test
 
       - name: Compile release executable
-        run: swift build -c release --product CleanNest
+        run: |
+          swift build -c release --product CleanNest
+          swift build -c release --product CleanNestMCP

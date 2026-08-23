@@ -54,6 +54,7 @@ public enum FileTree {
         let maximumEntries = 500_000
 
         for case let url as URL in enumerator {
+            if Task.isCancelled { break }
             visited += 1
             if visited > maximumEntries { break }
 

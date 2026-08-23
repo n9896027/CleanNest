@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-public enum MemoryPressureLevel: String, Equatable, Sendable {
+public enum MemoryPressureLevel: String, Codable, Equatable, Sendable {
     case normal
     case warning
     case critical

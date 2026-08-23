@@ -23,9 +23,13 @@ struct CleanupView: View {
         return CleanupKind.allCases.compactMap { kind -> (CleanupKind, [CleanupCandidate])? in
             let items = filteredCandidates.filter { $0.kind == kind }
             guard !items.isEmpty else { return nil }
-            guard store.cleanupAIAnalysis != nil else { return (kind, items) }
 
             let sorted = items.sorted { lhs, rhs in
+                let leftLearningRank = store.cleanupLearningRank(for: lhs)
+                let rightLearningRank = store.cleanupLearningRank(for: rhs)
+                if leftLearningRank != rightLearningRank {
+                    return leftLearningRank < rightLearningRank
+                }
                 let leftPriority = store.aiAdvice(for: lhs)?.priority ?? 4
                 let rightPriority = store.aiAdvice(for: rhs)?.priority ?? 4
                 if leftPriority != rightPriority { return leftPriority < rightPriority }
@@ -193,6 +197,12 @@ private struct CleanupRow: View {
     }
 
     private var aiAdvice: CleanupAIAdvice? { store.aiAdvice(for: candidate) }
+    private var learnedPreference: LearnedCleanupPreference? {
+        store.learnedCleanupPreference(for: candidate)
+    }
+    private var learningSignal: CleanupLearningSignal? {
+        store.cleanupLearningSignal(for: candidate)
+    }
 
     var body: some View {
         HStack(spacing: 11) {
@@ -234,6 +244,19 @@ private struct CleanupRow: View {
                     }
                     .padding(.top, 2)
                 }
+                if let learnedPreference {
+                    HStack(spacing: 7) {
+                        StatusPill(
+                            text: learnedPreference == .preferKeep ? "已学习：优先保留" : "已学习：优先清理",
+                            symbol: learnedPreference == .preferKeep ? "hand.raised" : "sparkles",
+                            style: learnedPreference == .preferKeep ? .warning : .success
+                        )
+                        Text(learningDetail)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 1)
+                }
             }
 
             Spacer(minLength: 10)
@@ -254,6 +277,15 @@ private struct CleanupRow: View {
             }
             .buttonStyle(.borderless)
             .help("在 Finder 中显示")
+
+            Menu {
+                learningMenuContent
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("记住你的清理偏好")
         }
         .padding(.vertical, 10)
         .contentShape(Rectangle())
@@ -264,7 +296,40 @@ private struct CleanupRow: View {
             Button(store.selectedCleanupIDs.contains(candidate.id) ? "取消选择" : "选择") {
                 store.toggleCleanup(candidate)
             }
+            Divider()
+            learningMenuContent
         }
+    }
+
+    @ViewBuilder
+    private var learningMenuContent: some View {
+        Button {
+            store.rememberCleanupPreference(candidate, preference: .preferCleanup)
+        } label: {
+            Label("记住：以后优先清理", systemImage: "sparkles")
+        }
+        Button {
+            store.rememberCleanupPreference(candidate, preference: .preferKeep)
+        } label: {
+            Label("记住：以后优先保留", systemImage: "hand.raised")
+        }
+        if learningSignal?.explicitPreference != nil {
+            Divider()
+            Button {
+                store.forgetCleanupPreference(candidate)
+            } label: {
+                Label("忘记这条偏好", systemImage: "arrow.uturn.backward")
+            }
+        }
+    }
+
+    private var learningDetail: String {
+        guard let signal = learningSignal else { return "" }
+        if signal.explicitPreference != nil { return "来自你的明确判断" }
+        if signal.successfulCleanupCount > 0 {
+            return "你曾安全清理 \(signal.successfulCleanupCount) 次"
+        }
+        return "本机记录"
     }
 
     private func aiAdviceLabel(_ advice: CleanupAIAdvice) -> String {
@@ -377,6 +442,9 @@ private struct LocalAIAdviceCard: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            AIFeedbackControl(feedback: store.cleanupAIFeedback) { helpful in
+                store.recordCleanupAIFeedback(helpful: helpful)
+            }
             ForEach(Array(analysis.cautions.enumerated()), id: \.offset) { _, caution in
                 Label(caution, systemImage: "exclamationmark.circle")
                     .font(.caption)
@@ -394,7 +462,7 @@ private struct LocalAIAdviceCard: View {
         case .disabled:
             return "本机 AI 已关闭；普通规则扫描仍可独立使用。"
         case .ready:
-            return "让本机 Gemma 根据类型、体积和修改时间补充清理顺序与风险说明。"
+            return "让你选择的本机模型根据类型、体积和修改时间补充清理顺序与风险说明。"
         case .checking:
             return "正在检测本机模型服务。"
         case .starting:

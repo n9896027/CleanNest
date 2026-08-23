@@ -28,6 +28,14 @@ final class LiveDiskAIResultBox: @unchecked Sendable {
     var result: Result<DiskAIAnalysis, Error>?
 }
 
+final class LiveAIProbeResultBox: @unchecked Sendable {
+    var result: Result<LocalAIProbeResult, Error>?
+}
+
+final class P0FoundationResultBox: @unchecked Sendable {
+    var result: Result<Void, Error>?
+}
+
 func processIsAlive(_ pid: pid_t) -> Bool {
     guard pid > 1 else { return false }
     errno = 0
@@ -328,14 +336,30 @@ func runLiveScannerTestIfRequested() throws {
     print("✓ 真实清理扫描：\(candidates.count) 项，\(String(format: "%.2f", elapsed)) 秒")
 }
 
+func runLiveModelCatalogTestIfRequested() throws {
+    guard ProcessInfo.processInfo.environment["CLEANNEST_LIVE_MODEL_CATALOG"] == "1" else { return }
+
+    let models = LocalModelCatalog().discover()
+    try check(!models.isEmpty, "真实模型目录扫描没有发现完整 MLX 模型")
+    for model in models {
+        let quantization = model.quantization ?? "量化未知"
+        print("✓ 本机模型：\(model.displayName) · \(quantization) · \(CleanNestFormatting.bytes(model.weightBytes))")
+    }
+}
+
 func runLiveMLXTestIfRequested() throws {
     guard ProcessInfo.processInfo.environment["CLEANNEST_LIVE_MLX"] == "1" else { return }
 
     let home = FileManager.default.homeDirectoryForCurrentUser
     let endpoint = ProcessInfo.processInfo.environment["CLEANNEST_MLX_ENDPOINT"]
         ?? "http://127.0.0.1:8080/v1"
-    let model = ProcessInfo.processInfo.environment["CLEANNEST_MLX_MODEL"]
-        ?? home.appendingPathComponent("Models/MLX/gemma-4-26b-a4b-it-8bit").path
+    guard let model = ProcessInfo.processInfo.environment["CLEANNEST_MLX_MODEL"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+        !model.isEmpty else {
+        throw SelfTestFailure.assertion(
+            "CLEANNEST_LIVE_MLX=1 时必须显式设置 CLEANNEST_MLX_MODEL，测试不会替你选择模型"
+        )
+    }
     let candidates = [
         CleanupCandidate(name: CleanupScanner.npmCacheDisplayName, url: home.appendingPathComponent(".npm/_cacache/content-v2"), kind: .packageManager, allocatedBytes: 5_331_611_648, modifiedAt: Date().addingTimeInterval(-3 * 86_400), isRecommended: false, detail: CleanupScanner.npmCacheDetail),
         CleanupCandidate(name: "DerivedData", url: home.appendingPathComponent("Library/Developer/Xcode/DerivedData/Demo"), kind: .developer, allocatedBytes: 4_820_000_000, modifiedAt: Date().addingTimeInterval(-22 * 86_400), isRecommended: true, detail: "Xcode 可按需重建"),
@@ -383,14 +407,54 @@ func runLiveMLXTestIfRequested() throws {
     print("✓ 真实 MLX：\(analysis.summary)")
 }
 
+func runLiveMLXProbeIfRequested() throws {
+    guard ProcessInfo.processInfo.environment["CLEANNEST_LIVE_MLX_PROBE"] == "1" else { return }
+
+    let endpoint = ProcessInfo.processInfo.environment["CLEANNEST_MLX_ENDPOINT"]
+        ?? "http://127.0.0.1:8080/v1"
+    let expectedModelID = ProcessInfo.processInfo.environment["CLEANNEST_MLX_MODEL"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    let semaphore = DispatchSemaphore(value: 0)
+    let box = LiveAIProbeResultBox()
+    Task.detached {
+        do {
+            let client = try MLXOpenAIClient(endpoint: endpoint)
+            box.result = .success(try await client.probe())
+        } catch {
+            box.result = .failure(error)
+        }
+        semaphore.signal()
+    }
+    guard semaphore.wait(timeout: .now() + 15) == .success else {
+        throw SelfTestFailure.assertion("真实 MLX 服务检测超时")
+    }
+    guard let result = box.result else {
+        throw SelfTestFailure.assertion("真实 MLX 服务没有返回检测结果")
+    }
+    let probe = try result.get()
+    if let expectedModelID, !expectedModelID.isEmpty {
+        try check(
+            probe.listedModelID(matching: expectedModelID) != nil,
+            "真实 MLX 服务没有公布预期短名：\(expectedModelID)"
+        )
+    }
+    let defaultSuffix = probe.defaultModelID.map { "，默认 \($0)" } ?? ""
+    print("✓ 真实 MLX 服务：\(probe.modelIDs.count) 个模型\(defaultSuffix)")
+}
+
 func runLiveDiskMLXTestIfRequested() throws {
     guard ProcessInfo.processInfo.environment["CLEANNEST_LIVE_DISK_MLX"] == "1" else { return }
 
     let home = FileManager.default.homeDirectoryForCurrentUser
     let endpoint = ProcessInfo.processInfo.environment["CLEANNEST_MLX_ENDPOINT"]
         ?? "http://127.0.0.1:8080/v1"
-    let model = ProcessInfo.processInfo.environment["CLEANNEST_MLX_MODEL"]
-        ?? home.appendingPathComponent("Models/MLX/gemma-4-26b-a4b-it-8bit").path
+    guard let model = ProcessInfo.processInfo.environment["CLEANNEST_MLX_MODEL"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+        !model.isEmpty else {
+        throw SelfTestFailure.assertion(
+            "CLEANNEST_LIVE_DISK_MLX=1 时必须显式设置 CLEANNEST_MLX_MODEL，测试不会替你选择模型"
+        )
+    }
     let fixture = try makeDiskAIFixture(home: home)
     let semaphore = DispatchSemaphore(value: 0)
     let box = LiveDiskAIResultBox()
@@ -432,6 +496,305 @@ func runLiveDiskMLXTestIfRequested() throws {
         }
     }
     print("✓ 真实磁盘 MLX：\(analysis.summary)")
+}
+
+func runP0FoundationTests() throws {
+    let bounds = CGRect(x: 0, y: 0, width: 600, height: 300)
+    let placements = TreemapLayout.layout(
+        items: [
+            TreemapItem(id: "large", weight: 70),
+            TreemapItem(id: "medium", weight: 20),
+            TreemapItem(id: "small", weight: 10),
+            TreemapItem(id: "ignored", weight: 0)
+        ],
+        in: bounds
+    )
+    try check(placements.count == 3, "Treemap 没有过滤零权重项目")
+    try check(
+        placements.allSatisfy { bounds.contains($0.rect) && $0.rect.width > 0 && $0.rect.height > 0 },
+        "Treemap 生成了越界或空矩形"
+    )
+
+    let semaphore = DispatchSemaphore(value: 0)
+    let box = P0FoundationResultBox()
+    Task.detached {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CleanNestP0SelfTest-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let metricsURL = root.appendingPathComponent("metrics.sqlite3")
+            let metrics = MetricsStore(databaseURL: metricsURL)
+            try await metrics.prepare()
+            let sample = MetricSample(
+                sampledAt: Date(),
+                healthScore: 91,
+                cpuUsage: 20,
+                memoryUsedPercent: 50,
+                memoryPressureLevel: .normal,
+                memoryUsedBytes: 5,
+                memoryAvailableBytes: 5,
+                memoryCompressedBytes: 1,
+                memorySwapUsedBytes: 0,
+                diskUsedPercent: 60,
+                diskFreeBytes: 10,
+                batteryLevel: 80,
+                temperatureCelsius: 42,
+                processCount: 100
+            )
+            try await metrics.append(sample)
+            let latestSample = try await metrics.latest()
+            try check(
+                latestSample?.cpuUsage == sample.cpuUsage
+                    && latestSample?.memoryPressureLevel == sample.memoryPressureLevel
+                    && abs((latestSample?.sampledAt.timeIntervalSince(sample.sampledAt)) ?? 1) < 0.001,
+                "SQLite 指标往返不一致"
+            )
+
+            let cancellationRoot = root.appendingPathComponent("cancel-scan", isDirectory: true)
+            for index in 0..<80 {
+                try FileManager.default.createDirectory(
+                    at: cancellationRoot.appendingPathComponent("item-\(index)", isDirectory: true),
+                    withIntermediateDirectories: true
+                )
+            }
+            let scanTask = Task {
+                try await NativeDiskAnalyzer().analyze(root: cancellationRoot, progress: nil)
+            }
+            scanTask.cancel()
+            do {
+                _ = try await scanTask.value
+                throw SelfTestFailure.assertion("取消后的磁盘扫描仍返回了完整结果")
+            } catch is CancellationError {
+                // Expected: cancellation propagates into the detached worker.
+            }
+
+            let cache = root.appendingPathComponent("Library/Caches/npm/_cacache/content-v2", isDirectory: true)
+            try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+            try Data(repeating: 1, count: 64).write(to: cache.appendingPathComponent("package.tgz"))
+            let diskEntry = DiskEntry(name: "content-v2", url: cache, bytes: 64, isDirectory: true)
+            let diskReport = DiskReport(root: root, entries: [diskEntry], largeFiles: [], totalBytes: 64, totalFiles: 1)
+            let evidence = try await DiskEvidenceIndexer().build(report: diskReport, homeDirectory: root)
+            guard let evidenceItem = evidence.entries.first else {
+                throw SelfTestFailure.assertion("磁盘证据没有返回条目")
+            }
+            try check(evidenceItem.category == .cache, "npm content-v2 没有识别为缓存")
+            try check(evidenceItem.cleanupBoundary == .reviewable, "缓存没有保留逐项复核边界")
+            try check(!evidenceItem.relativeHint.contains(root.path), "磁盘证据泄露了绝对测试主目录")
+
+            let project = root.appendingPathComponent("Documents/Project", isDirectory: true)
+            let buildDirectory = project.appendingPathComponent(".build", isDirectory: true)
+            try FileManager.default.createDirectory(at: buildDirectory, withIntermediateDirectories: true)
+            try "// package".write(
+                to: project.appendingPathComponent("Package.swift"),
+                atomically: true,
+                encoding: .utf8
+            )
+            let generatedPolicy = DiskAISafetyPolicy.policy(for: buildDirectory, homeDirectory: root)
+            try check(
+                generatedPolicy.category == .developerArtifacts
+                    && generatedPolicy.boundary == .reviewable,
+                "有 Package.swift 证据的 .build 没有识别为可重建开发产物"
+            )
+
+            let evidenceURL = root.appendingPathComponent("disk-evidence.json")
+            try DiskEvidencePersistence.save(evidence, to: evidenceURL)
+            let server = ReadOnlyMCPServer(
+                metricsDatabaseURL: metricsURL,
+                evidenceURL: evidenceURL,
+                cleanupURL: root.appendingPathComponent("cleanup.json"),
+                activityURL: root.appendingPathComponent("activity.json"),
+                homeDirectory: root
+            )
+            let request = #"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#
+            guard let response = await server.response(to: Data(request.utf8)),
+                  let responseText = String(data: response, encoding: .utf8) else {
+                throw SelfTestFailure.assertion("只读 MCP 没有返回工具列表")
+            }
+            try check(responseText.contains("cleannest.metric_history"), "MCP 缺少历史指标工具")
+            try check(responseText.contains("cleannest.disk_evidence"), "MCP 缺少磁盘证据工具")
+            try check(!responseText.contains("cleannest.delete"), "MCP 暴露了写入或删除工具")
+            box.result = .success(())
+        } catch {
+            box.result = .failure(error)
+        }
+        semaphore.signal()
+    }
+    guard semaphore.wait(timeout: .now() + 20) == .success else {
+        throw SelfTestFailure.assertion("P0 基础能力自检超时")
+    }
+    guard let result = box.result else {
+        throw SelfTestFailure.assertion("P0 基础能力自检没有结果")
+    }
+    try result.get()
+}
+
+func runLocalModelCatalogTests() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("CleanNestModelCatalog-\(UUID().uuidString)", isDirectory: true)
+    let modelRoot = root.appendingPathComponent("Qwen-Test-4bit", isDirectory: true)
+    let incompleteRoot = root.appendingPathComponent("Incomplete", isDirectory: true)
+    let unsupportedRoot = root.appendingPathComponent("Whisper-Test", isDirectory: true)
+    try FileManager.default.createDirectory(at: modelRoot, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: incompleteRoot, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: unsupportedRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let config = #"{"architectures":["QwenTestForCausalLM"],"model_type":"qwen_test","_name_or_path":"example/Qwen-Test","quantization":{"bits":4}}"#
+    try config.write(
+        to: modelRoot.appendingPathComponent("config.json"),
+        atomically: true,
+        encoding: .utf8
+    )
+    try Data(repeating: 0, count: 128).write(
+        to: modelRoot.appendingPathComponent("model-00001-of-00001.safetensors")
+    )
+    try "{}".write(
+        to: incompleteRoot.appendingPathComponent("config.json"),
+        atomically: true,
+        encoding: .utf8
+    )
+    try #"{"model_type":"whisper"}"#.write(
+        to: unsupportedRoot.appendingPathComponent("config.json"),
+        atomically: true,
+        encoding: .utf8
+    )
+    try Data([0]).write(to: unsupportedRoot.appendingPathComponent("weights.safetensors"))
+
+    let catalog = LocalModelCatalog(maximumVisitedDirectories: 20, maximumModels: 8, maximumDepth: 2)
+    let models = catalog.discover(homeDirectory: root, roots: [root])
+    try check(models.count == 1, "模型目录扫描没有排除不完整或非文本生成模型")
+    guard let model = models.first else {
+        throw SelfTestFailure.assertion("模型目录扫描没有返回完整模型")
+    }
+    try check(model.displayName == "Qwen-Test-4bit", "模型显示名称不正确")
+    try check(model.architecture == "QwenTestForCausalLM", "模型架构元数据没有解析")
+    try check(model.quantization == "4-bit", "模型量化位数没有解析")
+    try check(model.weightBytes == 128, "模型权重大小没有汇总")
+    try check(model.matches(serviceModelID: model.path), "模型服务绝对路径没有匹配")
+    try check(model.matches(serviceModelID: "example/Qwen-Test"), "模型仓库别名没有匹配")
+    try check(!model.matches(serviceModelID: "other/model"), "模型服务错误匹配了其他模型")
+    try check(LocalAIHealthStatus.isReady("healthy"), "oMLX healthy 健康状态没有被接受")
+    let omlxProbe = LocalAIProbeResult(
+        modelIDs: ["Qwen3.8-27B-Uncensored-8bit", "z-lab--Qwen3.8-27B-DFlash2"],
+        defaultModelID: "Qwen3.8-27B-Uncensored-8bit"
+    )
+    try check(
+        omlxProbe.resolvedModelID(preferredModelID: nil, selectedLocalModel: nil)
+            == "Qwen3.8-27B-Uncensored-8bit",
+        "oMLX 默认短名没有被解析"
+    )
+    try check(
+        omlxProbe.resolvedModelID(preferredModelID: "/Users/example/model", selectedLocalModel: model) == nil,
+        "无效的显式文件路径不应静默切换到其他服务模型"
+    )
+}
+
+func runEvolutionMemoryTests() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("CleanNestEvolution-\(UUID().uuidString)", isDirectory: true)
+    let memoryURL = root.appendingPathComponent("evolution-memory.json")
+    let privatePath = root.appendingPathComponent("Library/Caches/content-v2", isDirectory: true)
+    let candidate = CleanupCandidate(
+        name: "content-v2",
+        url: privatePath,
+        kind: .packageManager,
+        allocatedBytes: 5_330_000_000,
+        modifiedAt: Date(),
+        isRecommended: false,
+        detail: "npm 下载内容缓存"
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    var memory = EvolutionMemory()
+    memory.recordCleanup(candidate, decision: .preferKeep)
+    try check(memory.cleanupPreference(for: candidate) == .preferKeep, "本机学习没有记住明确保留偏好")
+    memory.recordCleanup(candidate, decision: .cleaned)
+    try check(memory.successfulCleanupCount == 1, "本机学习没有记录成功清理")
+    try check(memory.cleanupPreference(for: candidate) == .preferKeep, "安全清理记录不应覆盖用户的明确保留偏好")
+
+    memory.clearExplicitPreference(for: candidate)
+    try check(memory.cleanupPreference(for: candidate) == .preferCleanup, "撤销明确偏好后应保留成功清理证据")
+    try check(memory.events.first?.title == "已撤销清理偏好", "撤销清理偏好没有留下可审计记录")
+    memory.recordModelFeedback(
+        modelID: "/Users/private-selftest/models/Qwen-27B",
+        displayName: "Qwen 27B",
+        helpful: true,
+        scope: "清理建议"
+    )
+    memory.recordModelFeedback(
+        modelID: "/Users/private-selftest/models/Qwen-27B",
+        displayName: "Qwen 27B",
+        helpful: false,
+        scope: "磁盘解读"
+    )
+    try check(memory.modelFeedbackCount == 2, "本机学习没有汇总模型评价")
+    try check(memory.sortedModelSignals.first?.helpfulRatio == 0.5, "模型有效率计算错误")
+
+    try EvolutionMemoryPersistence.save(memory, to: memoryURL)
+    let persistedText = try String(contentsOf: memoryURL, encoding: .utf8)
+    try check(!persistedText.contains(root.path), "本机学习文件泄露了清理项完整路径")
+    try check(!persistedText.contains("/Users/private-selftest"), "本机学习文件泄露了模型完整路径")
+
+    let loaded = try EvolutionMemoryPersistence.load(from: memoryURL)
+    try check(loaded.cleanupPreference(for: candidate) == .preferCleanup, "本机学习偏好持久化往返失败")
+    try check(loaded.modelFeedbackCount == 2, "模型评价持久化往返失败")
+}
+
+func runAppUpdatePolicyTests() throws {
+    guard let current = SemanticVersion(parsing: "0.4.0"),
+          let next = SemanticVersion(parsing: "v0.4.1+universal"),
+          let releaseCandidate2 = SemanticVersion(parsing: "1.0.0-rc.2"),
+          let releaseCandidate10 = SemanticVersion(parsing: "1.0.0-rc.10"),
+          let final = SemanticVersion(parsing: "1.0.0") else {
+        throw SelfTestFailure.assertion("版本号解析失败")
+    }
+    try check(current < next, "补丁版本比较错误")
+    try check(releaseCandidate2 < releaseCandidate10, "预发布数字标识比较错误")
+    try check(releaseCandidate10 < final, "正式版本应高于预发布版本")
+    try check(SemanticVersion(parsing: "main") == nil, "分支名不应被识别为版本号")
+
+    let releaseJSON = """
+    {
+      "tag_name": "v0.4.1",
+      "name": "CleanNest v0.4.1",
+      "body": "安全更新。",
+      "html_url": "https://github.com/n9896027/CleanNest/releases/tag/v0.4.1",
+      "draft": false,
+      "prerelease": false,
+      "published_at": "2026-08-23T12:00:00Z"
+    }
+    """
+    let release = try GitHubReleaseParser.parse(
+        data: Data(releaseJSON.utf8),
+        owner: "n9896027",
+        repository: "CleanNest"
+    )
+    try check(release.version.description == "0.4.1", "GitHub Release 版本解析错误")
+    let updateDecision = try AppUpdatePolicy.decision(
+        localVersion: "0.4.0",
+        release: release
+    )
+    try check(
+        updateDecision == .updateAvailable,
+        "旧版本没有识别出可用更新"
+    )
+
+    let redirectedJSON = releaseJSON.replacingOccurrences(
+        of: "https://github.com/n9896027/CleanNest/releases/tag/v0.4.1",
+        with: "https://example.com/n9896027/CleanNest/releases/tag/v0.4.1"
+    )
+    do {
+        _ = try GitHubReleaseParser.parse(
+            data: Data(redirectedJSON.utf8),
+            owner: "n9896027",
+            repository: "CleanNest"
+        )
+        throw SelfTestFailure.assertion("更新检查接受了非官方发布地址")
+    } catch GitHubReleaseParsingError.untrustedReleaseURL {
+        // Expected: only the official repository's HTTPS release page may be opened.
+    }
 }
 
 do {
@@ -562,6 +925,10 @@ do {
 
     try runCommandRunnerTreeTerminationTest()
     try runProcessMemoryInspectorSafetyTest()
+    try runP0FoundationTests()
+    try runLocalModelCatalogTests()
+    try runEvolutionMemoryTests()
+    try runAppUpdatePolicyTests()
 
     let privateHome = URL(fileURLWithPath: "/Users/private-selftest", isDirectory: true)
 
@@ -725,7 +1092,7 @@ do {
     let diskAIAnalysis = try DiskAIResponseValidator.validate(
         content: diskAIResponse,
         snapshot: diskAISnapshot,
-        modelID: "/local/gemma"
+        modelID: "/local/model"
     )
     try check(diskAIAnalysis.advice.count == 5, "磁盘 AI 响应没有覆盖所有项目")
     try check(
@@ -742,7 +1109,7 @@ do {
     let categoryMismatchAnalysis = try DiskAIResponseValidator.validate(
         content: categoryMismatchDiskAIResponse,
         snapshot: diskAISnapshot,
-        modelID: "/local/gemma"
+        modelID: "/local/model"
     )
     let categoryMismatchAdvice = categoryMismatchAnalysis.advice.first {
         $0.entryID == diskAIFixture.report.entries[0].id
@@ -762,7 +1129,7 @@ do {
     let unsafeDiskAIAnalysis = try DiskAIResponseValidator.validate(
         content: unsafeDiskAIResponse,
         snapshot: diskAISnapshot,
-        modelID: "/local/gemma"
+        modelID: "/local/model"
     )
     let reconciledContainers = unsafeDiskAIAnalysis.advice.first {
         $0.entryID == diskAIFixture.report.entries[0].id
@@ -783,7 +1150,7 @@ do {
     let unsafeInspectOnlyAnalysis = try DiskAIResponseValidator.validate(
         content: unsafeInspectOnlyDiskAIResponse,
         snapshot: diskAISnapshot,
-        modelID: "/local/gemma"
+        modelID: "/local/model"
     )
     let reconciledAppSupport = unsafeInspectOnlyAnalysis.advice.first {
         $0.entryID == diskAIFixture.report.entries[2].id
@@ -805,7 +1172,7 @@ do {
         _ = try DiskAIResponseValidator.validate(
             content: contradictoryDiskAIResponse,
             snapshot: diskAISnapshot,
-            modelID: "/local/gemma"
+            modelID: "/local/model"
         )
         throw SelfTestFailure.assertion("磁盘 AI 的正文不应绕过结构化安全结论")
     } catch LocalAIError.invalidResponse {
@@ -819,7 +1186,7 @@ do {
     let semanticBypassAnalysis = try DiskAIResponseValidator.validate(
         content: semanticBypassDiskAIResponse,
         snapshot: diskAISnapshot,
-        modelID: "/local/gemma"
+        modelID: "/local/model"
     )
     let safeContainersText = semanticBypassAnalysis.advice
         .first { $0.entryID == diskAIFixture.report.entries[0].id }?
@@ -839,7 +1206,7 @@ do {
         _ = try DiskAIResponseValidator.validate(
             content: pathInjectingDiskAIResponse,
             snapshot: diskAISnapshot,
-            modelID: "/local/gemma"
+            modelID: "/local/model"
         )
         throw SelfTestFailure.assertion("磁盘 AI 不应接受额外路径字段")
     } catch LocalAIError.invalidResponse {
@@ -854,7 +1221,7 @@ do {
         _ = try DiskAIResponseValidator.validate(
             content: commandDiskAIResponse,
             snapshot: diskAISnapshot,
-            modelID: "/local/gemma"
+            modelID: "/local/model"
         )
         throw SelfTestFailure.assertion("磁盘 AI 不应输出命令式建议")
     } catch LocalAIError.invalidResponse {
@@ -901,7 +1268,7 @@ do {
     let aiAnalysis = try CleanupAIResponseValidator.validate(
         content: aiResponse,
         snapshot: aiSnapshot,
-        modelID: "/local/gemma"
+        modelID: "/local/model"
     )
     try check(aiAnalysis.advice.first?.candidateID == privateCandidate.id, "AI token 没有安全映回候选项")
     let injectedAIResponse = """
@@ -911,7 +1278,7 @@ do {
         _ = try CleanupAIResponseValidator.validate(
             content: injectedAIResponse,
             snapshot: aiSnapshot,
-            modelID: "/local/gemma"
+            modelID: "/local/model"
         )
         throw SelfTestFailure.assertion("AI 响应不应接受陌生 token 或额外路径字段")
     } catch LocalAIError.invalidResponse {
@@ -919,7 +1286,9 @@ do {
     }
     try runLiveMLXTestIfRequested()
     try runLiveDiskMLXTestIfRequested()
+    try runLiveMLXProbeIfRequested()
     try runLiveScannerTestIfRequested()
+    try runLiveModelCatalogTestIfRequested()
 
     let uniqueRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("cleannest-selftest-\(UUID().uuidString)", isDirectory: true)
