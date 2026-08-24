@@ -2,7 +2,7 @@
 
 记录日期：2026-08-24
 
-状态：本机候选检查和 0.5.0 主实现远程检查通过；手动决策修复仍需通过独立 PR 的远程检查，正式 Release 尚未创建。
+状态：0.5.0 本机发布候选检查通过；受保护 PR 与 `main` 的远程检查结果以 GitHub Release 中链接的实际运行为准。本版本只允许源码正式发布，不把本机签名构建作为公开安装包分发。
 
 ## 测试环境
 
@@ -13,10 +13,18 @@
 
 ## 自动化结果
 
-- Swift 单元测试：40 / 40 通过，0 失败（含覆盖率运行）
+- Swift 单元测试：49 / 49 通过，0 失败（含覆盖率运行）
 - `CleanNestSelfTest`：全部检查通过
 - String Catalog JSON、Info.plist、构建脚本语法和 Git 空白错误检查：通过
-- Release App：0.5.0（Build 9），稳定本机签名、Hardened Runtime、Bundle/MCP 严格签名验证和 MCP discovery smoke test 通过
+- Release App：0.5.0（Build 10），稳定本机签名、Hardened Runtime、Apple Events 最小 entitlement、Bundle/MCP 严格签名验证和 MCP discovery smoke test 通过
+- 只读 MCP 未链接 AppKit、Apple Events 或 `CleanNestMutation`，没有新增卸载写入通道
+
+## App 卸载实测
+
+- 两个位于 `/Applications`、由 `root` 所有且此前卸载失败的真实 App Bundle 已通过当前账户的实际目录权限成功移入当前用户废纸篓；源路径消失，废纸篓中的设备号和文件号保持一致。
+- 两次操作都只处理了预览中按精确 Bundle ID 匹配的相关文件；活动记录分别报告成功，废纸篓未清空，仍可恢复。
+- 单元测试覆盖扫描身份变化、Bundle ID 变化、原子排他移动、同名碰撞、权限/认证取消、虚假成功，以及目标不在当前用户废纸篓时拒绝确认。
+- Finder 管理员认证分支受 macOS 原生窗口控制；当前账户已有直接移动权限时不会制造无效认证提示。没有用未授权的系统 App 破坏性测试来强行触发该分支。
 
 ## 增量扫描实测
 
@@ -53,6 +61,5 @@
 
 ## 仍未放行的门槛
 
-- 手动决策修复的独立 PR 仍需通过双架构 CI、CodeQL 和依赖审查，并在合并后验证 `main`。
 - Developer ID、Apple 公证、装订和 Gatekeeper 实测仍属正式二进制发布前置条件。
 - 缺少 Developer ID 时，0.5.0 只能发布源码；本机稳定签名不等于可分发的 Apple 可信签名。

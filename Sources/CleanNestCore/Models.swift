@@ -94,6 +94,7 @@ public struct InstalledApplication: Identifiable, Hashable, Sendable {
     public let url: URL
     public let allocatedBytes: Int64
     public let modifiedAt: Date?
+    public let fileIdentity: ApplicationFileIdentity?
 
     public init(
         name: String,
@@ -101,7 +102,8 @@ public struct InstalledApplication: Identifiable, Hashable, Sendable {
         version: String?,
         url: URL,
         allocatedBytes: Int64,
-        modifiedAt: Date?
+        modifiedAt: Date?,
+        fileIdentity: ApplicationFileIdentity? = nil
     ) {
         self.id = url.standardizedFileURL.path
         self.name = name
@@ -110,6 +112,7 @@ public struct InstalledApplication: Identifiable, Hashable, Sendable {
         self.url = url
         self.allocatedBytes = allocatedBytes
         self.modifiedAt = modifiedAt
+        self.fileIdentity = fileIdentity
     }
 }
 
@@ -284,18 +287,37 @@ public enum MemoryAnalyzer {
     }
 }
 
+public enum TrashFailureKind: String, Equatable, Sendable {
+    case validation
+    case targetChanged
+    case authorizationCancelled
+    case permissionDenied
+    case operationFailed
+    case missingResult
+}
+
 public struct TrashOutcome: Identifiable, Sendable {
     public let id = UUID()
     public let source: URL
     public let trashedURL: URL?
     public let errorDescription: String?
+    public let failureKind: TrashFailureKind?
+    public let technicalDescription: String?
 
     public var succeeded: Bool { errorDescription == nil }
 
-    public init(source: URL, trashedURL: URL?, errorDescription: String?) {
+    public init(
+        source: URL,
+        trashedURL: URL?,
+        errorDescription: String?,
+        failureKind: TrashFailureKind? = nil,
+        technicalDescription: String? = nil
+    ) {
         self.source = source
         self.trashedURL = trashedURL
         self.errorDescription = errorDescription
+        self.failureKind = failureKind
+        self.technicalDescription = technicalDescription
     }
 }
 

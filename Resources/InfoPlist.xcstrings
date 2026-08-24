@@ -7,6 +7,13 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "CleanNest 仅在你主动分析应用数据目录时读取文件名、目录结构与占用空间，不读取文件内容，也不会自动删除。" } },
         "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "CleanNest 僅在你主動分析 App 資料目錄時讀取檔名、目錄結構與佔用空間，不讀取檔案內容，也不會自動刪除。" } }
       }
+    },
+    "NSAppleEventsUsageDescription" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "When a normal Trash move lacks permission, CleanNest asks Finder to show macOS administrator authentication and move only the app you explicitly confirmed." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "当普通废纸篓操作权限不足时，CleanNest 会请 Finder 显示系统管理员认证并移动你明确确认的 App。" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "當一般垃圾桶操作權限不足時，CleanNest 會請 Finder 顯示 macOS 管理員驗證，並只移動你明確確認的 App。" } }
+      }
     }
   },
   "version" : "1.0"

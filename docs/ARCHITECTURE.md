@@ -7,6 +7,7 @@ SwiftUI 界面
     ↓ 用户明确操作
 AppStore 状态与任务编排
     ├─ CleanNestCore：扫描、解码、安全策略、进程复核、SQLite 指标
+    ├─ CleanNestMutation：仅 GUI 链接的废纸篓移动能力
     ├─ Mole CLI：独立本地子进程，可替换、可升级
     ├─ mlx_lm.server：仅 127.0.0.1 的可选本机解释服务
             ↓ 严格 JSON 校验
@@ -18,6 +19,7 @@ AppStore 状态与任务编排
 
 - `Sources/CleanNest`：窗口、视图、App 生命周期、本机 MLX 进程管理和用户操作编排。
 - `Sources/CleanNestCore`：不依赖 SwiftUI 的模型、扫描器、命令运行器、JSON 解码、AI 协议和安全策略。
+- `Sources/CleanNestMutation`：原子、排他的 App 废纸篓移动实现；只由 GUI 与测试链接，MCP 不依赖该模块。
 - `Sources/CleanNestSelfTest`：跨模块集成自检，包括进程树终止和协议绕过回归。
 - `Sources/CleanNestMCP`：换行分隔 JSON-RPC 的 stdio 入口；协议和工具实现位于 Core。
 - `Tests/CleanNestCoreTests`：可定位的确定性单元测试。
@@ -53,7 +55,7 @@ Mole 状态与原生内存探测合并为单次 `SystemSnapshot`。App 运行时
 
 - 文件：只接受白名单根目录的严格后代，拒绝根目录、受保护路径和符号链接，默认移到废纸篓。
 - 手动磁盘决定：只能维持或收紧系统边界；旧的待清理记录在新证据变为受保护或高风险时失效，且永远不能直接触发文件操作。
-- 应用卸载：App 本体必须位于标准 Applications 目录，相关文件只接受 Bundle ID 精确匹配。
+- 应用卸载：App 本体必须位于标准 Applications 目录；扫描后到执行前复核设备号、文件号与 Bundle ID；当前账户可写时同卷原子移入废纸篓，确需更高权限时才交给 Finder；本体未确认成功前不处理精确 Bundle ID 相关文件。
 - 进程：操作前后复核 PID 身份、启动时间和可执行文件，保护系统/关键进程，先正常退出再由用户决定是否强制。
 - 权限：只根据实际读取结果分类，不把系统设置跳转当授权成功，也不循环触发访问窗口。
 - 网络：AI 端点固定为 IPv4 loopback HTTP，禁用代理、Cookie、凭据存储、缓存和重定向。

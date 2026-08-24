@@ -102,7 +102,7 @@ CleanNest 可以连接本机 `mlx_lm.server`，为清理候选和磁盘目录补
 - 不允许把 `/System`、`/Library`、用户主目录或允许范围的根目录作为清理目标。
 - 原生清理只接受经过白名单校验的后代路径，并拒绝符号链接。
 - 文件默认移入 macOS 废纸篓，不使用不可恢复的 `rm -rf`。
-- 系统级 App 的卸载可能需要管理员授权；当前版本会明确报错，不绕过权限。
+- 卸载 App 时先复核路径、设备号、文件号与 Bundle ID；当前账户有真实目录权限时原子移入废纸篓，权限不足时再由 Finder 显示 macOS 管理员认证。App 本体未确认成功时不会处理相关文件。
 - Mole 的高风险交互命令不会通过模拟键盘自动确认。
 - 每个拉取请求运行核心自检、完整 App Bundle 构建和 CodeQL 静态分析。
 - GitHub Actions 使用最小权限，依赖与 Action 更新由 Dependabot 检查。
@@ -154,6 +154,6 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-项目当前开发版本为 **0.5.0（Build 9）**。CI 会在 Apple Silicon 与 Intel runner 上编译并运行测试。欢迎通过 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可复现的问题或功能建议；安全问题请使用私密漏洞报告渠道。
+项目当前开发版本为 **0.5.0（Build 10）**。CI 会在 Apple Silicon 与 Intel runner 上编译并运行测试。欢迎通过 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可复现的问题或功能建议；安全问题请使用私密漏洞报告渠道。
 
 App 的核心导航、总览、磁盘、系统状态与设置关键界面已提供 English、简体中文和繁體中文资源；涉及运行时路径或深度诊断的动态文案可能仍回退为源语言。日本語和한국어 README 用于说明项目范围，完整 UI 本地化仍会继续扩充。

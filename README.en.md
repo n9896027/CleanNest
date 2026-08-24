@@ -99,7 +99,7 @@ In **Settings (`设置`) → Local AI Analysis (`本机 AI 分析`)**, CleanNest
 - System roots, `/System`, `/Library`, the home directory itself, and an allowed root itself cannot become cleanup targets.
 - Native cleanup accepts only validated descendant paths and rejects symbolic links.
 - Files go to the macOS Trash by default; CleanNest does not use an irreversible `rm -rf` cleanup path.
-- Removing system-level apps may require administrator authorization; the current version reports that limitation instead of bypassing it.
+- App removal revalidates the path, device, file identity, and Bundle ID. It uses an atomic Trash move when the current account truly has directory permission, and asks Finder to present native macOS administrator authentication only when required. Related files remain untouched unless the app bundle is confirmed in Trash.
 - High-risk interactive Mole commands are never auto-confirmed through simulated keyboard input.
 - Pull requests run core tests, a complete app-bundle build, architecture checks, dependency review, and CodeQL.
 - GitHub Actions use least-privilege permissions and immutable Action references; Dependabot checks dependency and Action updates.
@@ -153,6 +153,6 @@ Preview the UI with synthetic data only:
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-The current development version is **0.5.0 (Build 9)**. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
+The current development version is **0.5.0 (Build 10)**. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
 
 Core navigation and the main overview, disk, status, and settings surfaces now include English, Simplified Chinese, and Traditional Chinese resources. Some runtime diagnostics and path-dependent copy can still fall back to the source language; Japanese and Korean currently have localized project overviews rather than full UI resources.

@@ -27,7 +27,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.5.0</string>
     <key>CFBundleVersion</key>
-	<string>9</string>
+	<string>10</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
     <key>LSMinimumSystemVersion</key>
@@ -43,6 +43,8 @@
 	</dict>
 	<key>NSAppDataUsageDescription</key>
 	<string>CleanNest 仅在你主动分析应用数据目录时读取文件名、目录结构与占用空间，不读取文件内容，也不会自动删除。</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>当普通废纸篓操作权限不足时，CleanNest 会请 Finder 显示系统管理员认证并移动你明确确认的 App。</string>
 	<key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>

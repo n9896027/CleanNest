@@ -250,7 +250,9 @@ final class AppStore: ObservableObject {
     private let processMemoryInspector = ProcessMemoryInspector()
     private let metricsStore = MetricsStore()
     private let diskEvidenceIndexer = DiskEvidenceIndexer()
-    private let trashService = TrashService()
+    private let trashService = TrashService(
+        applicationRecycler: WorkspaceApplicationRecycler.recycle
+    )
     private let localAIRuntime = LocalMLXRuntime()
     private let localModelCatalog = LocalModelCatalog()
     private let appUpdateClient = GitHubAppUpdateClient()
@@ -1363,6 +1365,18 @@ final class AppStore: ObservableObject {
         return !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
     }
 
+    func applicationRemovalRequirement(
+        for application: InstalledApplication
+    ) -> ApplicationRemovalRequirement? {
+        guard !demoMode else { return .standard }
+        guard let expectedIdentity = application.fileIdentity else { return nil }
+        return try? trashService.applicationRemovalRequirement(
+            for: application.url,
+            expectedIdentity: expectedIdentity,
+            expectedBundleIdentifier: application.bundleIdentifier
+        )
+    }
+
     func askApplicationToQuit(_ application: InstalledApplication) {
         guard !demoMode else { return }
         guard let bundleID = application.bundleIdentifier else { return }
@@ -1379,13 +1393,38 @@ final class AppStore: ObservableObject {
             phase = .failed("请先退出 \(application.name)")
             return
         }
+        guard let expectedIdentity = application.fileIdentity else {
+            phase = .failed("\(application.name) 缺少扫描身份，请重新扫描后再试")
+            lastTechnicalDetail = "扫描时未能记录 App 的设备号、文件号与所有者；为避免卸载错误目标，本次操作已停止。"
+            addActivity(
+                title: "卸载 \(application.name)",
+                detail: "缺少可复核的扫描身份，未改动任何文件。",
+                outcome: .failed
+            )
+            return
+        }
 
+        lastTechnicalDetail = ""
+        let removalRequirement = applicationRemovalRequirement(for: application)
         phase = .executing("正在将 \(application.name) 移到废纸篓…")
-        let appOutcome = await trashService.trashApplication(application.url)
+        let appOutcome = await trashService.trashApplication(
+            application.url,
+            expectedIdentity: expectedIdentity,
+            expectedBundleIdentifier: application.bundleIdentifier
+        )
         guard appOutcome.succeeded else {
-            phase = .failed("未能卸载 \(application.name)，没有处理相关文件")
-            lastTechnicalDetail = appOutcome.errorDescription ?? "未知错误"
-            addActivity(title: "卸载 \(application.name)", detail: lastTechnicalDetail, outcome: .failed)
+            if appOutcome.failureKind == .authorizationCancelled {
+                phase = .failed("已取消卸载 \(application.name)，没有改动任何文件")
+            } else if appOutcome.failureKind == .targetChanged {
+                phase = .failed("\(application.name) 已发生变化，请重新扫描后再试")
+            } else {
+                phase = .failed("未能卸载 \(application.name)，没有处理相关文件")
+            }
+            let userMessage = appOutcome.errorDescription ?? "未知错误"
+            lastTechnicalDetail = [userMessage, appOutcome.technicalDescription]
+                .compactMap { $0 }
+                .joined(separator: "\n\n")
+            addActivity(title: "卸载 \(application.name)", detail: userMessage, outcome: .failed)
             return
         }
 
@@ -1407,9 +1446,14 @@ final class AppStore: ObservableObject {
 
         if failedLeftovers.isEmpty {
             phase = .success("\(application.name) 已移到废纸篓")
+            let authenticationDetail = removalRequirement == .administratorAuthentication
+                ? "App 已通过 macOS 原生管理员认证移到废纸篓。"
+                : "App 已移到废纸篓。"
             addActivity(
                 title: "卸载 \(application.name)",
-                detail: includeLeftovers ? "App 与精确匹配的相关文件已移到废纸篓。" : "App 已移到废纸篓，相关文件已保留。",
+                detail: includeLeftovers
+                    ? "\(authenticationDetail) 精确匹配的相关文件也已移到废纸篓。"
+                    : "\(authenticationDetail) 相关文件已保留。",
                 outcome: .success,
                 affectedItems: 1 + leftoverOutcomes.filter(\.succeeded).count,
                 bytes: removedBytes
