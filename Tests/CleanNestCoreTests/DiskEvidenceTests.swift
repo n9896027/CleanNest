@@ -32,6 +32,10 @@ final class DiskEvidenceTests: XCTestCase {
         XCTAssertTrue(item.typeDistribution.contains { $0.kind == .archive })
         XCTAssertTrue(item.typeDistribution.contains { $0.kind == .log })
         XCTAssertGreaterThan(item.ageDistribution.olderBytes, 0)
+        XCTAssertEqual(item.cleanupDecision.disposition, .reviewCandidate)
+        XCTAssertTrue(item.cleanupDecision.whyLarge.contains("下载"))
+        XCTAssertTrue(item.cleanupDecision.impact.contains("重新"))
+        XCTAssertFalse(item.cleanupDecision.evidence.isEmpty)
 
         let snapshotURL = home.appendingPathComponent("evidence.json")
         try DiskEvidencePersistence.save(evidence, to: snapshotURL)
@@ -86,6 +90,35 @@ final class DiskEvidenceTests: XCTestCase {
         let withoutManifest = DiskAISafetyPolicy.policy(for: generated, homeDirectory: home)
         XCTAssertEqual(withoutManifest.category, .userContent)
         XCTAssertEqual(withoutManifest.boundary, .protected)
+    }
+
+    func testDecisionCenterKeepsProtectedUnknownContent() {
+        let entry = DiskEvidenceEntry(
+            id: "unknown",
+            name: "Private",
+            relativeHint: "~/Private",
+            allocatedBytes: 1_024,
+            isDirectory: true,
+            observedFileCount: 0,
+            observedBytes: 0,
+            scanWasLimited: false,
+            latestModificationDate: nil,
+            ageDistribution: DiskEvidenceAgeDistribution(),
+            typeDistribution: [],
+            category: .unknown,
+            cleanupBoundary: .protected,
+            minimumRisk: .high,
+            purpose: "当前规则无法可靠确认用途。",
+            likelyOwner: nil,
+            provenance: "缺少稳定证据。",
+            regeneration: "未知内容不可自动重建。",
+            growthBytes: nil
+        )
+
+        let decision = entry.cleanupDecision
+        XCTAssertEqual(decision.disposition, .keep)
+        XCTAssertEqual(decision.confidence, .low)
+        XCTAssertTrue(decision.nextStep.contains("保持"))
     }
 
     private func temporaryDirectory() throws -> URL {

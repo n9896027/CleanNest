@@ -7,6 +7,7 @@ struct EvolutionView: View {
 
     private var hasMemory: Bool {
         !store.evolutionMemory.events.isEmpty
+            || !store.evolutionMemory.ruleProposals.isEmpty
             || store.evolutionMemory.learnedCleanupCount > 0
             || store.evolutionMemory.successfulCleanupCount > 0
             || store.evolutionMemory.modelFeedbackCount > 0
@@ -63,7 +64,7 @@ struct EvolutionView: View {
 
             HStack(spacing: 7) {
                 Image(systemName: "lock.shield")
-                Text("只保存项目类型、你的选择和模型评价；不保存文件内容或完整路径。")
+                Text("只保存项目类型、哈希身份、你的选择和模型评价；不保存文件内容或完整路径。")
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -76,7 +77,7 @@ struct EvolutionView: View {
             Text("它还不了解你的取舍")
                 .font(.system(size: 28, weight: .semibold, design: .rounded))
                 .tracking(-0.35)
-            Text("先完成一次空间扫描，再对某个项目选择“以后优先清理”或“以后优先保留”。CleanNest 会把这条理由带到下一次扫描，而不是只给你三个没有意义的 0。")
+            Text("先完成一次空间扫描，再对某个项目提出“以后优先清理”或“以后优先保留”。CleanNest 只会生成待审核提案；你在这里启用后，它才会影响下一次排序。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -87,7 +88,7 @@ struct EvolutionView: View {
                     store.selection = .cleanup
                     Task { if !store.cleanupHasScanned { await store.scanCleanup() } }
                 } label: {
-                    Label("扫描并建立第一条偏好", systemImage: "sparkle.magnifyingglass")
+                    Label("扫描并建立第一条提案", systemImage: "sparkle.magnifyingglass")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
@@ -107,9 +108,9 @@ struct EvolutionView: View {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .center, spacing: 28) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("CleanNest 正在形成你的本机偏好")
+                        Text("规则只有在你审核后才生效")
                             .font(.system(size: 25, weight: .semibold, design: .rounded))
-                        Text("熟悉的项目会按你的清理或保留习惯排序，并明确标注依据。")
+                        Text("CleanNest 可以形成提案，但启用、暂停和撤销始终由你决定；规则只影响排序与标记。")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -117,9 +118,9 @@ struct EvolutionView: View {
                     LearningOrbitGraphic(compact: true)
                 }
                 VStack(alignment: .leading, spacing: 18) {
-                    Text("CleanNest 正在形成你的本机偏好")
+                    Text("规则只有在你审核后才生效")
                         .font(.system(size: 25, weight: .semibold, design: .rounded))
-                    Text("熟悉的项目会按你的清理或保留习惯排序，并明确标注依据。")
+                    Text("CleanNest 可以形成提案，但启用、暂停和撤销始终由你决定；规则只影响排序与标记。")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -133,16 +134,16 @@ struct EvolutionView: View {
     private var statStrip: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 0) {
-                stat("已学会", CNL10n.format("%d 项", store.evolutionMemory.learnedCleanupCount), "清理或保留偏好")
+                stat("待审核", CNL10n.format("%d 条", store.evolutionMemory.pendingRuleCount), "尚未影响任何排序")
                 statDivider
-                stat("安全清理", CNL10n.format("%d 次", store.evolutionMemory.successfulCleanupCount), "成功移到废纸篓")
+                stat("已启用", CNL10n.format("%d 条", store.evolutionMemory.enabledRuleCount), "可随时暂停或撤销")
                 statDivider
                 stat("模型评价", CNL10n.format("%d 条", store.evolutionMemory.modelFeedbackCount), "用于比较本机模型")
             }
             VStack(spacing: 12) {
-                stat("已学会", CNL10n.format("%d 项", store.evolutionMemory.learnedCleanupCount), "清理或保留偏好")
+                stat("待审核", CNL10n.format("%d 条", store.evolutionMemory.pendingRuleCount), "尚未影响任何排序")
                 Divider()
-                stat("安全清理", CNL10n.format("%d 次", store.evolutionMemory.successfulCleanupCount), "成功移到废纸篓")
+                stat("已启用", CNL10n.format("%d 条", store.evolutionMemory.enabledRuleCount), "可随时暂停或撤销")
                 Divider()
                 stat("模型评价", CNL10n.format("%d 条", store.evolutionMemory.modelFeedbackCount), "用于比较本机模型")
             }
@@ -168,16 +169,19 @@ struct EvolutionView: View {
     private var learningFlow: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 0) {
-                flowStep("1", "你确认", "明确选择清理或保留")
+                flowStep("1", "你选择", "提出清理或保留倾向")
                 flowArrow
-                flowStep("2", "本机记住", "只记录偏好与理由")
+                flowStep("2", "形成提案", "记录理由和证据次数")
                 flowArrow
-                flowStep("3", "下次解释", "排序时标出学习依据")
+                flowStep("3", "你审核", "启用、暂停或撤销")
+                flowArrow
+                flowStep("4", "下次解释", "仅调整排序与标记")
             }
             VStack(alignment: .leading, spacing: 14) {
-                flowStep("1", "你确认", "明确选择清理或保留")
-                flowStep("2", "本机记住", "只记录偏好与理由")
-                flowStep("3", "下次解释", "排序时标出学习依据")
+                flowStep("1", "你选择", "提出清理或保留倾向")
+                flowStep("2", "形成提案", "记录理由和证据次数")
+                flowStep("3", "你审核", "启用、暂停或撤销")
+                flowStep("4", "下次解释", "仅调整排序与标记")
             }
         }
     }
@@ -206,6 +210,7 @@ struct EvolutionView: View {
 
     private var memoryDetails: some View {
         VStack(spacing: 16) {
+            ruleReview
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 16) {
                     cleanupMemory.frame(maxWidth: .infinity)
@@ -220,10 +225,122 @@ struct EvolutionView: View {
         }
     }
 
+    private var ruleReview: some View {
+        SurfaceCard(
+            title: "规则审核台",
+            symbol: "checklist",
+            prominence: .prominent,
+            tint: CNTheme.violet
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                InlineBanner(
+                    title: "提案不是自动化",
+                    detail: "待审核和已暂停规则不会改变排序；已启用规则也不会勾选项目、删除文件、结束进程或扩大权限。",
+                    kind: .success
+                )
+
+                if store.evolutionMemory.sortedRuleProposals.isEmpty {
+                    compactEmpty(
+                        symbol: "doc.badge.plus",
+                        title: "还没有规则提案",
+                        detail: "在清理列表中选择“提议：以后优先清理/保留”，或完成一次安全清理。"
+                    )
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(Array(store.evolutionMemory.sortedRuleProposals.enumerated()), id: \.element.id) { index, proposal in
+                            ruleRow(proposal)
+                            if index < store.evolutionMemory.sortedRuleProposals.count - 1 {
+                                Divider().padding(.leading, 43)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func ruleRow(_ proposal: CleanupRuleProposal) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            CNIconTile(
+                symbol: proposal.suggestedPreference == .preferKeep ? "hand.raised.fill" : "sparkles",
+                tint: proposal.suggestedPreference == .preferKeep ? CNTheme.warning : CNTheme.success,
+                size: 34
+            )
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 7) {
+                    Text(proposal.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    StatusPill(
+                        text: ruleStateLabel(proposal.state),
+                        symbol: ruleStateSymbol(proposal.state),
+                        style: ruleStateStyle(proposal.state)
+                    )
+                    StatusPill(
+                        text: proposal.suggestedPreference == .preferKeep ? "建议优先保留" : "建议优先复核",
+                        symbol: nil,
+                        style: proposal.suggestedPreference == .preferKeep ? .warning : .success
+                    )
+                }
+                Text(proposal.reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("\(proposal.kind.rawValue) · \(proposal.evidenceCount) 条本机证据 · 更新于 \(proposal.lastUpdatedAt.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 12)
+            ruleActions(proposal)
+        }
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private func ruleActions(_ proposal: CleanupRuleProposal) -> some View {
+        switch proposal.state {
+        case .pending:
+            Button("审核并启用") { store.enableCleanupRule(proposal.id) }
+                .buttonStyle(.borderedProminent)
+            Button("撤销") { store.removeCleanupRule(proposal.id) }
+        case .enabled:
+            Button("暂停") { store.pauseCleanupRule(proposal.id) }
+            Button("撤销") { store.removeCleanupRule(proposal.id) }
+        case .paused:
+            Button("重新启用") { store.enableCleanupRule(proposal.id) }
+                .buttonStyle(.borderedProminent)
+            Button("撤销") { store.removeCleanupRule(proposal.id) }
+        }
+    }
+
+    private func ruleStateLabel(_ state: EvolutionRuleState) -> String {
+        switch state {
+        case .pending: return "待审核"
+        case .enabled: return "已启用"
+        case .paused: return "已暂停"
+        }
+    }
+
+    private func ruleStateSymbol(_ state: EvolutionRuleState) -> String {
+        switch state {
+        case .pending: return "clock"
+        case .enabled: return "checkmark"
+        case .paused: return "pause"
+        }
+    }
+
+    private func ruleStateStyle(_ state: EvolutionRuleState) -> StatusPill.Style {
+        switch state {
+        case .pending: return .warning
+        case .enabled: return .success
+        case .paused: return .neutral
+        }
+    }
+
     private var cleanupMemory: some View {
-        SurfaceCard(title: "清理偏好", symbol: "arrow.up.arrow.down") {
+        SurfaceCard(title: "已生效偏好", symbol: "arrow.up.arrow.down") {
             if store.evolutionMemory.sortedCleanupSignals.isEmpty {
-                compactEmpty(symbol: "cursorarrow.click.2", title: "还没有清理偏好", detail: "扫描后明确选择优先清理或保留。")
+                compactEmpty(symbol: "cursorarrow.click.2", title: "还没有已启用规则", detail: "先在上方审核并启用提案。")
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(store.evolutionMemory.sortedCleanupSignals.prefix(8).enumerated()), id: \.element.id) { index, signal in
@@ -340,6 +457,8 @@ struct EvolutionView: View {
         case .cleanupPreference: return "cursorarrow.click.2"
         case .successfulCleanup: return "checkmark.circle"
         case .modelFeedback: return "brain.head.profile"
+        case .ruleProposal: return "doc.badge.plus"
+        case .ruleState: return "checklist"
         }
     }
 
@@ -348,6 +467,8 @@ struct EvolutionView: View {
         case .cleanupPreference: return CNTheme.accent
         case .successfulCleanup: return CNTheme.success
         case .modelFeedback: return CNTheme.warning
+        case .ruleProposal: return CNTheme.violet
+        case .ruleState: return CNTheme.cyan
         }
     }
 }

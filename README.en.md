@@ -42,13 +42,15 @@ CleanNest turns Mac cleanup from a black-box button into an understandable, reve
 ## Core capabilities
 
 - **Storage cleanup** — scan developer caches, logs, installers, and other candidates; select items individually and move them to the macOS Trash.
-- **Disk browser** — drill into folder sizes and optionally ask a local model to explain the current directory composition.
-- **Disk evidence** — cancellable scans, breadcrumb drill-down, a native treemap, and deterministic explanations of purpose, provenance, type, age, regeneration, and cleanup boundaries.
+- **Incremental disk browser** — stream partial results while scanning; reuse only unchanged metadata signatures for 15 minutes; disclose cache hits, live scans, and a cache-bypassing deep refresh.
+- **Cleanup Decision Center** — combine breadcrumb drill-down and a native treemap with deterministic purpose, growth cause, impact, recoverability, confidence, and a safe next action for every item.
 - **System status** — show CPU, memory, disk, battery, temperature, and health information, with 60-second local history plus plain-language memory-pressure and process guidance.
 - **Process management** — request a normal process quit only after identity checks, system-process protection, and user confirmation; CleanNest does not automatically force-quit it.
 - **App uninstall** — browse installed apps and preview the app bundle plus related files matched by exact Bundle ID.
 - **System maintenance** — run selected low-risk maintenance tasks and keep their results in one activity history.
-- **Local learning** — remember your explicit “prioritize cleanup / prioritize keeping” choices and model feedback; future scans only reorder and explain, never auto-select or delete.
+- **Auditable local learning** — explicit choices and successful cleanups create reviewable rule proposals. Nothing affects future ordering until you enable it, and every rule can be paused, resumed, or removed.
+- **Model Workbench** — run a minimal streaming request that contains no scan metadata, then see loopback health latency, time to first output, total time, the exact API model ID, and memory-headroom guidance.
+- **Data controls** — export or clear the activity log independently; restoring safe defaults resets preferences without silently erasing activity, learning rules, disk indexes, metric history, or macOS permissions.
 - **Mole integration** — discover `mo` installed through Apple Silicon or Intel Homebrew, or install/update Mole from inside the app.
 - **Update checks** — manually query the latest official GitHub Release from the app menu or About page; CleanNest only compares versions and opens a validated repository page, never silently downloading or installing.
 - **Native macOS experience** — SwiftUI/AppKit interface, light and dark appearance, permission recovery guidance, activity history, and a safe demo mode.
@@ -119,6 +121,8 @@ Detailed maintainer documentation is currently written primarily in Simplified C
 | [Architecture](docs/ARCHITECTURE.md) | Modules, data flow, and dangerous-operation boundaries |
 | [Privacy](PRIVACY.md) | Local data, network access, retention, and removal |
 | [Roadmap](ROADMAP.md) | Completed work, near-term priorities, and explicit non-commitments |
+| [0.5.0 verification report](docs/VERIFICATION-0.5.0.md) | Local tests, large-directory incremental scan evidence, and gates that remain closed |
+| [Maintainer operations](docs/OPERATIONS.md) | Change control, CI failures, credentials, releases, and security incidents |
 | [Changelog](CHANGELOG.md) | Released and unreleased changes |
 | [Contributing](CONTRIBUTING.md) | Development, testing, pull requests, and safety requirements |
 
@@ -149,6 +153,6 @@ Preview the UI with synthetic data only:
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-The current project version is **0.4.0 (Build 8)**. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
+The current development version is **0.5.0 (Build 9)**. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
 
 Core navigation and the main overview, disk, status, and settings surfaces now include English, Simplified Chinese, and Traditional Chinese resources. Some runtime diagnostics and path-dependent copy can still fall back to the source language; Japanese and Korean currently have localized project overviews rather than full UI resources.

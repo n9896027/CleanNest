@@ -70,12 +70,10 @@ struct SystemStatusView: View {
                             detail: snapshot.diskFreeBytes.map { CNL10n.format("可用 %@", CleanNestFormatting.bytes($0)) } ?? "可用空间未知",
                             tint: CNTheme.success
                         )
-                        ResourceCard(
-                            title: "电池",
-                            symbol: "battery.75percent",
-                            value: snapshot.batteryLevel,
-                            detail: snapshot.batteryStatus.map(CNL10n.batteryStatus) ?? "状态未知",
-                            tint: CNTheme.accent
+                        BatteryDiagnosticCard(
+                            snapshotLevel: snapshot.batteryLevel,
+                            snapshotStatus: snapshot.batteryStatus,
+                            probe: store.batteryProbeResult
                         )
                     }
 
@@ -620,6 +618,75 @@ private struct ResourceCard: View {
             }
             .frame(height: 7)
         }
+    }
+}
+
+private struct BatteryDiagnosticCard: View {
+    let snapshotLevel: Double?
+    let snapshotStatus: String?
+    let probe: BatteryProbeResult
+
+    private var level: Double? {
+        if probe.availability == .present { return probe.level ?? snapshotLevel }
+        if probe.availability == .unreadable { return snapshotLevel }
+        return nil
+    }
+
+    private var title: String {
+        switch probe.availability {
+        case .present: return probe.status
+        case .noInternalBattery: return "没有内置电池"
+        case .unreadable:
+            return snapshotStatus.map(CNL10n.batteryStatus) ?? "读取失败"
+        }
+    }
+
+    private var detail: String {
+        if probe.availability == .unreadable, snapshotLevel != nil {
+            return "系统接口读取失败；当前数值来自 Mole。"
+        }
+        return probe.detail
+    }
+
+    private var tint: Color {
+        switch probe.availability {
+        case .present: return CNTheme.accent
+        case .noInternalBattery: return CNTheme.success
+        case .unreadable: return CNTheme.warning
+        }
+    }
+
+    var body: some View {
+        SurfaceCard {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Label("电池", systemImage: probe.availability == .noInternalBattery ? "desktopcomputer" : "battery.75percent")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(tint)
+                    Text(level.map { CleanNestFormatting.percent($0) } ?? "—")
+                        .font(.system(size: 28, weight: .semibold, design: .rounded))
+                        .monospacedMetric()
+                    Text(title)
+                        .font(.caption.weight(.medium))
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+            }
+            if let level {
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.secondary.opacity(0.12))
+                        Capsule().fill(tint).frame(width: max(5, proxy.size.width * min(1, max(0, level / 100))))
+                    }
+                }
+                .frame(height: 7)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("电池，\(title)，\(detail)")
     }
 }
 

@@ -48,6 +48,50 @@ public struct DiskEvidenceAgeDistribution: Codable, Equatable, Sendable {
     }
 }
 
+public enum DiskCleanupDisposition: String, Codable, CaseIterable, Sendable {
+    case reviewCandidate
+    case inspectFurther
+    case manageInOwnerApp
+    case keep
+}
+
+public enum DiskDecisionConfidence: String, Codable, CaseIterable, Sendable {
+    case high
+    case medium
+    case low
+}
+
+public struct DiskCleanupDecision: Equatable, Sendable {
+    public let disposition: DiskCleanupDisposition
+    public let confidence: DiskDecisionConfidence
+    public let headline: String
+    public let whyLarge: String
+    public let impact: String
+    public let recovery: String
+    public let nextStep: String
+    public let evidence: [String]
+
+    public init(
+        disposition: DiskCleanupDisposition,
+        confidence: DiskDecisionConfidence,
+        headline: String,
+        whyLarge: String,
+        impact: String,
+        recovery: String,
+        nextStep: String,
+        evidence: [String]
+    ) {
+        self.disposition = disposition
+        self.confidence = confidence
+        self.headline = headline
+        self.whyLarge = whyLarge
+        self.impact = impact
+        self.recovery = recovery
+        self.nextStep = nextStep
+        self.evidence = evidence
+    }
+}
+
 public struct DiskEvidenceEntry: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public let name: String
@@ -109,6 +153,142 @@ public struct DiskEvidenceEntry: Identifiable, Codable, Equatable, Sendable {
         self.provenance = provenance
         self.regeneration = regeneration
         self.growthBytes = growthBytes
+    }
+
+    public var cleanupDecision: DiskCleanupDecision {
+        DiskCleanupDecisionEngine.decision(for: self)
+    }
+}
+
+public enum DiskCleanupDecisionEngine {
+    public static func decision(for entry: DiskEvidenceEntry) -> DiskCleanupDecision {
+        let disposition = disposition(for: entry)
+        let confidence = confidence(for: entry)
+        let actionText: (headline: String, impact: String, nextStep: String)
+
+        switch disposition {
+        case .reviewCandidate:
+            actionText = (
+                "可作为逐项复核候选",
+                impact(for: entry),
+                "先进入下一层或在 Finder 中核对具体项目；确认后只通过 CleanNest 的安全清理范围移到废纸篓。"
+            )
+        case .inspectFurther:
+            actionText = (
+                "当前层不能整体处理",
+                "这个目录可能混有可重建内容与仍在使用的数据，整体处理会放大误伤范围。",
+                "继续进入下一层，直到用途和所属应用足够明确；当前目录保持只读。"
+            )
+        case .manageInOwnerApp:
+            actionText = (
+                "应在所属 App 内管理",
+                "直接处理可能让应用丢失登录状态、数据库、模型、离线内容或同步状态。",
+                entry.likelyOwner.map { "优先打开 \($0) 的存储、下载或缓存设置。" }
+                    ?? "优先在所属 App 的存储、下载或缓存设置中管理。"
+            )
+        case .keep:
+            actionText = (
+                "建议保留",
+                "现有元数据不足以证明它可重建，或本机规则已确认其中可能包含用户/系统关键数据。",
+                "保持不动；如需继续调查，只做下钻查看或在 Finder 中确认来源。"
+            )
+        }
+
+        return DiskCleanupDecision(
+            disposition: disposition,
+            confidence: confidence,
+            headline: actionText.headline,
+            whyLarge: whyLarge(for: entry),
+            impact: actionText.impact,
+            recovery: entry.regeneration,
+            nextStep: actionText.nextStep,
+            evidence: evidenceSignals(for: entry)
+        )
+    }
+
+    private static func disposition(for entry: DiskEvidenceEntry) -> DiskCleanupDisposition {
+        if entry.cleanupBoundary == .protected || entry.minimumRisk == .high {
+            return .keep
+        }
+        switch entry.category {
+        case .userContent, .cloudDocuments, .systemData, .unknown:
+            return .keep
+        case .appSandboxData, .appSupportData:
+            return .manageInOwnerApp
+        case .cache, .logs, .developerArtifacts, .installerOrArchive:
+            return entry.cleanupBoundary == .reviewable ? .reviewCandidate : .inspectFurther
+        case .packageManagerData:
+            return entry.cleanupBoundary == .reviewable ? .reviewCandidate : .inspectFurther
+        }
+    }
+
+    private static func confidence(for entry: DiskEvidenceEntry) -> DiskDecisionConfidence {
+        if entry.category == .unknown || entry.observedFileCount == 0 { return .low }
+        if entry.scanWasLimited || entry.likelyOwner == nil { return .medium }
+        return .high
+    }
+
+    private static func whyLarge(for entry: DiskEvidenceEntry) -> String {
+        switch entry.category {
+        case .cache:
+            return "应用运行、预览、安装或下载后会保留可重建副本；长期不清理时，不同版本和重复下载会持续累积。"
+        case .logs:
+            return "应用持续写入运行与诊断记录；异常重试、长时间运行或保留策略过宽时会逐渐增长。"
+        case .developerArtifacts:
+            return "编译产物、索引、模拟器数据或依赖构建会按项目和架构重复生成，多个版本可并存。"
+        case .packageManagerData:
+            return "安装或更新依赖时下载的包、仓库元数据、内容寻址缓存与工具运行时会保留，以便后续复用。"
+        case .installerOrArchive:
+            return "安装包、磁盘映像和归档通常是一次下载形成的大文件，使用后不会自动消失。"
+        case .appSandboxData:
+            return "应用把数据库、离线内容、缓存与用户状态集中保存在沙盒中；持续使用会共同增长。"
+        case .appSupportData:
+            return "应用模型、资源、数据库、插件和缓存可能存放在同一支持目录，不能仅凭总大小拆分用途。"
+        case .cloudDocuments:
+            return "同步服务可能保留本地下载副本、版本与待上传内容；占用与云端可见大小不一定相同。"
+        case .userContent:
+            return "这里主要由用户保存或应用导出的内容构成；元数据不能可靠判断哪些仍有价值。"
+        case .systemData:
+            return "系统与多个应用共同维护索引、数据库或共享资源；大小会随系统和应用活动变化。"
+        case .unknown:
+            return "当前目录身份与内容类型证据不足，无法可靠说明增长来源。"
+        }
+    }
+
+    private static func impact(for entry: DiskEvidenceEntry) -> String {
+        switch entry.category {
+        case .cache:
+            return "不会卸载现有 App 或工具，但下一次启动、安装或访问相同内容时可能重新计算或下载。"
+        case .logs:
+            return "新日志仍会生成；旧记录在排查历史故障时可能无法替代。"
+        case .developerArtifacts:
+            return "源代码通常不受影响，但下一次构建、索引或启动模拟器会更慢。"
+        case .packageManagerData:
+            return "缓存可重新下载；若其中混有全局工具、运行时或已安装依赖，处理整个目录会破坏开发环境。"
+        case .installerOrArchive:
+            return "已安装应用通常不受影响，但会失去离线重装或归档副本。"
+        default:
+            return "当前类别不适合从磁盘浏览页直接处理，应继续确认所属应用和具体子项。"
+        }
+    }
+
+    private static func evidenceSignals(for entry: DiskEvidenceEntry) -> [String] {
+        var signals = [
+            "本机目录规则：\(entry.category.rawValue)",
+            "动作边界：\(entry.cleanupBoundary.rawValue)；最低风险：\(entry.minimumRisk.rawValue)",
+            "观察到 \(entry.observedFileCount) 个文件，共 \(entry.observedBytes) 字节"
+        ]
+        if let owner = entry.likelyOwner { signals.append("可能所属：\(owner)") }
+        if let topType = entry.typeDistribution.first {
+            signals.append("主要文件类型：\(topType.kind.rawValue)，\(topType.fileCount) 个")
+        }
+        if let growth = entry.growthBytes, growth != 0 {
+            signals.append(growth > 0 ? "较上次增加 \(growth) 字节" : "较上次减少 \(abs(growth)) 字节")
+        }
+        if entry.scanWasLimited {
+            signals.append("抽样达到安全上限，结论不代表目录内全部文件")
+        }
+        return signals
     }
 }
 

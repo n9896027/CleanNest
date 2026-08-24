@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var localAIModelPathDraft = ""
     @State private var localAIExecutablePathDraft = ""
     @State private var showsClearMetricsConfirmation = false
+    @State private var showsResetPreferencesConfirmation = false
     @State private var engineAdvancedExpanded = false
     @State private var localAIAdvancedExpanded = false
 
@@ -57,6 +58,21 @@ struct SettingsView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("这只删除 CleanNest 记录的 CPU、内存、磁盘、电池与温度样本；不会删除系统文件。后续采样会重新开始。")
+        }
+        .confirmationDialog(
+            "恢复安全默认设置？",
+            isPresented: $showsResetPreferencesConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("恢复默认设置", role: .destructive) {
+                Task {
+                    await store.resetPreferencesToSafeDefaults()
+                    syncLocalAIDrafts()
+                }
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("会关闭由 CleanNest 启动的本机模型并重置引擎路径、模型连接、扫描开关和指标保留期限；不会清除活动、扫描结果、学习规则、历史指标或 macOS 授权。")
         }
     }
 
@@ -486,6 +502,8 @@ struct SettingsView: View {
                 }
                 .disabled(!store.localAIEnabled || store.localAIServiceState.isBusy)
 
+                localAIWorkbench
+
                 if let configurationError = store.localAIConfigurationError {
                     Label(configurationError, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
@@ -526,6 +544,134 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var localAIWorkbench: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Label("模型工作台", systemImage: "gauge.with.dots.needle.67percent")
+                        .font(.subheadline.weight(.semibold))
+                    Text("只对当前短 ID 发出一个“OK”最小请求；不发送扫描或文件元数据。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if store.localAIBenchmarkPhase.isRunning {
+                    ProgressView().controlSize(.small)
+                }
+                Button(store.localAIBenchmarkResult == nil ? "运行最小测速" : "重新测速") {
+                    Task { await store.runLocalAIBenchmark() }
+                }
+                .disabled(!store.localAIIsReady || store.localAIBenchmarkPhase.isRunning || localAIDraftIsDirty)
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    modelFact(
+                        "健康检查",
+                        store.localAIProbeLatencyMilliseconds.map { "\(Int($0.rounded())) ms" } ?? "—",
+                        store.localAIIsReady ? "回环服务可达" : "等待连接"
+                    )
+                    modelFact(
+                        "首字延迟",
+                        store.localAIBenchmarkResult.map { "\(Int($0.firstTokenMilliseconds.rounded())) ms" } ?? "—",
+                        "真实流式首个输出"
+                    )
+                    modelFact(
+                        "完整响应",
+                        benchmarkTotalValue,
+                        benchmarkThroughputDetail
+                    )
+                }
+                VStack(spacing: 10) {
+                    modelFact("健康检查", store.localAIProbeLatencyMilliseconds.map { "\(Int($0.rounded())) ms" } ?? "—", store.localAIIsReady ? "回环服务可达" : "等待连接")
+                    modelFact("首字延迟", store.localAIBenchmarkResult.map { "\(Int($0.firstTokenMilliseconds.rounded())) ms" } ?? "—", "真实流式首个输出")
+                    modelFact("完整响应", benchmarkTotalValue, benchmarkThroughputDetail)
+                }
+            }
+
+            if let model = selectedLocalAIModel {
+                Label(modelMemoryGuidance(model), systemImage: "memorychip")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            switch store.localAIBenchmarkPhase {
+            case .failed(let detail):
+                InlineBanner(
+                    title: "最小推理测速未完成",
+                    detail: detail,
+                    kind: .warning
+                )
+            case .completed:
+                if let result = store.localAIBenchmarkResult {
+                    Text("本次实测对象：\(result.modelID)。结果只代表当前机器、当前负载和这次极短输出，不等同于长文本吞吐。")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                }
+            case .idle, .running:
+                EmptyView()
+            }
+        }
+        .padding(14)
+        .background(
+            LinearGradient(
+                colors: [CNTheme.violet.opacity(0.12), Color.clear],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 17, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .stroke(CNTheme.violet.opacity(0.16), lineWidth: 0.7)
+        )
+    }
+
+    private func modelFact(_ title: String, _ value: String, _ detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 18, weight: .semibold, design: .rounded))
+                .monospacedMetric()
+            Text(detail).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+    }
+
+    private var benchmarkTotalValue: String {
+        store.localAIBenchmarkResult.map { "\(Int($0.totalMilliseconds.rounded())) ms" } ?? "—"
+    }
+
+    private var benchmarkThroughputDetail: String {
+        guard let result = store.localAIBenchmarkResult else { return "等待用户主动测速" }
+        if let rate = result.tokensPerSecond {
+            return String(format: "%.1f token/s · %d token", rate, result.outputTokens ?? 0)
+        }
+        return "\(result.outputCharacters) 个输出字符"
+    }
+
+    private func modelMemoryGuidance(_ model: LocalModelDescriptor) -> String {
+        let physical = store.systemSnapshot?.memoryTotalBytes
+            ?? Int64(clamping: ProcessInfo.processInfo.physicalMemory)
+        guard model.weightBytes > 0, physical > 0 else {
+            return "未取得完整权重或物理内存数据；是否可运行仍以实际载入结果为准。"
+        }
+        let ratio = Double(model.weightBytes) / Double(physical)
+        let verdict: String
+        if ratio <= 0.55 {
+            verdict = "权重仍为系统、KV 缓存和其他 App 留有较明显空间"
+        } else if ratio <= 0.75 {
+            verdict = "可用余量有限，长上下文或同时运行多个重型 App 时应观察内存压力"
+        } else {
+            verdict = "权重已接近本机物理内存，实际载入和长上下文可能出现明显压力"
+        }
+        return "模型权重约 \(CleanNestFormatting.bytes(model.weightBytes))，本机物理内存 \(CleanNestFormatting.bytes(physical))：\(verdict)。这不是峰值内存承诺。"
     }
 
     private var localAIStatusTitle: String {
@@ -753,14 +899,7 @@ struct SettingsView: View {
         SurfaceCard(title: "关于 CleanNest", symbol: "leaf", tint: CNTheme.mint) {
             VStack(spacing: 0) {
                 HStack(alignment: .top, spacing: 16) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 15, style: .continuous)
-                            .fill(CNTheme.accent)
-                        Image(systemName: "leaf.fill")
-                            .font(.system(size: 25, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
-                    .frame(width: 58, height: 58)
+                    CNNestMark(size: 58, tint: CNTheme.mint)
                     VStack(alignment: .leading, spacing: 5) {
                         Text(AppMetadata.displayVersion)
                             .font(.headline)
@@ -801,6 +940,24 @@ struct SettingsView: View {
                     }
                     .disabled(store.appUpdateState.isChecking)
                     .accessibilityLabel(CNL10n.string(store.appUpdateState.isChecking ? "正在检查…" : "检查更新"))
+                }
+
+                Divider()
+                    .padding(.vertical, 15)
+
+                HStack(spacing: 12) {
+                    CNIconTile(symbol: "arrow.counterclockwise", tint: CNTheme.warning, size: 30)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("恢复安全默认设置")
+                            .font(.subheadline.weight(.medium))
+                        Text("只重置偏好；活动、学习、扫描索引、历史指标和系统授权分别保留。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("恢复…", role: .destructive) {
+                        showsResetPreferencesConfirmation = true
+                    }
                 }
             }
         }

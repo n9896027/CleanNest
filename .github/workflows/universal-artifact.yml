@@ -115,26 +115,28 @@ jobs:
 
       - name: Package checksums and SPDX SBOM
         run: |
-          ditto -c -k --keepParent build/CleanNest.app CleanNest-0.4.0-universal2-macos.zip
-          swift Tools/SBOMGenerator.swift build/CleanNest.app CleanNest-0.4.0.spdx.json
-          jq empty CleanNest-0.4.0.spdx.json
-          shasum -a 256 CleanNest-0.4.0-universal2-macos.zip CleanNest-0.4.0.spdx.json > SHA256SUMS
+          app_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/CleanNest.app/Contents/Info.plist)"
+          test -n "$app_version"
+          ditto -c -k --keepParent build/CleanNest.app "CleanNest-${app_version}-universal2-macos.zip"
+          swift Tools/SBOMGenerator.swift build/CleanNest.app "CleanNest-${app_version}.spdx.json"
+          jq empty "CleanNest-${app_version}.spdx.json"
+          shasum -a 256 "CleanNest-${app_version}-universal2-macos.zip" "CleanNest-${app_version}.spdx.json" > SHA256SUMS
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            CleanNest-0.4.0-universal2-macos.zip
-            CleanNest-0.4.0.spdx.json
+            CleanNest-*-universal2-macos.zip
+            CleanNest-*.spdx.json
             SHA256SUMS
 
       - name: Upload verified Universal 2 artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: CleanNest-0.4.0-universal2-adhoc
+          name: CleanNest-universal2-adhoc
           path: |
-            CleanNest-0.4.0-universal2-macos.zip
-            CleanNest-0.4.0.spdx.json
+            CleanNest-*-universal2-macos.zip
+            CleanNest-*.spdx.json
             SHA256SUMS
           if-no-files-found: error
           retention-days: 14

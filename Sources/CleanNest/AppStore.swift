@@ -102,6 +102,15 @@ enum DiskAIPhase: Equatable {
     }
 }
 
+enum LocalAIBenchmarkPhase: Equatable {
+    case idle
+    case running
+    case completed
+    case failed(String)
+
+    var isRunning: Bool { self == .running }
+}
+
 struct ActivityEntry: Identifiable, Codable, Hashable {
     enum Outcome: String, Codable {
         case success = "完成"
@@ -157,6 +166,12 @@ final class AppStore: ObservableObject {
     @Published private(set) var forceTerminationProcessID: String?
     @Published private(set) var memoryProcessMessage: String?
     @Published private(set) var memoryProcessMessageIsWarning = false
+    @Published private(set) var batteryProbeResult = BatteryProbeResult(
+        availability: .unreadable,
+        level: nil,
+        status: "等待检测",
+        detail: "尚未读取系统电源接口。"
+    )
     @Published var diskTotalBytes: Int64 = 0
     @Published var diskFreeBytes: Int64 = 0
     @Published private(set) var metricHistory: [MetricSample] = []
@@ -187,6 +202,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var cleanupAIFeedback: Bool?
     @Published private(set) var localAIDiagnostic = "尚未检测"
     @Published private(set) var localAIConfigurationError: String?
+    @Published private(set) var localAIProbeLatencyMilliseconds: Double?
+    @Published private(set) var localAIBenchmarkPhase: LocalAIBenchmarkPhase = .idle
+    @Published private(set) var localAIBenchmarkResult: LocalAIBenchmarkResult?
 
     @Published var applications: [InstalledApplication] = []
     @Published var applicationSearch = ""
@@ -198,6 +216,11 @@ final class AppStore: ObservableObject {
     @Published var diskRoot = FileManager.default.homeDirectoryForCurrentUser
     @Published var diskHasScanned = false
     @Published private(set) var diskScanProgress: DiskScanProgress?
+    @Published private(set) var diskPartialReport: DiskReport?
+    @Published private(set) var diskScanCacheHitCount = 0
+    @Published private(set) var diskScanScannedCount = 0
+    @Published private(set) var diskScanElapsedSeconds: Double?
+    @Published private(set) var diskScanCompletedAt: Date?
     @Published private(set) var diskEvidenceProgress: DiskEvidenceProgress?
     @Published private(set) var diskEvidenceReport: DiskEvidenceReport?
     @Published private(set) var diskAIPhase: DiskAIPhase = .idle
@@ -286,14 +309,17 @@ final class AppStore: ObservableObject {
                 self.localAIDiagnostic = detail
             }
         }
-        loadActivities()
-        loadEvolutionMemory()
-
         if demoMode {
+            // Demo and screenshot runs must never inherit a user's persisted
+            // activity, learning, model catalog, or disk-capacity data.
+            activities = []
+            evolutionMemory = EvolutionMemory()
             seedDemoData()
+        } else {
+            loadActivities()
+            loadEvolutionMemory()
+            refreshDiskCapacity()
         }
-
-        refreshDiskCapacity()
         Task { await bootstrap() }
     }
 
@@ -391,6 +417,11 @@ final class AppStore: ObservableObject {
     }
 
     func refreshLocalModelCatalog() async {
+        guard !demoMode else {
+            localAIModelCatalogIsRefreshing = false
+            localAIModelCatalogDiagnostic = "演示模式：1 个合成模型，不读取本机模型目录。"
+            return
+        }
         guard !localAIModelCatalogIsRefreshing else { return }
         localAIModelCatalogIsRefreshing = true
         localAIModelCatalogDiagnostic = "正在扫描常用模型目录…"
@@ -414,6 +445,7 @@ final class AppStore: ObservableObject {
     }
 
     func refreshMetricHistory() async {
+        guard !demoMode else { return }
         do {
             metricHistory = try await metricsStore.samples(range: metricHistoryRange)
             metricsDiagnostic = metricHistory.isEmpty
@@ -433,6 +465,10 @@ final class AppStore: ObservableObject {
     func setMetricsRetentionDays(_ days: Int) async {
         let validDays = Self.validMetricsRetentionDays(days)
         metricsRetentionDays = validDays
+        guard !demoMode else {
+            metricsDiagnostic = "演示模式：保留期只更新当前合成界面。"
+            return
+        }
         settings.set(validDays, forKey: "metricsRetentionDays")
         do {
             _ = try await metricsStore.prune(retainingDays: validDays)
@@ -443,6 +479,11 @@ final class AppStore: ObservableObject {
     }
 
     func clearMetricHistory() async {
+        guard !demoMode else {
+            metricHistory = []
+            metricsDiagnostic = "演示模式：合成历史已从当前界面清空。"
+            return
+        }
         do {
             try await metricsStore.clear()
             metricHistory = []
@@ -638,6 +679,7 @@ final class AppStore: ObservableObject {
     }
 
     func setCustomEnginePath(_ path: String) async {
+        guard !demoMode else { return }
         customEnginePath = path
         settings.set(path, forKey: "customEnginePath")
         await refreshEngine()
@@ -645,10 +687,13 @@ final class AppStore: ObservableObject {
 
     func setLocalAIEnabled(_ enabled: Bool) {
         localAIEnabled = enabled
-        settings.set(enabled, forKey: "localAIEnabled")
+        if !demoMode { settings.set(enabled, forKey: "localAIEnabled") }
         localAIProbeID = UUID()
         invalidateCleanupAI()
         invalidateDiskAI()
+        localAIBenchmarkPhase = .idle
+        localAIBenchmarkResult = nil
+        localAIProbeLatencyMilliseconds = nil
 
         if enabled {
             localAIServiceState = .unchecked
@@ -740,6 +785,9 @@ final class AppStore: ObservableObject {
         if configurationChanged {
             invalidateCleanupAI()
             invalidateDiskAI()
+            localAIBenchmarkPhase = .idle
+            localAIBenchmarkResult = nil
+            localAIProbeLatencyMilliseconds = nil
         }
 
         if localAIEnabled {
@@ -780,19 +828,47 @@ final class AppStore: ObservableObject {
         let probeID = UUID()
         localAIProbeID = probeID
         localAIServiceState = .checking
+        localAIProbeLatencyMilliseconds = nil
         localAIAvailableServiceModelIDs = []
         localAIDefaultServiceModelID = nil
+        let probeStartedAt = Date()
         do {
             let (modelID, result) = try await probeConfiguredLocalAI()
             guard localAIProbeID == probeID else { return }
             updateServiceModelCatalog(from: result)
             localAIProcessOwned = localAIRuntime.ownsRunningProcess
             localAIServiceState = .ready(modelID: modelID)
+            localAIProbeLatencyMilliseconds = max(0, Date().timeIntervalSince(probeStartedAt) * 1_000)
             localAIDiagnostic = "已连接本机回环服务；API 模型为 \(modelID)。文件内容不会发送给模型。"
         } catch {
             guard localAIProbeID == probeID else { return }
             localAIProcessOwned = localAIRuntime.ownsRunningProcess
             localAIServiceState = .unavailable(error.localizedDescription)
+            localAIDiagnostic = error.localizedDescription
+        }
+    }
+
+    func runLocalAIBenchmark() async {
+        guard !demoMode else { return }
+        guard case .ready(let modelID) = localAIServiceState,
+              !localAIBenchmarkPhase.isRunning else { return }
+        localAIBenchmarkPhase = .running
+        localAIBenchmarkResult = nil
+        do {
+            let client = try MLXOpenAIClient(endpoint: localAIEndpoint)
+            let result = try await client.benchmark(modelID: modelID)
+            guard case .ready(let currentModelID) = localAIServiceState,
+                  currentModelID == modelID else {
+                localAIBenchmarkPhase = .idle
+                return
+            }
+            localAIBenchmarkResult = result
+            localAIBenchmarkPhase = .completed
+            localAIDiagnostic = "最小推理测速完成：首字 \(Int(result.firstTokenMilliseconds.rounded())) ms，总耗时 \(Int(result.totalMilliseconds.rounded())) ms。"
+        } catch is CancellationError {
+            localAIBenchmarkPhase = .idle
+        } catch {
+            localAIBenchmarkPhase = .failed(error.localizedDescription)
             localAIDiagnostic = error.localizedDescription
         }
     }
@@ -937,6 +1013,10 @@ final class AppStore: ObservableObject {
         evolutionMemory.cleanupSignal(for: candidate)
     }
 
+    func cleanupRuleProposal(for candidate: CleanupCandidate) -> CleanupRuleProposal? {
+        evolutionMemory.ruleProposal(for: candidate)
+    }
+
     func cleanupLearningRank(for candidate: CleanupCandidate) -> Int {
         switch learnedCleanupPreference(for: candidate) {
         case .preferCleanup: return 0
@@ -949,15 +1029,33 @@ final class AppStore: ObservableObject {
         _ candidate: CleanupCandidate,
         preference: LearnedCleanupPreference
     ) {
-        evolutionMemory.recordCleanup(
-            candidate,
-            decision: preference == .preferCleanup ? .preferCleanup : .preferKeep
+        evolutionMemory.proposeCleanupPreference(
+            for: candidate,
+            preference: preference,
+            reason: preference == .preferCleanup
+                ? "你明确提出以后优先复核这个项目。"
+                : "你明确提出以后优先保留这个项目。"
         )
         saveEvolutionMemory()
     }
 
     func forgetCleanupPreference(_ candidate: CleanupCandidate) {
-        evolutionMemory.clearExplicitPreference(for: candidate)
+        evolutionMemory.removeRuleProposal(id: EvolutionMemory.cleanupKey(for: candidate))
+        saveEvolutionMemory()
+    }
+
+    func enableCleanupRule(_ id: String) {
+        evolutionMemory.enableRuleProposal(id: id)
+        saveEvolutionMemory()
+    }
+
+    func pauseCleanupRule(_ id: String) {
+        evolutionMemory.pauseRuleProposal(id: id)
+        saveEvolutionMemory()
+    }
+
+    func removeCleanupRule(_ id: String) {
+        evolutionMemory.removeRuleProposal(id: id)
         saveEvolutionMemory()
     }
 
@@ -1017,8 +1115,12 @@ final class AppStore: ObservableObject {
                 processes: inspector.topProcesses(limit: 16)
             )
         }
+        let batteryTask = Task.detached(priority: .utility) {
+            PowerSourceProbe.sample()
+        }
         guard let engine else {
             let nativeMemory = await nativeMemoryTask.value
+            batteryProbeResult = await batteryTask.value
             memoryProcesses = nativeMemory.processes
             if let systemSnapshot {
                 memoryAnalysis = MemoryAnalyzer.analyze(
@@ -1041,6 +1143,7 @@ final class AppStore: ObservableObject {
                 throw CocoaError(.fileReadCorruptFile)
             }
             let nativeMemory = await nativeMemoryTask.value
+            batteryProbeResult = await batteryTask.value
             let snapshot = try MoleJSONDecoder.systemSnapshot(
                 from: data,
                 memoryProbe: nativeMemory.probe
@@ -1061,6 +1164,7 @@ final class AppStore: ObservableObject {
             phase = .idle
         } catch {
             let nativeMemory = await nativeMemoryTask.value
+            batteryProbeResult = await batteryTask.value
             memoryProcesses = nativeMemory.processes
             if let systemSnapshot {
                 memoryAnalysis = MemoryAnalyzer.analyze(
@@ -1074,6 +1178,11 @@ final class AppStore: ObservableObject {
     }
 
     func terminateMemoryProcess(_ process: MemoryProcessSnapshot, force: Bool = false) async {
+        guard !demoMode else {
+            memoryProcessMessage = "演示模式不会结束任何进程。"
+            memoryProcessMessageIsWarning = false
+            return
+        }
         guard terminatingMemoryProcessID == nil else { return }
         terminatingMemoryProcessID = process.id
         memoryProcessMessage = nil
@@ -1132,6 +1241,7 @@ final class AppStore: ObservableObject {
     }
 
     func scanCleanup() async {
+        guard !demoMode else { return }
         guard !isWorking else { return }
         invalidateCleanupAI()
         phase = .scanning("正在检查可清理内容…")
@@ -1217,6 +1327,7 @@ final class AppStore: ObservableObject {
     }
 
     func scanApplications() async {
+        guard !demoMode else { return }
         guard !isWorking else { return }
         phase = .scanning("正在读取已安装的 App…")
         applications = await applicationScanner.scan()
@@ -1232,6 +1343,7 @@ final class AppStore: ObservableObject {
     }
 
     func loadLeftovers(for application: InstalledApplication) async {
+        guard !demoMode else { return }
         let requestID = UUID()
         leftoverRequestID = requestID
         selectedApplicationLeftovers = []
@@ -1244,11 +1356,13 @@ final class AppStore: ObservableObject {
     }
 
     func applicationIsRunning(_ application: InstalledApplication) -> Bool {
+        guard !demoMode else { return false }
         guard let bundleID = application.bundleIdentifier else { return false }
         return !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
     }
 
     func askApplicationToQuit(_ application: InstalledApplication) {
+        guard !demoMode else { return }
         guard let bundleID = application.bundleIdentifier else { return }
         NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).forEach { $0.terminate() }
     }
@@ -1311,18 +1425,23 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func analyze(_ root: URL? = nil) async {
+    func analyze(_ root: URL? = nil, deepRefresh: Bool = false) async {
+        guard !demoMode else { return }
         guard !isWorking, activeDiskScanTask == nil else { return }
         let target = (root ?? diskRoot).standardizedFileURL
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.performDiskAnalysis(target)
+            await self.performDiskAnalysis(
+                target,
+                mode: deepRefresh ? .bypassCache : .reuseFreshCache
+            )
         }
         activeDiskScanTask = task
         await task.value
         activeDiskScanTask = nil
         diskScanProgress = nil
         diskEvidenceProgress = nil
+        diskPartialReport = nil
         if case .scanning = phase { phase = .idle }
     }
 
@@ -1337,14 +1456,17 @@ final class AppStore: ObservableObject {
         return diskEvidenceReport?.entries.first { $0.id == fingerprint }
     }
 
-    private func performDiskAnalysis(_ target: URL) async {
+    private func performDiskAnalysis(_ target: URL, mode: DiskScanMode) async {
         let cancelledCollectionTask = invalidateDiskAI()
         let previousRoot = diskReport?.root.standardizedFileURL.path
         diskRoot = target
         if previousRoot != nil, previousRoot != target.path {
-            diskReport = nil
             diskHasScanned = false
         }
+        diskPartialReport = nil
+        diskScanCacheHitCount = 0
+        diskScanScannedCount = 0
+        diskScanElapsedSeconds = nil
 
         guard !diskTraversalMayRequireFullDiskAccess(target) || fullDiskAccessProbePassed else {
             diskPrivacyBlockMessage = "CleanNest 已在扫描前停止：\(target.path) 会遍历受 macOS 保护的应用数据。请到设置页由你手动打开系统设置；访问测试通过前不会启动 Mole 或原生扫描。"
@@ -1369,59 +1491,44 @@ final class AppStore: ObservableObject {
             return
         }
 
-        if !demoMode, let engine {
-            do {
-                let result = try await commandRunner.runChecked(
-                    executable: engine.executable,
-                    arguments: ["analyze", "--json", target.path],
-                    environment: commandEnvironment
-                )
-                guard !Self.containsPermissionFailure(result.standardError) else {
-                    recordDiskPermissionFailure(
-                        target: target,
-                        detail: result.standardError,
-                        source: "Mole"
-                    )
-                    return
-                }
-                guard let data = result.standardOutput.data(using: .utf8) else {
-                    throw CocoaError(.fileReadCorruptFile)
-                }
-                let report = try MoleJSONDecoder.diskReport(from: data, fallbackRoot: target)
-                lastTechnicalDetail = result.standardError
-                try await finishDiskAnalysis(report)
-                phase = .idle
-                return
-            } catch is CancellationError {
-                phase = .idle
-                return
-            } catch {
-                if Self.isPermissionFailure(error) {
-                    recordDiskPermissionFailure(
-                        target: target,
-                        detail: error.localizedDescription,
-                        source: "Mole"
-                    )
-                    return
-                }
-                if diskTraversalMayRequireFullDiskAccess(target) {
-                    diskPrivacyBlockMessage = "Mole 未能完成受保护目录的分析。CleanNest 已阻止随后的原生递归扫描，避免对同一批应用数据再次发起访问。"
-                    lastTechnicalDetail = "\(diskPrivacyBlockMessage ?? "")\n\nMole 错误：\(error.localizedDescription)"
-                    phase = .idle
-                    return
-                }
-                lastTechnicalDetail = "Mole 分析不可用，已回退到原生扫描：\(error.localizedDescription)"
-            }
-        }
-
         do {
-            let report = try await diskAnalyzer.analyze(root: target) { [weak self] progress in
-                Task { @MainActor in self?.diskScanProgress = progress }
+            let cacheURL = CleanNestDataPaths.diskScanCache()
+            let cache: DiskScanCacheStore
+            do {
+                cache = try DiskScanCachePersistence.load(from: cacheURL)
+            } catch {
+                cache = DiskScanCacheStore()
+                lastTechnicalDetail = "磁盘增量索引无法读取，本次改为完整扫描：\(error.localizedDescription)"
+            }
+            let outcome = try await diskAnalyzer.analyze(
+                root: target,
+                cache: cache,
+                mode: mode
+            ) { [weak self] progress in
+                Task { @MainActor in
+                    self?.diskScanProgress = progress
+                    self?.diskPartialReport = progress.partialReport
+                    self?.diskScanCacheHitCount = progress.cacheHitCount
+                    self?.diskScanScannedCount = progress.scannedCount
+                }
             }
             try Task.checkCancellation()
-            try await finishDiskAnalysis(report)
+            try DiskScanCachePersistence.save(outcome.updatedCache, to: cacheURL)
+            diskScanCacheHitCount = outcome.cacheHitCount
+            diskScanScannedCount = outcome.scannedCount
+            diskScanElapsedSeconds = outcome.elapsedSeconds
+            diskScanCompletedAt = Date()
+            try await finishDiskAnalysis(outcome.report)
+            lastTechnicalDetail = outcome.usedCache
+                ? "磁盘分析完成：复用 \(outcome.cacheHitCount) 项，实扫 \(outcome.scannedCount) 项，耗时 \(String(format: "%.2f", outcome.elapsedSeconds)) 秒。缓存只在元数据签名匹配且 15 分钟内复用。"
+                : "磁盘分析完成：实扫 \(outcome.scannedCount) 项，耗时 \(String(format: "%.2f", outcome.elapsedSeconds)) 秒。"
             phase = .idle
         } catch is CancellationError {
+            if let previousReport = diskReport {
+                diskRoot = previousReport.root
+                diskHasScanned = true
+            }
+            diskPartialReport = nil
             phase = .idle
         } catch {
             phase = .failed("磁盘分析没有完成")
@@ -1447,7 +1554,30 @@ final class AppStore: ObservableObject {
         diskReport = report
         diskEvidenceReport = evidence
         diskHasScanned = true
+        diskPartialReport = nil
         diskEvidenceProgress = nil
+    }
+
+    func clearDiskScanCache() {
+        guard !demoMode else {
+            diskScanCacheHitCount = 0
+            diskScanScannedCount = 0
+            diskScanElapsedSeconds = nil
+            lastTechnicalDetail = "演示模式：只重置了当前合成界面的索引状态。"
+            return
+        }
+        do {
+            try DiskScanCachePersistence.save(
+                DiskScanCacheStore(),
+                to: CleanNestDataPaths.diskScanCache()
+            )
+            diskScanCacheHitCount = 0
+            diskScanScannedCount = 0
+            diskScanElapsedSeconds = nil
+            lastTechnicalDetail = "磁盘增量索引已清空；下次分析会重新读取大小。"
+        } catch {
+            lastTechnicalDetail = "磁盘增量索引未能清空：\(error.localizedDescription)"
+        }
     }
 
     func analyzeDiskWithLocalAI() async {
@@ -1807,7 +1937,52 @@ final class AppStore: ObservableObject {
 
     func setDeveloperMode(_ enabled: Bool) {
         developerMode = enabled
-        settings.set(enabled, forKey: "developerMode")
+        if !demoMode { settings.set(enabled, forKey: "developerMode") }
+    }
+
+    func resetPreferencesToSafeDefaults() async {
+        guard !demoMode else {
+            lastTechnicalDetail = "演示模式不会改写本机偏好设置。"
+            return
+        }
+        let keys = [
+            "customEnginePath",
+            "developerMode",
+            "localAIEnabled",
+            "localAIEndpoint",
+            "localAIServiceModelID",
+            "localAIModelPath",
+            "localAIExecutablePath",
+            "recentLocalAIModelPaths",
+            "metricsRetentionDays"
+        ]
+        for key in keys { settings.removeObject(forKey: key) }
+
+        customEnginePath = ""
+        developerMode = true
+        includeApplicationCaches = false
+        metricsRetentionDays = 30
+        localAIRuntime.stopOwnedProcess()
+        localAIProcessOwned = false
+        localAIEnabled = false
+        localAIEndpoint = "http://127.0.0.1:8080/v1"
+        localAIServiceModelID = ""
+        localAIModelPath = ""
+        localAIExecutablePath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".mlx-env/bin/mlx_lm.server")
+            .path
+        localAIAvailableServiceModelIDs = []
+        localAIDefaultServiceModelID = nil
+        localAIServiceState = .disabled
+        localAIProbeLatencyMilliseconds = nil
+        localAIBenchmarkResult = nil
+        localAIBenchmarkPhase = .idle
+        localAIConfigurationError = nil
+        invalidateCleanupAI()
+        _ = invalidateDiskAI()
+        cleanupHasScanned = false
+        await refreshEngine()
+        lastTechnicalDetail = "设置已恢复为安全默认值。本机活动、扫描结果、学习规则、历史指标和 macOS 授权均未清除。"
     }
 
     func dismissPhase() {
@@ -1823,6 +1998,7 @@ final class AppStore: ObservableObject {
         localAIServiceModelID = localAIServiceModelID.trimmingCharacters(in: .whitespacesAndNewlines)
         localAIModelPath = localAIModelPath.trimmingCharacters(in: .whitespacesAndNewlines)
         localAIExecutablePath = localAIExecutablePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !demoMode else { return }
         settings.set(localAIEndpoint, forKey: "localAIEndpoint")
         settings.set(localAIServiceModelID, forKey: "localAIServiceModelID")
         settings.set(localAIModelPath, forKey: "localAIModelPath")
@@ -1865,8 +2041,10 @@ final class AppStore: ObservableObject {
     private static func validatedServiceModelID(_ rawModelID: String) throws -> String {
         let modelID = rawModelID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard modelID.count <= 512,
+              !(modelID as NSString).isAbsolutePath,
+              !modelID.lowercased().hasPrefix("file://"),
               modelID.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
-            throw LocalAIError.modelUnavailable("API 模型名称包含无效字符或过长")
+            throw LocalAIError.modelUnavailable("API 模型必须使用 oMLX 列出的短名，不能使用文件路径")
         }
         return modelID
     }
@@ -1900,7 +2078,7 @@ final class AppStore: ObservableObject {
             )
         }
         guard !result.modelIDs.isEmpty else {
-            throw LocalAIError.modelUnavailable("服务已响应，但没有列出可用模型")
+            throw LocalAIError.modelUnavailable("服务已响应，但没有列出可用的模型短名")
         }
         throw LocalAIError.modelUnavailable(
             "服务列出了多个模型，但无法确定要调用哪一个。请在 API 模型中选择短名。"
@@ -1940,6 +2118,7 @@ final class AppStore: ObservableObject {
     }
 
     private func persistCleanupPreview() {
+        guard !demoMode else { return }
         let snapshot = CleanupPreviewSnapshot.make(candidates: cleanupCandidates)
         do {
             try CleanupPreviewPersistence.save(
@@ -1963,6 +2142,7 @@ final class AppStore: ObservableObject {
     }
 
     private func saveEvolutionMemory() {
+        guard !demoMode else { return }
         do {
             try EvolutionMemoryPersistence.save(
                 evolutionMemory,
@@ -2001,6 +2181,19 @@ final class AppStore: ObservableObject {
         saveActivities()
     }
 
+    func exportActivities(to url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try encoder.encode(activities).write(to: url, options: .atomic)
+    }
+
+    func clearActivities() {
+        activities = []
+        saveActivities()
+        lastTechnicalDetail = "CleanNest 活动记录已清空；废纸篓和 Mole 自身日志未改变。"
+    }
+
     private var activityFileURL: URL {
         CleanNestDataPaths.activityLog()
     }
@@ -2013,6 +2206,7 @@ final class AppStore: ObservableObject {
     }
 
     private func saveActivities() {
+        guard !demoMode else { return }
         let url = activityFileURL
         guard let data = try? JSONEncoder().encode(activities) else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -2020,7 +2214,8 @@ final class AppStore: ObservableObject {
     }
 
     private func seedDemoData() {
-        let home = FileManager.default.homeDirectoryForCurrentUser
+        let home = URL(fileURLWithPath: "/Users/demo", isDirectory: true)
+        diskRoot = home
         fullDiskAccessProbeResult = .accessible
         localAIEnabled = true
         engine = EngineInstallation(executable: URL(fileURLWithPath: "/opt/homebrew/bin/mole"), version: "Mole 1.48.1")
@@ -2048,8 +2243,61 @@ final class AppStore: ObservableObject {
             temperatureSource: "CPU 温度",
             uptime: "3 天 12 小时"
         )
+        batteryProbeResult = BatteryProbeResult(
+            availability: .present,
+            level: 86,
+            status: "使用电池",
+            detail: "演示数据：系统电源接口检测到内置电池。"
+        )
+        memoryProcesses = [
+            MemoryProcessSnapshot(
+                pid: 4_201,
+                parentPID: 1,
+                name: "oMLX",
+                applicationName: "oMLX",
+                executablePath: "/Applications/oMLX.app/Contents/MacOS/oMLX",
+                physicalFootprintBytes: 7_420_000_000,
+                residentBytes: 7_180_000_000,
+                ownerUserID: UInt32(getuid()),
+                startSeconds: 1_774_000_001,
+                startMicroseconds: 120_000,
+                purpose: "本机模型服务，为 CleanNest 和其他客户端提供推理。",
+                terminationImpact: "退出后，正在进行的本机 AI 分析会中断，但不会删除模型文件。",
+                protectionReason: nil
+            ),
+            MemoryProcessSnapshot(
+                pid: 4_520,
+                parentPID: 1,
+                name: "Figma",
+                applicationName: "Figma",
+                executablePath: "/Applications/Figma.app/Contents/MacOS/Figma",
+                physicalFootprintBytes: 1_360_000_000,
+                residentBytes: 1_210_000_000,
+                ownerUserID: UInt32(getuid()),
+                startSeconds: 1_774_000_101,
+                startMicroseconds: 80_000,
+                purpose: "正在运行的 Figma 桌面应用。",
+                terminationImpact: "退出后应用会关闭，未保存的本地编辑可能丢失。",
+                protectionReason: nil
+            ),
+            MemoryProcessSnapshot(
+                pid: 188,
+                parentPID: 1,
+                name: "WindowServer",
+                applicationName: nil,
+                executablePath: "/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+                physicalFootprintBytes: 940_000_000,
+                residentBytes: 880_000_000,
+                ownerUserID: 0,
+                startSeconds: 1_773_990_000,
+                startMicroseconds: 0,
+                purpose: "macOS 窗口与显示服务。",
+                terminationImpact: "受系统保护，不提供结束操作。",
+                protectionReason: "系统进程"
+            )
+        ]
         if let systemSnapshot {
-            memoryAnalysis = MemoryAnalyzer.analyze(snapshot: systemSnapshot, processes: [])
+            memoryAnalysis = MemoryAnalyzer.analyze(snapshot: systemSnapshot, processes: memoryProcesses)
         }
         metricHistory = (0..<60).map { offset in
             let wave = Double(offset % 12)
@@ -2084,12 +2332,42 @@ final class AppStore: ObservableObject {
         ]
         selectedCleanupIDs = Set(cleanupCandidates.filter(\.isRecommended).map(\.id))
         cleanupHasScanned = true
-        localAIModelPath = home.appendingPathComponent("Models/MLX/example-local-model").path
+        let demoModelID = "Qwen3.8-27B-Uncensored-8bit"
+        let demoModelPath = home
+            .appendingPathComponent("Models/MLX/Qwen3.8-27B-Uncensored-8bit", isDirectory: true)
+            .path
+        localAIEndpoint = "http://127.0.0.1:8080/v1"
+        localAIModelPath = demoModelPath
         localAIExecutablePath = home.appendingPathComponent(".mlx-env/bin/mlx_lm.server").path
-        localAIServiceState = .ready(modelID: localAIModelPath)
+        localAIAvailableModels = [
+            LocalModelDescriptor(
+                path: demoModelPath,
+                canonicalPath: demoModelPath,
+                displayName: demoModelID,
+                architecture: "Qwen3_5ForConditionalGeneration",
+                modelType: "qwen3_5",
+                quantization: "8-bit",
+                weightBytes: 29_500_000_000,
+                serviceAliases: [demoModelID]
+            )
+        ]
+        localAIModelCatalogDiagnostic = "演示模式：1 个合成模型，不读取本机模型目录。"
+        localAIServiceModelID = demoModelID
+        localAIAvailableServiceModelIDs = [demoModelID]
+        localAIDefaultServiceModelID = demoModelID
+        localAIServiceState = .ready(modelID: demoModelID)
+        localAIProbeLatencyMilliseconds = 18
+        localAIBenchmarkResult = LocalAIBenchmarkResult(
+            modelID: demoModelID,
+            firstTokenMilliseconds: 412,
+            totalMilliseconds: 680,
+            outputTokens: 2,
+            outputCharacters: 2
+        )
+        localAIBenchmarkPhase = .completed
         localAIDiagnostic = "演示模式：本机模型已连接"
         cleanupAIAnalysis = CleanupAIAnalysis(
-            modelID: localAIModelPath,
+            modelID: demoModelID,
             summary: "主要空间来自可重新生成的开发与包管理器缓存；安装包和诊断日志仍建议逐项确认。",
             advice: [
                 CleanupAIAdvice(candidateID: cleanupCandidates[0].id, verdict: .reclaimable, risk: .low, priority: 1, reason: "超过三周未修改，Xcode 会在下次构建时按需重建。"),
@@ -2102,6 +2380,25 @@ final class AppStore: ObservableObject {
             requestedCount: cleanupCandidates.count
         )
         cleanupAIPhase = .completed
+        evolutionMemory.proposeCleanupPreference(
+            for: cleanupCandidates[0],
+            preference: .preferCleanup,
+            reason: "你明确提出以后优先复核这个项目。"
+        )
+        if let proposal = evolutionMemory.ruleProposal(for: cleanupCandidates[0]) {
+            evolutionMemory.enableRuleProposal(id: proposal.id)
+        }
+        evolutionMemory.proposeCleanupPreference(
+            for: cleanupCandidates[4],
+            preference: .preferKeep,
+            reason: "你明确提出以后优先保留这个项目。"
+        )
+        evolutionMemory.recordModelFeedback(
+            modelID: demoModelID,
+            displayName: demoModelID,
+            helpful: true,
+            scope: "磁盘解读"
+        )
 
         applications = [
             InstalledApplication(name: "Arc", bundleIdentifier: "company.thebrowser.Browser", version: "1.102", url: URL(fileURLWithPath: "/Applications/Arc.app"), allocatedBytes: 690_000_000, modifiedAt: Date().addingTimeInterval(-86_400)),
@@ -2130,6 +2427,10 @@ final class AppStore: ObservableObject {
             totalFiles: 148_220
         )
         diskHasScanned = true
+        diskScanCacheHitCount = 3
+        diskScanScannedCount = 2
+        diskScanElapsedSeconds = 0.42
+        diskScanCompletedAt = Date()
         if let diskReport {
             diskEvidenceReport = DiskEvidenceReport(
                 rootHint: "~",
@@ -2182,7 +2483,7 @@ final class AppStore: ObservableObject {
         }
         if let entries = diskReport?.entries {
             diskAIAnalysis = DiskAIAnalysis(
-                modelID: localAIModelPath,
+                modelID: demoModelID,
                 summary: "基于目录名称、层级和体积推断，主要空间来自个人文件与应用数据；这些顶层目录都不适合直接整体清理，应继续进入查看。",
                 advice: [
                     DiskAIAdvice(entryID: entries[0].id, category: .systemData, confidence: .high, verdict: .keep, risk: .high, priority: 1, suggestion: .inspectFurther, explanation: "通常包含应用沙盒、支持数据与缓存等混合内容。应继续进入，优先检查具体缓存目录，不要整体处理。"),

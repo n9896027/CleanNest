@@ -13,8 +13,46 @@ final class EvolutionMemoryTests: XCTestCase {
         XCTAssertEqual(memory.successfulCleanupCount, 1)
 
         memory.clearExplicitPreference(for: candidate)
-        XCTAssertEqual(memory.cleanupPreference(for: candidate), .preferCleanup)
+        XCTAssertNil(memory.cleanupPreference(for: candidate))
         XCTAssertEqual(memory.events.first?.title, "已撤销清理偏好")
+    }
+
+    func testRuleProposalDoesNotApplyUntilReviewedAndCanBePausedOrRemoved() {
+        let candidate = fixture()
+        var memory = EvolutionMemory()
+
+        memory.proposeCleanupPreference(
+            for: candidate,
+            preference: .preferKeep,
+            reason: "用户明确提出保留"
+        )
+        let proposal = memory.ruleProposal(for: candidate)
+        XCTAssertEqual(proposal?.state, .pending)
+        XCTAssertNil(memory.cleanupPreference(for: candidate))
+        XCTAssertEqual(memory.pendingRuleCount, 1)
+
+        memory.enableRuleProposal(id: try! XCTUnwrap(proposal?.id))
+        XCTAssertEqual(memory.cleanupPreference(for: candidate), .preferKeep)
+        XCTAssertEqual(memory.enabledRuleCount, 1)
+
+        memory.pauseRuleProposal(id: try! XCTUnwrap(proposal?.id))
+        XCTAssertNil(memory.cleanupPreference(for: candidate))
+        XCTAssertEqual(memory.ruleProposal(for: candidate)?.state, .paused)
+
+        memory.removeRuleProposal(id: try! XCTUnwrap(proposal?.id))
+        XCTAssertNil(memory.ruleProposal(for: candidate))
+        XCTAssertNil(memory.cleanupPreference(for: candidate))
+    }
+
+    func testSuccessfulCleanupCreatesPendingProposalWithoutAutoApplying() {
+        let candidate = fixture()
+        var memory = EvolutionMemory()
+
+        memory.recordCleanup(candidate, decision: .cleaned)
+        XCTAssertEqual(memory.successfulCleanupCount, 1)
+        XCTAssertEqual(memory.ruleProposal(for: candidate)?.state, .pending)
+        XCTAssertEqual(memory.ruleProposal(for: candidate)?.suggestedPreference, .preferCleanup)
+        XCTAssertNil(memory.cleanupPreference(for: candidate))
     }
 
     func testSameDisplayNameAtDifferentPathsDoesNotSharePreference() {

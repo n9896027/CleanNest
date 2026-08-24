@@ -1,8 +1,13 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import CleanNestCore
 
 struct ActivityView: View {
     @EnvironmentObject private var store: AppStore
+    @State private var confirmingClear = false
+    @State private var exportMessage: String?
+    @State private var exportFailed = false
 
     var body: some View {
         ScrollView {
@@ -11,11 +16,31 @@ struct ActivityView: View {
                     title: "活动记录",
                     subtitle: "记录完成、跳过与失败；只有明确可恢复的操作才会显示恢复入口。"
                 ) {
-                    Button {
-                        store.openTrash()
-                    } label: {
-                        Label("打开废纸篓", systemImage: "trash")
+                    HStack(spacing: 8) {
+                        Button {
+                            exportActivities()
+                        } label: {
+                            Label("导出", systemImage: "square.and.arrow.up")
+                        }
+                        .disabled(store.activities.isEmpty)
+                        Button("清空…", role: .destructive) {
+                            confirmingClear = true
+                        }
+                        .disabled(store.activities.isEmpty)
+                        Button {
+                            store.openTrash()
+                        } label: {
+                            Label("打开废纸篓", systemImage: "trash")
+                        }
                     }
+                }
+
+                if let exportMessage {
+                    InlineBanner(
+                        title: exportFailed ? "活动记录未能导出" : "活动记录已导出",
+                        detail: exportMessage,
+                        kind: exportFailed ? .warning : .success
+                    )
                 }
 
                 if store.activities.isEmpty {
@@ -45,6 +70,38 @@ struct ActivityView: View {
                 }
             }
             .padding(CNTheme.pagePadding)
+        }
+        .confirmationDialog(
+            "清空所有 CleanNest 活动记录？",
+            isPresented: $confirmingClear,
+            titleVisibility: .visible
+        ) {
+            Button("清空记录", role: .destructive) {
+                store.clearActivities()
+                exportMessage = "只清除了 CleanNest 的本机活动列表；废纸篓、扫描结果与 Mole 日志未改变。"
+                exportFailed = false
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("这项操作不能从 CleanNest 内撤销，但不会删除文件或清空废纸篓。")
+        }
+    }
+
+    private func exportActivities() {
+        let panel = NSSavePanel()
+        panel.title = CNL10n.string("导出活动记录")
+        panel.prompt = CNL10n.string("导出")
+        panel.nameFieldStringValue = "CleanNest-Activity-\(Date.now.formatted(.iso8601.year().month().day()))"
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try store.exportActivities(to: url)
+            exportMessage = "已写入你选择的位置；JSON 可能包含操作项目名称，请在公开分享前检查。"
+            exportFailed = false
+        } catch {
+            exportMessage = error.localizedDescription
+            exportFailed = true
         }
     }
 }
