@@ -223,6 +223,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var diskScanCompletedAt: Date?
     @Published private(set) var diskEvidenceProgress: DiskEvidenceProgress?
     @Published private(set) var diskEvidenceReport: DiskEvidenceReport?
+    @Published private(set) var diskManualDecisions = DiskManualDecisionStore()
     @Published private(set) var diskAIPhase: DiskAIPhase = .idle
     @Published private(set) var diskAIAnalysis: DiskAIAnalysis?
     @Published private(set) var diskAIFeedback: Bool?
@@ -318,6 +319,7 @@ final class AppStore: ObservableObject {
         } else {
             loadActivities()
             loadEvolutionMemory()
+            loadDiskManualDecisions()
             refreshDiskCapacity()
         }
         Task { await bootstrap() }
@@ -1456,6 +1458,38 @@ final class AppStore: ObservableObject {
         return diskEvidenceReport?.entries.first { $0.id == fingerprint }
     }
 
+    func manualDiskDecision(for entry: DiskEvidenceEntry) -> DiskManualDecision? {
+        diskManualDecisions.decision(for: entry)
+    }
+
+    func canMarkForCleanupReview(_ entry: DiskEvidenceEntry) -> Bool {
+        DiskManualDecisionPolicy.canReviewForCleanup(entry)
+    }
+
+    func setManualDiskDecision(
+        _ decision: DiskManualDecision?,
+        for entry: DiskEvidenceEntry
+    ) {
+        do {
+            var updated = diskManualDecisions
+            try updated.set(decision, for: entry)
+            diskManualDecisions = updated
+            saveDiskManualDecisions()
+            switch decision {
+            case .reviewForCleanup:
+                lastTechnicalDetail = "已把 \(entry.name) 标记为待清理复核；不会自动勾选或删除。"
+            case .keep:
+                lastTechnicalDetail = "已记住保留 \(entry.name)。"
+            case .decideLater:
+                lastTechnicalDetail = "已把 \(entry.name) 设为稍后处理。"
+            case nil:
+                lastTechnicalDetail = "\(entry.name) 已恢复为跟随系统建议。"
+            }
+        } catch {
+            lastTechnicalDetail = error.localizedDescription
+        }
+    }
+
     private func performDiskAnalysis(_ target: URL, mode: DiskScanMode) async {
         let cancelledCollectionTask = invalidateDiskAI()
         let previousRoot = diskReport?.root.standardizedFileURL.path
@@ -2150,6 +2184,29 @@ final class AppStore: ObservableObject {
             )
         } catch {
             lastTechnicalDetail = "本机学习记录无法保存：\(error.localizedDescription)"
+        }
+    }
+
+    private func loadDiskManualDecisions() {
+        do {
+            diskManualDecisions = try DiskManualDecisionPersistence.load(
+                from: CleanNestDataPaths.diskManualDecisions()
+            )
+        } catch {
+            diskManualDecisions = DiskManualDecisionStore()
+            lastTechnicalDetail = "手动清理决策无法读取，已使用空白记录：\(error.localizedDescription)"
+        }
+    }
+
+    private func saveDiskManualDecisions() {
+        guard !demoMode else { return }
+        do {
+            try DiskManualDecisionPersistence.save(
+                diskManualDecisions,
+                to: CleanNestDataPaths.diskManualDecisions()
+            )
+        } catch {
+            lastTechnicalDetail = "手动清理决策无法保存：\(error.localizedDescription)"
         }
     }
 

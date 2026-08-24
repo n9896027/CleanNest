@@ -121,6 +121,103 @@ final class DiskEvidenceTests: XCTestCase {
         XCTAssertTrue(decision.nextStep.contains("保持"))
     }
 
+    func testManualDiskDecisionPersistsAndCanReturnToSystemAdvice() throws {
+        let entry = makeEvidenceEntry(
+            id: "fingerprint-cache",
+            category: .cache,
+            boundary: .reviewable,
+            risk: .low
+        )
+        var store = DiskManualDecisionStore()
+        let updatedAt = Date(timeIntervalSince1970: 1_700_000_000)
+
+        try store.set(.reviewForCleanup, for: entry, now: updatedAt)
+        XCTAssertEqual(store.decision(for: entry), .reviewForCleanup)
+
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("manual-decisions.json")
+        try DiskManualDecisionPersistence.save(store, to: url)
+        let restored = try DiskManualDecisionPersistence.load(from: url)
+        XCTAssertEqual(restored, store)
+        XCTAssertEqual(restored.decision(for: entry), .reviewForCleanup)
+
+        let encoded = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertFalse(encoded.contains("/Users/"))
+        XCTAssertFalse(encoded.contains(entry.relativeHint))
+
+        var reset = restored
+        try reset.set(nil, for: entry)
+        XCTAssertNil(reset.decision(for: entry))
+        XCTAssertTrue(reset.records.isEmpty)
+    }
+
+    func testManualDiskDecisionCannotBypassProtectedBoundary() throws {
+        let protected = makeEvidenceEntry(
+            id: "fingerprint-protected",
+            category: .userContent,
+            boundary: .protected,
+            risk: .high
+        )
+        var store = DiskManualDecisionStore()
+
+        XCTAssertThrowsError(try store.set(.reviewForCleanup, for: protected)) { error in
+            XCTAssertEqual(error as? DiskManualDecisionError, .cleanupReviewNotAllowed)
+        }
+        XCTAssertNil(store.decision(for: protected))
+
+        try store.set(.keep, for: protected)
+        XCTAssertEqual(store.decision(for: protected), .keep)
+        try store.set(.decideLater, for: protected)
+        XCTAssertEqual(store.decision(for: protected), .decideLater)
+    }
+
+    func testOldCleanupReviewRecordIsIgnoredWhenEvidenceBecomesProtected() {
+        let protected = makeEvidenceEntry(
+            id: "fingerprint-changed",
+            category: .systemData,
+            boundary: .protected,
+            risk: .high
+        )
+        let record = DiskManualDecisionRecord(
+            id: protected.id,
+            decision: .reviewForCleanup,
+            updatedAt: Date()
+        )
+        let store = DiskManualDecisionStore(records: [protected.id: record])
+
+        XCTAssertNil(store.decision(for: protected))
+    }
+
+    private func makeEvidenceEntry(
+        id: String,
+        category: DiskAIContentCategory,
+        boundary: DiskAICleanupBoundary,
+        risk: DiskAIRisk
+    ) -> DiskEvidenceEntry {
+        DiskEvidenceEntry(
+            id: id,
+            name: "Example",
+            relativeHint: "~/Library/Caches/Example",
+            allocatedBytes: 1_024,
+            isDirectory: true,
+            observedFileCount: 1,
+            observedBytes: 1_024,
+            scanWasLimited: false,
+            latestModificationDate: nil,
+            ageDistribution: DiskEvidenceAgeDistribution(),
+            typeDistribution: [],
+            category: category,
+            cleanupBoundary: boundary,
+            minimumRisk: risk,
+            purpose: "测试用途",
+            likelyOwner: "Example",
+            provenance: "测试来源",
+            regeneration: "可以重新生成。",
+            growthBytes: nil
+        )
+    }
+
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("CleanNestEvidenceTests-\(UUID().uuidString)", isDirectory: true)

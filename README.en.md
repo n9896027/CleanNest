@@ -43,7 +43,7 @@ CleanNest turns Mac cleanup from a black-box button into an understandable, reve
 
 - **Storage cleanup** — scan developer caches, logs, installers, and other candidates; select items individually and move them to the macOS Trash.
 - **Incremental disk browser** — stream partial results while scanning; reuse only unchanged metadata signatures for 15 minutes; disclose cache hits, live scans, and a cache-bypassing deep refresh.
-- **Cleanup Decision Center** — combine breadcrumb drill-down and a native treemap with deterministic purpose, growth cause, impact, recoverability, confidence, and a safe next action for every item.
+- **Cleanup Decision Center** — combine breadcrumb drill-down and a native treemap with deterministic purpose, growth cause, impact, recoverability, confidence, and a safe next action for every item. You can manually mark an item for review, keep it, or decide later without overriding safety boundaries.
 - **System status** — show CPU, memory, disk, battery, temperature, and health information, with 60-second local history plus plain-language memory-pressure and process guidance.
 - **Process management** — request a normal process quit only after identity checks, system-process protection, and user confirmation; CleanNest does not automatically force-quit it.
 - **App uninstall** — browse installed apps and preview the app bundle plus related files matched by exact Bundle ID.
