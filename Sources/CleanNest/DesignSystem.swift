@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import CleanNestCore
 
 enum CNTheme {
     static let accent = Color(red: 0.30, green: 0.55, blue: 0.98)
@@ -128,49 +129,6 @@ private struct CNContourField: View {
             }
         }
         .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-}
-
-struct CNNestMark: View {
-    var size: CGFloat = 40
-    var tint: Color = CNTheme.accent
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [CNTheme.cyan.opacity(0.92), tint, CNTheme.accentStrong],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-            ForEach(0..<3, id: \.self) { index in
-                Ellipse()
-                    .trim(from: 0.08, to: 0.84)
-                    .stroke(
-                        Color.white.opacity(0.46 - Double(index) * 0.10),
-                        style: StrokeStyle(lineWidth: max(0.8, size * 0.045), lineCap: .round)
-                    )
-                    .frame(
-                        width: size * (0.68 - CGFloat(index) * 0.14),
-                        height: size * (0.42 - CGFloat(index) * 0.07)
-                    )
-                    .rotationEffect(.degrees(-12))
-                    .offset(y: size * (0.11 + CGFloat(index) * 0.015))
-            }
-            Image(systemName: "leaf.fill")
-                .font(.system(size: size * 0.28, weight: .semibold))
-                .foregroundStyle(.white)
-                .offset(x: size * 0.13, y: -size * 0.12)
-        }
-        .frame(width: size, height: size)
-        .overlay(
-            RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
-                .stroke(Color.white.opacity(0.30), lineWidth: 0.7)
-        )
-        .shadow(color: tint.opacity(0.25), radius: size * 0.28, y: size * 0.11)
         .accessibilityHidden(true)
     }
 }

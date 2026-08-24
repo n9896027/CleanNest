@@ -140,7 +140,7 @@ public actor ReadOnlyMCPServer {
             let result: JSONValue = .object([
                 "protocolVersion": .string(selected),
                 "capabilities": .object(["tools": .object(["listChanged": .bool(false)])]),
-                "serverInfo": .object(["name": .string("CleanNest"), "version": .string("0.5.0")]),
+                "serverInfo": .object(["name": .string("CleanNest"), "version": .string("0.5.3")]),
                 "instructions": .string(Self.instructions)
             ])
             return encode(success(id: id, result: result, modern: false))
@@ -209,7 +209,7 @@ public actor ReadOnlyMCPServer {
             try rejectUnknown(arguments, allowed: [])
             return .object([
                 "server": .string("CleanNest read-only MCP"),
-                "version": .string("0.5.0"),
+                "version": .string("0.5.3"),
                 "transport": .string("stdio"),
                 "read_only": .bool(true),
                 "metrics_available": .bool(FileManager.default.fileExists(atPath: metricsURL.path)),
@@ -386,7 +386,7 @@ public actor ReadOnlyMCPServer {
             object["_meta"] = .object([
                 "io.modelcontextprotocol/serverInfo": .object([
                     "name": .string("CleanNest"),
-                    "version": .string("0.5.0")
+                    "version": .string("0.5.3")
                 ])
             ])
             resultWithIdentity = .object(object)

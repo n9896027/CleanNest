@@ -44,12 +44,15 @@ jobs:
         run: |
           swift build -c release --product CleanNest
           swift build -c release --product CleanNestMCP
+          swift build -c release --product CleanNestLoginItem
           bin_dir="$(swift build -c release --show-bin-path)"
           mkdir -p artifact
           install -m 755 "$bin_dir/CleanNest" artifact/CleanNest
           install -m 755 "$bin_dir/CleanNestMCP" artifact/CleanNestMCP
+          install -m 755 "$bin_dir/CleanNestLoginItem" artifact/CleanNestLoginItem
           test "$(lipo -archs artifact/CleanNest)" = "${{ matrix.architecture }}"
           test "$(lipo -archs artifact/CleanNestMCP)" = "${{ matrix.architecture }}"
+          test "$(lipo -archs artifact/CleanNestLoginItem)" = "${{ matrix.architecture }}"
 
       - name: Upload architecture binaries
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -92,23 +95,28 @@ jobs:
           mkdir -p universal
           lipo -create architecture/arm64/CleanNest architecture/x86_64/CleanNest -output universal/CleanNest
           lipo -create architecture/arm64/CleanNestMCP architecture/x86_64/CleanNestMCP -output universal/CleanNestMCP
-          chmod 755 universal/CleanNest universal/CleanNestMCP
+          lipo -create architecture/arm64/CleanNestLoginItem architecture/x86_64/CleanNestLoginItem -output universal/CleanNestLoginItem
+          chmod 755 universal/CleanNest universal/CleanNestMCP universal/CleanNestLoginItem
           test "$(lipo -archs universal/CleanNest)" = "x86_64 arm64"
           test "$(lipo -archs universal/CleanNestMCP)" = "x86_64 arm64"
+          test "$(lipo -archs universal/CleanNestLoginItem)" = "x86_64 arm64"
 
       - name: Build ad-hoc signed app bundle
         env:
           CLEANNEST_CODESIGN_IDENTITY: "-"
           CLEANNEST_PREBUILT_EXECUTABLE: ${{ github.workspace }}/universal/CleanNest
           CLEANNEST_PREBUILT_MCP_EXECUTABLE: ${{ github.workspace }}/universal/CleanNestMCP
+          CLEANNEST_PREBUILT_LOGIN_ITEM_EXECUTABLE: ${{ github.workspace }}/universal/CleanNestLoginItem
         run: ./build.sh release
 
       - name: Verify bundle and embedded MCP
         run: |
           test "$(lipo -archs build/CleanNest.app/Contents/MacOS/CleanNest)" = "x86_64 arm64"
           test "$(lipo -archs build/CleanNest.app/Contents/MacOS/CleanNestMCP)" = "x86_64 arm64"
+          test "$(lipo -archs build/CleanNest.app/Contents/Library/LoginItems/CleanNestLoginItem.app/Contents/MacOS/CleanNestLoginItem)" = "x86_64 arm64"
           codesign --verify --strict --verbose=2 build/CleanNest.app
           codesign --verify --strict --verbose=2 build/CleanNest.app/Contents/MacOS/CleanNestMCP
+          codesign --verify --strict --verbose=2 build/CleanNest.app/Contents/Library/LoginItems/CleanNestLoginItem.app
           test -f build/CleanNest.app/Contents/Resources/en.lproj/Localizable.strings
           test -f build/CleanNest.app/Contents/Resources/zh-Hans.lproj/Localizable.strings
           test -f build/CleanNest.app/Contents/Resources/zh-Hant.lproj/Localizable.strings

@@ -9,12 +9,18 @@ AppStore 状态与任务编排
     ├─ CleanNestCore：扫描、解码、安全策略、进程复核、SQLite 指标
     ├─ CleanNestMutation：仅 GUI 链接的废纸篓移动能力
     ├─ Mole CLI：独立本地子进程，可替换、可升级
-    ├─ mlx_lm.server：仅 127.0.0.1 的可选本机解释服务
+    ├─ oMLX / mlx_lm.server：仅 127.0.0.1 的可选本机解释服务
             ↓ 严格 JSON 校验
        只读建议，不产生执行能力
+    ├─ LocalModelRuntimeDiscovery：进程 + launchd + TCP 监听 + 平台 API 的只读运行证据
+            ↓ 自有实例直接正常停止；外部实例先风险确认并复核精确身份
+       SIGTERM 优先；精确用户 LaunchAgent 可确认后 disable + bootout，并可重新启用
     └─ CleanNestMCP：stdio only 的独立只读进程
             ↓ 只读打开本机快照与 SQLite WAL
        无 HTTP、无写工具、无文件正文
+
+macOS ServiceManagement
+    └─ CleanNestLoginItem：登录后以 --menubar-only 打开主 App
 ```
 
 - `Sources/CleanNest`：窗口、视图、App 生命周期、本机 MLX 进程管理和用户操作编排。
@@ -22,6 +28,7 @@ AppStore 状态与任务编排
 - `Sources/CleanNestMutation`：原子、排他的 App 废纸篓移动实现；只由 GUI 与测试链接，MCP 不依赖该模块。
 - `Sources/CleanNestSelfTest`：跨模块集成自检，包括进程树终止和协议绕过回归。
 - `Sources/CleanNestMCP`：换行分隔 JSON-RPC 的 stdio 入口；协议和工具实现位于 Core。
+- `Sources/CleanNestLoginItem`：嵌入 `Contents/Library/LoginItems` 的极小登录项；只负责静默打开主 App，不采样、不持有文件权限。
 - `Tests/CleanNestCoreTests`：可定位的确定性单元测试。
 - `build.sh`：编译、生成图标、原子组装 App Bundle、签名并验证指定要求。
 
@@ -49,7 +56,23 @@ AppStore 状态与任务编排
 
 ## 本机状态数据流
 
-Mole 状态与原生内存探测合并为单次 `SystemSnapshot`。App 运行时每 60 秒写入 `metrics.sqlite3`，默认保留 30 天；图表按时间窗口有界查询。MCP 只读打开同一 WAL 数据库，不创建表、不修剪数据。详见 [METRICS.md](METRICS.md) 与 [MCP.md](MCP.md)。
+CleanNest 有两条相互独立的状态链路：
+
+1. `NativeSystemMonitor` 按用户选定的 1/2/5/10 秒频率，从 Mach、`getifaddrs`、启动卷容量、IOBlockStorageDriver、IOAccelerator、IOPowerSources 和只读 AppleSMC 获取短期样本，驱动顶部菜单栏与系统状态页的实时仪表。这条链路不需要 Mole，只在内存中保留最近 90 个样本，退出 App 即停止。
+2. Mole 状态与原生内存探测合并为单次 `SystemSnapshot`。App 运行时每 60 秒写入 `metrics.sqlite3`，默认保留 30 天，用于长期趋势。
+
+温度、GPU 和风扇计数只在系统返回有效值时显示，缺失保持为空，不伪造为零。AppleSMC 适配层不包含任何写方法，因此不能改变风扇模式或转速。MCP 只读打开历史 WAL 数据库，不创建表、不修剪数据。详见 [METRICS.md](METRICS.md) 与 [MCP.md](MCP.md)。
+
+## 本地模型运行数据流
+
+1. `LocalModelRuntimeDiscovery` 每 5 秒从系统 `ps` 与 `lsof` 读取模型相关进程、RSS、启动时间和 TCP 监听；同时读取 `launchctl list` / `print-disabled` 与标准 LaunchAgents / LaunchDaemons 的有限元数据。完整命令行和 plist 参数只在本次内存分类中使用，不进入公开模型或持久化；环境变量不读取。
+2. 发现层仅探测 oMLX、MLX-LM、Ollama、LM Studio、llama.cpp 的标准回环端口、已识别进程端口和用户明确配置的回环端点，不扫描局域网。
+3. OpenAI 兼容平台读取 `/v1/models`，Ollama 读取 `/api/tags` 与 `/api/ps`。只有 API 返回可用短 ID 才标记健康，仅有 PID/端口时保持待确认。
+4. 发现层按 launchd 当前 PID 把模型进程与守护标签交叉对齐；未运行但仍有 plist 的模型守护也以“未运行 / 已停用”实例显示，避免停用后入口消失。
+5. `AppStore` 把发现到的 PID 与 `LocalModelOwnedRuntime` 当前 `Process` 身份精确对齐；自有实例一致时可直接正常终止。普通外部实例只在具备足够身份时提供带省略号的风险确认入口。
+6. 外部实例确认后必须强制重新发现，并把原快照、刷新快照和即时进程快照的 PID、启动时间、当前用户与可执行文件交叉复核；任一身份变化都拒绝操作。先发送 SIGTERM，3 秒仍存活时才允许用户二次勾选后发送 SIGKILL，不按名称批量结束。
+7. 守护停用是独立提交链：再次复核模型进程、标签、`gui/<uid>` 作用域、当前用户所有权、标准用户 LaunchAgents 目录，以及 plist 的设备号/文件号；通过后才用参数数组调用 `launchctl disable` 与 `bootout`。不编辑/删除 plist；重新启用先复核同一文件，再调用 `enable` 与 `bootstrap`。
+8. 运行快照、监听地址和推导的内网地址只保留在内存，驱动侧边栏运行中心和独立 `MODEL` 菜单栏状态；活动记录只保留平台、PID 或守护标签与结果，不保存模型 ID、地址或命令。
 
 ## 高风险操作边界
 
@@ -59,6 +82,7 @@ Mole 状态与原生内存探测合并为单次 `SystemSnapshot`。App 运行时
 - 进程：操作前后复核 PID 身份、启动时间和可执行文件，保护系统/关键进程，先正常退出再由用户决定是否强制。
 - 权限：只根据实际读取结果分类，不把系统设置跳转当授权成功，也不循环触发访问窗口。
 - 网络：AI 端点固定为 IPv4 loopback HTTP，禁用代理、Cookie、凭据存储、缓存和重定向。
+- 模型运行时：只读发现不访问其他局域网设备；启动和 launchctl 参数均为固定结构化数组，不拼接 shell；自有实例按持有身份正常终止；外部实例先复核进程身份；守护停用只允许当前用户标准 LaunchAgent 并复核标签、作用域与 plist 文件身份，系统/其他用户守护只读，配置不删除且可恢复。
 - 更新检查：仅在用户点击后通过临时无 Cookie 会话读取 GitHub 公开的最新正式 Release；限制响应大小、验证语义版本和官方仓库 HTTPS 页面，只提供浏览器跳转，不下载或替换 App。
 - MCP：只允许本机 stdio，工具集合固定为只读查询；不暴露文件处理、进程结束或设置修改。
 

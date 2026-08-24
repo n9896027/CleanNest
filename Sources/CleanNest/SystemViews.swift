@@ -17,22 +17,29 @@ struct SystemStatusView: View {
             VStack(alignment: .leading, spacing: 18) {
                 PageHeader(
                     title: "系统状态",
-                    subtitle: "本机采样；不上传指标，只在你确认后结束所选进程。"
+                    subtitle: "\(store.menuBarConfiguration.refreshInterval.rawValue) 秒原生采样与长期历史彼此独立；不上传指标。"
                 ) {
                     Button {
-                        Task { await store.refreshSystemStatus() }
+                        Task {
+                            await store.refreshNativeMonitorNow()
+                            if store.engine != nil {
+                                await store.refreshSystemStatus()
+                            }
+                        }
                     } label: {
                         Label("刷新", systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(store.isWorking || store.engine == nil)
+                    .disabled(store.isWorking || !store.menuBarConfiguration.isEnabled)
                 }
+
+                nativeRealtimeCard
 
                 if store.engine == nil {
                     EmptyPanel(
                         symbol: "waveform.path.ecg",
-                        title: "连接引擎后查看实时状态",
-                        detail: "Mole CLI 提供结构化的 CPU、内存、磁盘、电池和温度数据。可在 App 内免费安装。",
+                        title: "原生实时监测已可用",
+                        detail: "上方 CPU、内存、网络、磁盘、GPU、温度、风扇与电池都不依赖 Mole。连接 Mole 后再补充健康评分与长期历史。",
                         actionTitle: "打开引擎设置"
                     ) {
                         store.selection = .settings
@@ -66,8 +73,10 @@ struct SystemStatusView: View {
                         ResourceCard(
                             title: "磁盘",
                             symbol: "internaldrive",
-                            value: snapshot.diskUsedPercent,
-                            detail: snapshot.diskFreeBytes.map { CNL10n.format("可用 %@", CleanNestFormatting.bytes($0)) } ?? "可用空间未知",
+                            value: store.nativeMonitorSample?.diskUsedPercent ?? snapshot.diskUsedPercent,
+                            detail: (store.nativeMonitorSample?.diskFreeBytes ?? snapshot.diskFreeBytes)
+                                .map { CNL10n.format("可用 %@", CleanNestFormatting.bytes($0)) }
+                                ?? "可用空间未知",
                             tint: CNTheme.success
                         )
                         BatteryDiagnosticCard(
@@ -80,18 +89,6 @@ struct SystemStatusView: View {
                     metricHistoryCard
                     memoryAnalysisCard(snapshot)
                     memoryProcessesCard(snapshot)
-
-                if let temperature = snapshot.temperatureCelsius {
-                    InlineBanner(
-                        title: "\(snapshot.temperatureSource ?? "当前温度") \(String(format: "%.0f", temperature))°C",
-                        detail: snapshot.temperatureSource == "电池温度"
-                            ? "这是电池传感器的单次采样，不是 CPU 温度；CleanNest 不会只凭这个数值判断硬件故障。"
-                            : "这是当前单次采样，不代表硬件故障；持续异常时再结合活动监视器判断。",
-                        kind: snapshot.temperatureSource == "电池温度"
-                            ? .info
-                            : (temperature > 85 ? .warning : .success)
-                    )
-                    }
                 } else {
                     EmptyPanel(
                         symbol: "waveform.path.ecg",
@@ -126,6 +123,97 @@ struct SystemStatusView: View {
                 secondaryButton: .cancel(Text("取消"))
             )
         }
+    }
+
+    private var nativeRealtimeCard: some View {
+        SurfaceCard(title: "实时仪表", symbol: "menubar.rectangle", tint: CNTheme.cyan) {
+            VStack(alignment: .leading, spacing: 13) {
+                HStack(alignment: .center, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(store.nativeMonitorDiagnostic)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if let sampledAt = store.nativeMonitorSample?.sampledAt {
+                            Text("最新样本 " + sampledAt.formatted(date: .omitted, time: .standard))
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    Spacer()
+                    StatusPill(
+                        text: store.nativeMonitorIsActive ? "原生采样中" : "已停止",
+                        symbol: store.nativeMonitorIsActive ? "dot.radiowaves.left.and.right" : "pause",
+                        style: store.nativeMonitorIsActive ? .success : .neutral
+                    )
+                }
+
+                if let sample = store.nativeMonitorSample {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 195), spacing: 10)],
+                        spacing: 10
+                    ) {
+                        ForEach(MenuBarMetric.allCases) { metric in
+                            realtimeMetricCell(metric, sample: sample)
+                        }
+                    }
+                } else if store.menuBarConfiguration.isEnabled {
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text("正在等待第一个本机样本…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 70)
+                } else {
+                    InlineBanner(
+                        title: "菜单栏监测已关闭",
+                        detail: "在设置中重新开启后，这里会恢复原生采样。",
+                        kind: .info
+                    )
+                }
+            }
+        }
+    }
+
+    private func realtimeMetricCell(
+        _ metric: MenuBarMetric,
+        sample: NativeMonitorSample
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: metric.symbol)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(metric.tint)
+                Text(metric.displayName)
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                MiniTrend(
+                    values: store.nativeMonitorHistory.compactMap { $0.value(for: metric) },
+                    range: metric.normalizedGraphRange,
+                    tint: metric.tint
+                )
+                .frame(width: 50, height: 19)
+            }
+            NativeMetricReadingView(
+                reading: sample.metricReading(
+                    metric,
+                    temperatureUnit: store.menuBarConfiguration.temperatureUnit
+                ),
+                font: .system(size: 17, weight: .semibold, design: .rounded)
+            )
+            Text(sample.sourceDescription(metric))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
+        .padding(11)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(metric.tint.opacity(sample.isAvailable(metric) ? 0.16 : 0.05), lineWidth: 0.7)
+        )
+        .accessibilityElement(children: .combine)
     }
 
     private var metricHistoryCard: some View {

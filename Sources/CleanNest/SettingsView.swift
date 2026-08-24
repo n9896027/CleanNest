@@ -22,6 +22,7 @@ struct SettingsView: View {
                 )
 
                 readinessDeck
+                menuBarCard
                 localAICard
 
                 LazyVGrid(columns: settingsGridColumns, alignment: .leading, spacing: 16) {
@@ -38,6 +39,7 @@ struct SettingsView: View {
         }
         .onAppear {
             syncLocalAIDrafts()
+            store.refreshLaunchAtLoginStatus()
             if store.localAIAvailableModels.isEmpty {
                 Task { await store.refreshLocalModelCatalog() }
             }
@@ -211,6 +213,299 @@ struct SettingsView: View {
                 .tint(CNTheme.cyan)
             }
         }
+    }
+
+    private var menuBarCard: some View {
+        SurfaceCard(
+            title: "菜单栏实时监测",
+            symbol: "menubar.rectangle",
+            prominence: .prominent,
+            tint: CNTheme.cyan
+        ) {
+            VStack(alignment: .leading, spacing: 15) {
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("在其他 App 里也能直接看到这台 Mac 的负载")
+                            .font(.subheadline.weight(.semibold))
+                        Text(store.nativeMonitorDiagnostic)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 10)
+                    if store.nativeMonitorIsActive {
+                        StatusPill(
+                            text: "\(store.menuBarConfiguration.refreshInterval.rawValue) 秒刷新",
+                            symbol: "dot.radiowaves.left.and.right",
+                            style: .success
+                        )
+                    }
+                    Toggle("", isOn: Binding(
+                        get: { store.menuBarConfiguration.isEnabled },
+                        set: { store.setMenuBarMonitoringEnabled($0) }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .accessibilityLabel("启用菜单栏实时监测")
+                }
+
+                Divider()
+
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 235), spacing: 12, alignment: .top)],
+                    spacing: 12
+                ) {
+                    menuBarChoice(
+                        title: "排版",
+                        detail: "双层紧凑会把数值和短标签叠放，宽度接近 State。"
+                    ) {
+                        Picker("", selection: Binding(
+                            get: { store.menuBarConfiguration.presentationMode },
+                            set: { store.setMenuBarPresentationMode($0) }
+                        )) {
+                            Text("双层紧凑").tag(MenuBarPresentationMode.compact)
+                            Text("展开文字").tag(MenuBarPresentationMode.separate)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                    }
+
+                    menuBarChoice(title: "刷新频率", detail: "越快越灵敏，也会略增加后台开销。") {
+                        Picker("", selection: Binding(
+                            get: { store.menuBarConfiguration.refreshInterval },
+                            set: { store.setMenuBarRefreshInterval($0) }
+                        )) {
+                            ForEach(MenuBarRefreshInterval.allCases, id: \.self) { interval in
+                                Text("\(interval.rawValue) 秒").tag(interval)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                    }
+
+                    menuBarChoice(title: "温度单位", detail: "只改变显示，不改变传感器原始值。") {
+                        Picker("", selection: Binding(
+                            get: { store.menuBarConfiguration.temperatureUnit },
+                            set: { store.setMenuBarTemperatureUnit($0) }
+                        )) {
+                            Text("摄氏 °C").tag(MenuBarTemperatureUnit.celsius)
+                            Text("华氏 °F").tag(MenuBarTemperatureUnit.fahrenheit)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                    }
+
+                    menuBarChoice(title: "网络口径", detail: networkModeDetail) {
+                        Picker("", selection: Binding(
+                            get: { store.menuBarConfiguration.networkMode },
+                            set: { store.setMenuBarNetworkMode($0) }
+                        )) {
+                            Text("物理网卡合计").tag(MenuBarNetworkMode.physicalAggregate)
+                            Text("系统主接口").tag(MenuBarNetworkMode.automatic)
+                            Text("手动指定").tag(MenuBarNetworkMode.specific)
+                        }
+                        .labelsHidden()
+                    }
+                }
+                .disabled(!store.menuBarConfiguration.isEnabled)
+
+                if store.menuBarConfiguration.networkMode == .specific {
+                    HStack(spacing: 10) {
+                        Label("选择网络接口", systemImage: "network")
+                            .font(.caption.weight(.semibold))
+                        Spacer()
+                        Picker("", selection: Binding(
+                            get: {
+                                store.menuBarConfiguration.selectedNetworkInterface
+                                    ?? store.nativeMonitorSample?.availableNetworkInterfaces.first
+                                    ?? ""
+                            },
+                            set: { store.setMenuBarNetworkInterface($0.isEmpty ? nil : $0) }
+                        )) {
+                            if store.nativeMonitorSample?.availableNetworkInterfaces.isEmpty != false {
+                                Text("未找到活动接口").tag("")
+                            }
+                            ForEach(store.nativeMonitorSample?.availableNetworkInterfaces ?? [], id: \.self) {
+                                Text($0).tag($0)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 180)
+                    }
+                    .padding(12)
+                    .background(CNTheme.surfaceSubtle, in: RoundedRectangle(cornerRadius: 13))
+                }
+
+                InlineBanner(
+                    title: "菜单栏空间检查",
+                    detail: store.menuBarVisibilityDiagnostic,
+                    kind: store.menuBarVisibilityDiagnostic.contains("隐藏") ? .warning : .success
+                )
+
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 230), spacing: 10, alignment: .top)],
+                    spacing: 10
+                ) {
+                    ForEach(MenuBarMetric.allCases) { metric in
+                        menuBarMetricTile(metric)
+                    }
+                }
+                .disabled(!store.menuBarConfiguration.isEnabled)
+                .opacity(store.menuBarConfiguration.isEnabled ? 1 : 0.55)
+
+                Divider()
+
+                VStack(spacing: 0) {
+                    settingsRow(
+                        symbol: "person.badge.clock",
+                        title: "登录后常驻菜单栏",
+                        detail: store.launchAtLoginDiagnostic
+                    ) {
+                        HStack(spacing: 8) {
+                            if store.launchAtLoginRequiresApproval {
+                                Button("在系统设置中允许") { store.openLoginItemsSettings() }
+                            }
+                            Toggle("", isOn: Binding(
+                                get: { store.launchAtLoginEnabled },
+                                set: { store.setLaunchAtLoginEnabled($0) }
+                            ))
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .accessibilityLabel("登录后常驻菜单栏")
+                        }
+                    }
+                    Divider().padding(.leading, 43)
+                    settingsRow(
+                        symbol: "keyboard",
+                        title: "全局快捷键",
+                        detail: store.globalHotKeyDiagnostic
+                    ) {
+                        Toggle("", isOn: Binding(
+                            get: { store.menuBarConfiguration.globalHotKeyEnabled },
+                            set: { store.setMenuBarGlobalHotKeyEnabled($0) }
+                        ))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .accessibilityLabel("启用全局快捷键")
+                    }
+                }
+
+                HStack(alignment: .top, spacing: 9) {
+                    Image(systemName: "lock.shield")
+                        .foregroundStyle(CNTheme.success)
+                        .padding(.top, 1)
+                    Text("指标按你选定的频率在本机读取，不保存网络地址，不上传；退出 CleanNest 后采样立即停止。温度、GPU 和风扇取决于当前硬件是否提供可读计数；CleanNest 不控制风扇，也不要求管理员密码。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("立即刷新") {
+                        Task { await store.refreshNativeMonitorNow() }
+                    }
+                    .disabled(!store.menuBarConfiguration.isEnabled)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func menuBarChoice<Content: View>(
+        title: String,
+        detail: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.caption.weight(.semibold))
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(CNTheme.surfaceSubtle, in: RoundedRectangle(cornerRadius: 13))
+    }
+
+    private var networkModeDetail: String {
+        switch store.menuBarConfiguration.networkMode {
+        case .physicalAggregate:
+            return "合计 en 系列物理网卡，避免把 VPN 隧道重复计数。"
+        case .automatic:
+            return "跟随 macOS 当前主路由，开启 VPN 时可能显示 utun。"
+        case .specific:
+            return "只计算你指定的一个活动接口。"
+        }
+    }
+
+    private func menuBarMetricTile(_ metric: MenuBarMetric) -> some View {
+        let preference = store.menuBarConfiguration.preference(for: metric)
+        let index = store.menuBarConfiguration.metrics.firstIndex(where: { $0.metric == metric }) ?? 0
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                CNIconTile(symbol: metric.symbol, tint: metric.tint, size: 32)
+                Text(metric.displayName)
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                VStack(spacing: 1) {
+                    Button { store.moveMenuBarMetric(metric, by: -1) } label: {
+                        Image(systemName: "chevron.up")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(index == 0)
+                    .accessibilityLabel("向前移动" + metric.displayName)
+                    Button { store.moveMenuBarMetric(metric, by: 1) } label: {
+                        Image(systemName: "chevron.down")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(index >= store.menuBarConfiguration.metrics.count - 1)
+                    .accessibilityLabel("向后移动" + metric.displayName)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                Toggle("", isOn: Binding(
+                    get: { preference.isEnabled },
+                    set: { store.setMenuBarMetricEnabled($0, metric: metric) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .accessibilityLabel("在菜单栏显示" + metric.displayName)
+            }
+
+            Text(menuBarMetricAvailability(metric))
+                .font(.caption2)
+                .foregroundStyle(menuBarMetricIsAvailable(metric) ? CNTheme.success : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Picker("显示方式", selection: Binding(
+                get: { preference.style },
+                set: { store.setMenuBarMetricStyle($0, metric: metric) }
+            )) {
+                Text("数值").tag(MenuBarMetricStyle.text)
+                Text("曲线").tag(MenuBarMetricStyle.graph)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .disabled(!preference.isEnabled)
+        }
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .stroke(metric.tint.opacity(preference.isEnabled ? 0.20 : 0.07), lineWidth: 0.7)
+        )
+    }
+
+    private func menuBarMetricIsAvailable(_ metric: MenuBarMetric) -> Bool {
+        store.nativeMonitorSample?.isAvailable(metric) == true
+    }
+
+    private func menuBarMetricAvailability(_ metric: MenuBarMetric) -> String {
+        guard let sample = store.nativeMonitorSample else { return "等待首个样本" }
+        if metric == .fan, sample.fanCount == 0 { return "本机为无风扇设计" }
+        guard sample.isAvailable(metric) else { return "当前硬件未返回有效值" }
+        return sample.detailedValue(metric)
     }
 
     private var permissionCard: some View {
@@ -452,7 +747,7 @@ struct SettingsView: View {
                             }
 
                             Label(
-                                "oMLX 调用必须使用 /v1/models 返回的短名；下方目录只用于 CleanNest 自己启动 mlx_lm.server。",
+                                "oMLX 调用必须使用 /v1/models 返回的短名；下方模型与程序只用于 CleanNest 自己启动 oMLX 或 MLX-LM。",
                                 systemImage: "arrow.triangle.branch"
                             )
                             .font(.caption)
@@ -474,10 +769,15 @@ struct SettingsView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .frame(width: 72, alignment: .leading)
-                                TextField("mlx_lm.server 可执行文件", text: $localAIExecutablePathDraft)
+                                TextField("omlx 或 mlx_lm.server 可执行文件", text: $localAIExecutablePathDraft)
                                     .textFieldStyle(.roundedBorder)
                                     .lineLimit(1)
                                 Button("选择…") { chooseLocalAIExecutable() }
+                                if FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/omlx") {
+                                    Button("使用 oMLX") {
+                                        localAIExecutablePathDraft = "/opt/homebrew/bin/omlx"
+                                    }
+                                }
                             }
                         }
                         .padding(.top, 11)
@@ -516,6 +816,7 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 10)
+                    Button("打开运行中心") { store.selection = .models }
                     Button("诊断详情") { store.showLocalAIDiagnostic() }
                     Button("仅保存并检测") {
                         Task {
@@ -526,14 +827,26 @@ struct SettingsView: View {
                     .disabled(!store.localAIEnabled || store.localAIServiceState.isBusy)
                     if store.localAIProcessOwned {
                         Button("停止模型") {
-                            Task { await store.stopLocalAI() }
+                            Task { await store.stopOwnedLocalModelRuntime() }
                         }
                         .disabled(store.localAIServiceState.isBusy)
+                    } else if store.primaryLocalModelRuntime?.supervisor?.canDisableAndStop == true {
+                        Button("管理自动重启…") {
+                            store.selection = .models
+                        }
+                    } else if store.primaryLocalModelRuntime?.supervisor?.canEnable == true {
+                        Button("重新启用守护…") {
+                            store.selection = .models
+                        }
+                    } else if store.primaryLocalModelRuntime?.canRequestExternalStop == true {
+                        Button("管理外部服务…") {
+                            store.selection = .models
+                        }
                     } else if store.localAIEnabled && (!store.localAIIsReady || localAIDraftIsDirty) {
                         Button(CNL10n.string(localAIModelSelectionChanged ? "切换并启动" : "启动所选模型")) {
                             Task {
                                 if await applyLocalAIDrafts(), !store.localAIIsReady {
-                                    await store.startLocalAI()
+                                    await store.startConfiguredLocalModelRuntime()
                                 }
                             }
                         }
@@ -896,10 +1209,10 @@ struct SettingsView: View {
     }
 
     private var aboutCard: some View {
-        SurfaceCard(title: "关于 CleanNest", symbol: "leaf", tint: CNTheme.mint) {
+        SurfaceCard(title: "关于 CleanNest", brandMark: true, tint: CNTheme.mint) {
             VStack(spacing: 0) {
                 HStack(alignment: .top, spacing: 16) {
-                    CNNestMark(size: 58, tint: CNTheme.mint)
+                    CNNestMark(size: 58)
                     VStack(alignment: .leading, spacing: 5) {
                         Text(AppMetadata.displayVersion)
                             .font(.headline)
@@ -1042,7 +1355,7 @@ struct SettingsView: View {
 
     private func chooseLocalAIExecutable() {
         let panel = NSOpenPanel()
-        panel.title = CNL10n.string("选择 mlx_lm.server")
+        panel.title = CNL10n.string("选择 oMLX 或 mlx_lm.server")
         panel.prompt = CNL10n.string("使用此程序")
         panel.canChooseDirectories = false
         panel.canChooseFiles = true

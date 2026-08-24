@@ -63,6 +63,7 @@ extension PageHeader where Accessory == EmptyView {
 struct SurfaceCard<Content: View>: View {
     let title: String?
     let symbol: String?
+    let brandMark: Bool
     let prominence: CNSurfaceProminence
     let tint: Color
     @ViewBuilder let content: Content
@@ -70,12 +71,14 @@ struct SurfaceCard<Content: View>: View {
     init(
         title: String? = nil,
         symbol: String? = nil,
+        brandMark: Bool = false,
         prominence: CNSurfaceProminence = .standard,
         tint: Color = CNTheme.accent,
         @ViewBuilder content: () -> Content
     ) {
         self.title = title
         self.symbol = symbol
+        self.brandMark = brandMark
         self.prominence = prominence
         self.tint = tint
         self.content = content()
@@ -85,7 +88,9 @@ struct SurfaceCard<Content: View>: View {
         VStack(alignment: .leading, spacing: 16) {
             if let title {
                 HStack(spacing: 10) {
-                    if let symbol {
+                    if brandMark {
+                        CNNestMark(size: 29, castsShadow: false)
+                    } else if let symbol {
                         CNIconTile(symbol: symbol, tint: tint, size: 29)
                     }
                     Text(CNL10n.string(title))

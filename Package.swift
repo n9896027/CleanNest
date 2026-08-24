@@ -8,6 +8,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "CleanNest", targets: ["CleanNest"]),
+        .executable(name: "CleanNestLoginItem", targets: ["CleanNestLoginItem"]),
         .executable(name: "CleanNestSelfTest", targets: ["CleanNestSelfTest"]),
         .executable(name: "CleanNestMCP", targets: ["CleanNestMCP"])
     ],
@@ -15,7 +16,9 @@ let package = Package(
         .target(
             name: "CleanNestCore",
             linkerSettings: [
-                .linkedLibrary("sqlite3")
+                .linkedLibrary("sqlite3"),
+                .linkedFramework("IOKit"),
+                .linkedFramework("SystemConfiguration")
             ]
         ),
         .target(
@@ -24,11 +27,21 @@ let package = Package(
         ),
         .executableTarget(
             name: "CleanNest",
-            dependencies: ["CleanNestCore", "CleanNestMutation"]
+            dependencies: ["CleanNestCore", "CleanNestMutation"],
+            linkerSettings: [
+                .linkedFramework("Carbon"),
+                .linkedFramework("ServiceManagement")
+            ]
         ),
         .executableTarget(
             name: "CleanNestSelfTest",
             dependencies: ["CleanNestCore"]
+        ),
+        .executableTarget(
+            name: "CleanNestLoginItem",
+            linkerSettings: [
+                .linkedFramework("AppKit")
+            ]
         ),
         .executableTarget(
             name: "CleanNestMCP",
