@@ -272,11 +272,48 @@ struct DiskAnalyzeView: View {
 
 private enum DiskDecisionFilter: String, CaseIterable, Identifiable {
     case all = "全部"
-    case review = "可复核"
+    case review = "待复核"
     case ownerApp = "App 内管理"
     case keep = "保留"
+    case manual = "我的决定"
 
     var id: String { rawValue }
+}
+
+private enum DiskDecisionChoice: String, CaseIterable, Identifiable {
+    case followSystem
+    case reviewForCleanup
+    case keep
+    case decideLater
+
+    var id: String { rawValue }
+
+    init(_ decision: DiskManualDecision?) {
+        switch decision {
+        case .reviewForCleanup: self = .reviewForCleanup
+        case .keep: self = .keep
+        case .decideLater: self = .decideLater
+        case nil: self = .followSystem
+        }
+    }
+
+    var manualDecision: DiskManualDecision? {
+        switch self {
+        case .followSystem: return nil
+        case .reviewForCleanup: return .reviewForCleanup
+        case .keep: return .keep
+        case .decideLater: return .decideLater
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .followSystem: return "跟随建议"
+        case .reviewForCleanup: return "待清理复核"
+        case .keep: return "保留"
+        case .decideLater: return "稍后处理"
+        }
+    }
 }
 
 private struct DiskDecisionItem: Identifiable {
@@ -300,15 +337,22 @@ private struct DiskDecisionCenter: View {
 
     private var filteredItems: [DiskDecisionItem] {
         items.filter { item in
+            let manual = store.manualDiskDecision(for: item.evidence)
             switch filter {
             case .all:
                 return true
             case .review:
+                if manual == .reviewForCleanup { return true }
+                guard manual == nil else { return false }
                 return [.reviewCandidate, .inspectFurther].contains(item.evidence.cleanupDecision.disposition)
             case .ownerApp:
+                guard manual == nil else { return false }
                 return item.evidence.cleanupDecision.disposition == .manageInOwnerApp
             case .keep:
-                return item.evidence.cleanupDecision.disposition == .keep
+                return manual == .keep
+                    || (manual == nil && item.evidence.cleanupDecision.disposition == .keep)
+            case .manual:
+                return manual != nil
             }
         }
     }
@@ -333,7 +377,7 @@ private struct DiskDecisionCenter: View {
                         decisionIntroduction
                         Spacer()
                         decisionFilter
-                            .frame(width: 420)
+                            .frame(width: 520)
                     }
                     VStack(alignment: .leading, spacing: 10) {
                         decisionIntroduction
@@ -367,7 +411,7 @@ private struct DiskDecisionCenter: View {
     }
 
     private var decisionIntroduction: some View {
-        Text("先看确定性证据，再决定下一步。模型无法改变这里的风险下限或动作边界。")
+        Text("系统先给出确定性证据；你可以手动改为待复核、保留或稍后处理。模型和手动选择都不能突破安全边界。")
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -376,7 +420,7 @@ private struct DiskDecisionCenter: View {
     private var decisionFilter: some View {
         Picker("决策筛选", selection: $filter) {
             ForEach(DiskDecisionFilter.allCases) { value in
-                Text(value.rawValue).tag(value)
+                Text(CNL10n.string(value.rawValue)).tag(value)
             }
         }
         .pickerStyle(.segmented)
@@ -405,23 +449,24 @@ private struct DiskDecisionCenter: View {
 
     private func decisionRow(_ item: DiskDecisionItem) -> some View {
         let decision = item.evidence.cleanupDecision
+        let manual = store.manualDiskDecision(for: item.evidence)
         let selected = selectedItem?.id == item.id
         return Button {
             selectedID = item.id
         } label: {
             HStack(spacing: 10) {
-                Image(systemName: dispositionSymbol(decision.disposition))
-                    .foregroundStyle(dispositionTint(decision.disposition))
+                Image(systemName: rowSymbol(manual: manual, system: decision.disposition))
+                    .foregroundStyle(rowTint(manual: manual, system: decision.disposition))
                     .frame(width: 28, height: 28)
                     .background(
-                        dispositionTint(decision.disposition).opacity(0.10),
+                        rowTint(manual: manual, system: decision.disposition).opacity(0.10),
                         in: RoundedRectangle(cornerRadius: 8)
                     )
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.entry.name)
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
-                    Text(decision.headline)
+                    Text(CNL10n.string(rowHeadline(manual: manual, system: decision)))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -437,7 +482,7 @@ private struct DiskDecisionCenter: View {
         }
         .buttonStyle(.plain)
         .background(selected ? CNTheme.accent.opacity(0.10) : Color.clear)
-        .accessibilityLabel("\(item.entry.name)，\(decision.headline)，\(CleanNestFormatting.bytes(item.entry.bytes))")
+        .accessibilityLabel("\(item.entry.name)，\(rowHeadline(manual: manual, system: decision))，\(CleanNestFormatting.bytes(item.entry.bytes))")
     }
 
     private func decisionDetail(_ item: DiskDecisionItem) -> some View {
@@ -458,12 +503,22 @@ private struct DiskDecisionCenter: View {
                         .foregroundStyle(dispositionTint(decision.disposition))
                 }
                 Spacer()
-                StatusPill(
-                    text: confidenceLabel(decision.confidence),
-                    symbol: "checkmark.seal",
-                    style: decision.confidence == .high ? .success : (decision.confidence == .medium ? .warning : .neutral)
-                )
+                VStack(alignment: .trailing, spacing: 6) {
+                    StatusPill(
+                        text: CNL10n.format(
+                            "系统建议 · %@",
+                            CNL10n.string(confidenceLabel(decision.confidence))
+                        ),
+                        symbol: "checkmark.seal",
+                        style: decision.confidence == .high ? .success : (decision.confidence == .medium ? .warning : .neutral)
+                    )
+                    if store.manualDiskDecision(for: item.evidence) != nil {
+                        StatusPill(text: "已手动调整", symbol: "hand.tap", style: .neutral)
+                    }
+                }
             }
+
+            manualDecisionControl(item)
 
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 12) {
@@ -506,8 +561,15 @@ private struct DiskDecisionCenter: View {
                 } label: {
                     Label("在 Finder 中确认", systemImage: "folder")
                 }
+                if store.manualDiskDecision(for: item.evidence) == .reviewForCleanup {
+                    Button {
+                        store.selection = .cleanup
+                    } label: {
+                        Label("前往安全清理页", systemImage: "trash.slash")
+                    }
+                }
                 Spacer()
-                StatusPill(text: "此页只读", symbol: "lock.shield", style: .success)
+                StatusPill(text: "不自动删除", symbol: "lock.shield", style: .success)
             }
         }
         .padding(17)
@@ -523,6 +585,87 @@ private struct DiskDecisionCenter: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(dispositionTint(decision.disposition).opacity(0.16), lineWidth: 0.7)
         )
+    }
+
+    private func manualDecisionControl(_ item: DiskDecisionItem) -> some View {
+        let canReview = store.canMarkForCleanupReview(item.evidence)
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Label("你的决定", systemImage: "hand.tap")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Text("保存在本机")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Picker("你的决定", selection: manualDecisionBinding(for: item)) {
+                ForEach(DiskDecisionChoice.allCases) { choice in
+                    Text(CNL10n.string(choice.label))
+                        .tag(choice)
+                        .disabled(choice == .reviewForCleanup && !canReview)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+
+            Text(CNL10n.string(canReview
+                ? "“待清理复核”会把它保留在待复核列表，但不会自动勾选或删除；实际处理仍需进入安全清理页再次确认。"
+                : "此项目受保护、风险较高或应由所属 App 管理，因此不能标为待清理；你仍可选择保留、稍后处理或跟随系统。"))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .background(CNTheme.accent.opacity(0.075), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(CNTheme.accent.opacity(0.14), lineWidth: 0.7)
+        )
+    }
+
+    private func manualDecisionBinding(for item: DiskDecisionItem) -> Binding<DiskDecisionChoice> {
+        Binding(
+            get: { DiskDecisionChoice(store.manualDiskDecision(for: item.evidence)) },
+            set: { choice in
+                store.setManualDiskDecision(choice.manualDecision, for: item.evidence)
+            }
+        )
+    }
+
+    private func rowHeadline(
+        manual: DiskManualDecision?,
+        system: DiskCleanupDecision
+    ) -> String {
+        switch manual {
+        case .reviewForCleanup: return "你的决定：待清理复核"
+        case .keep: return "你的决定：保留"
+        case .decideLater: return "你的决定：稍后处理"
+        case nil: return system.headline
+        }
+    }
+
+    private func rowSymbol(
+        manual: DiskManualDecision?,
+        system: DiskCleanupDisposition
+    ) -> String {
+        switch manual {
+        case .reviewForCleanup: return "checkmark.shield"
+        case .keep: return "hand.raised.fill"
+        case .decideLater: return "clock"
+        case nil: return dispositionSymbol(system)
+        }
+    }
+
+    private func rowTint(
+        manual: DiskManualDecision?,
+        system: DiskCleanupDisposition
+    ) -> Color {
+        switch manual {
+        case .reviewForCleanup: return CNTheme.success
+        case .keep: return CNTheme.accent
+        case .decideLater: return CNTheme.warning
+        case nil: return dispositionTint(system)
+        }
     }
 
     private func decisionFact(_ title: String, _ detail: String, symbol: String) -> some View {

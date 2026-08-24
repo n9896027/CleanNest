@@ -30,6 +30,11 @@ public enum CleanNestDataPaths {
             .appendingPathComponent("disk-scan-cache.json", isDirectory: false)
     }
 
+    public static func diskManualDecisions(fileManager: FileManager = .default) -> URL {
+        applicationSupportDirectory(fileManager: fileManager)
+            .appendingPathComponent("disk-manual-decisions.json", isDirectory: false)
+    }
+
     public static func cleanupPreviewSnapshot(fileManager: FileManager = .default) -> URL {
         applicationSupportDirectory(fileManager: fileManager)
             .appendingPathComponent("cleanup-preview.json", isDirectory: false)
