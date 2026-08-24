@@ -18,9 +18,13 @@ let package = Package(
                 .linkedLibrary("sqlite3")
             ]
         ),
+        .target(
+            name: "CleanNestMutation",
+            dependencies: ["CleanNestCore"]
+        ),
         .executableTarget(
             name: "CleanNest",
-            dependencies: ["CleanNestCore"]
+            dependencies: ["CleanNestCore", "CleanNestMutation"]
         ),
         .executableTarget(
             name: "CleanNestSelfTest",
@@ -32,7 +36,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CleanNestCoreTests",
-            dependencies: ["CleanNestCore"]
+            dependencies: ["CleanNestCore", "CleanNestMutation"]
         )
     ]
 )

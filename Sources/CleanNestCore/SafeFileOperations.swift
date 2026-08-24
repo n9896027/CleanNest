@@ -1,4 +1,6 @@
+import Darwin
 import Foundation
+import Security
 
 public enum SafePathError: LocalizedError, Equatable {
     case missing
@@ -6,6 +8,8 @@ public enum SafePathError: LocalizedError, Equatable {
     case protectedPath
     case outsideAllowedRoots
     case invalidApplication
+    case currentApplication
+    case applicationChanged
 
     public var errorDescription: String? {
         switch self {
@@ -14,15 +18,114 @@ public enum SafePathError: LocalizedError, Equatable {
         case .protectedPath: return "该路径受到保护，不能清理。"
         case .outsideAllowedRoots: return "该路径不在 CleanNest 允许的清理范围内。"
         case .invalidApplication: return "只能卸载 Applications 目录中的 .app。"
+        case .currentApplication: return "CleanNest 不能在运行时卸载自身。"
+        case .applicationChanged: return "App 在扫描后发生了变化。为避免卸载错误目标，本次操作已停止。"
         }
+    }
+}
+
+public struct ApplicationFileIdentity: Hashable, Sendable {
+    public let deviceID: UInt64
+    public let fileID: UInt64
+    public let ownerUserID: UInt32
+
+    public init(deviceID: UInt64, fileID: UInt64, ownerUserID: UInt32) {
+        self.deviceID = deviceID
+        self.fileID = fileID
+        self.ownerUserID = ownerUserID
+    }
+
+    public static func capture(
+        at target: URL,
+        fileManager: FileManager = .default
+    ) throws -> ApplicationFileIdentity {
+        let attributes = try fileManager.attributesOfItem(atPath: target.path)
+        guard attributes[.type] as? FileAttributeType == .typeDirectory,
+              let deviceID = (attributes[.systemNumber] as? NSNumber)?.uint64Value,
+              let fileID = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value,
+              let ownerUserID = (attributes[.ownerAccountID] as? NSNumber)?.uint32Value else {
+            throw SafePathError.invalidApplication
+        }
+        return ApplicationFileIdentity(
+            deviceID: deviceID,
+            fileID: fileID,
+            ownerUserID: ownerUserID
+        )
+    }
+}
+
+public enum ApplicationRemovalRequirement: String, Equatable, Sendable {
+    case standard
+    case administratorAuthentication
+}
+
+public struct ApplicationTrashRequest: Sendable {
+    public let source: URL
+    public let expectedIdentity: ApplicationFileIdentity
+    public let expectedBundleIdentifier: String?
+    public let trashDirectory: URL
+
+    public init(
+        source: URL,
+        expectedIdentity: ApplicationFileIdentity,
+        expectedBundleIdentifier: String?,
+        trashDirectory: URL
+    ) {
+        self.source = source.standardizedFileURL
+        self.expectedIdentity = expectedIdentity
+        self.expectedBundleIdentifier = expectedBundleIdentifier
+        self.trashDirectory = trashDirectory.standardizedFileURL
+    }
+}
+
+private enum ApplicationMovePermissionProbeSystem {
+    static func canMoveWithoutAuthorization(
+        source: URL,
+        trashDirectory: URL
+    ) -> Bool {
+        let sourceParent = source.standardizedFileURL.deletingLastPathComponent()
+        let destinationAnchor = FileManager.default.fileExists(atPath: trashDirectory.path)
+            ? trashDirectory.standardizedFileURL
+            : trashDirectory.standardizedFileURL.deletingLastPathComponent()
+
+        guard access(sourceParent.path, W_OK | X_OK) == 0,
+              access(destinationAnchor.path, W_OK | X_OK) == 0,
+              let sourceDevice = deviceID(at: sourceParent),
+              let destinationDevice = deviceID(at: destinationAnchor) else {
+            return false
+        }
+        return sourceDevice == destinationDevice
+    }
+
+    private static func deviceID(at url: URL) -> UInt64? {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes?[.systemNumber] as? NSNumber)?.uint64Value
     }
 }
 
 public struct SafePathPolicy: Sendable {
     public let homeDirectory: URL
+    public let systemApplicationsDirectory: URL
+    private let protectedApplicationPaths: Set<String>
 
-    public init(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) {
+    public init(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        systemApplicationsDirectory: URL = URL(fileURLWithPath: "/Applications", isDirectory: true),
+        protectedApplicationURLs: [URL]? = nil
+    ) {
         self.homeDirectory = homeDirectory.standardizedFileURL
+        self.systemApplicationsDirectory = systemApplicationsDirectory.standardizedFileURL
+        let protectedURLs: [URL]
+        if let protectedApplicationURLs {
+            protectedURLs = protectedApplicationURLs
+        } else if Bundle.main.bundleURL.pathExtension.lowercased() == "app" {
+            protectedURLs = [Bundle.main.bundleURL]
+        } else {
+            protectedURLs = []
+        }
+        self.protectedApplicationPaths = Set(
+            protectedURLs.map { $0.resolvingSymlinksInPath().standardizedFileURL.path }
+        )
     }
 
     public var cleanupRoots: [URL] {
@@ -74,7 +177,7 @@ public struct SafePathPolicy: Sendable {
 
         let resolved = target.resolvingSymlinksInPath().standardizedFileURL
         let applicationRoots = [
-            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            systemApplicationsDirectory,
             homeDirectory.appendingPathComponent("Applications", isDirectory: true)
         ].map { $0.resolvingSymlinksInPath().standardizedFileURL }
 
@@ -82,14 +185,77 @@ public struct SafePathPolicy: Sendable {
               applicationRoots.contains(where: { resolved.deletingLastPathComponent().path == $0.path }) else {
             throw SafePathError.invalidApplication
         }
+        guard !protectedApplicationPaths.contains(resolved.path) else {
+            throw SafePathError.currentApplication
+        }
+        _ = try ApplicationFileIdentity.capture(at: resolved)
+    }
+
+    public func applicationIdentity(for target: URL) throws -> ApplicationFileIdentity {
+        try validateApplicationTarget(target)
+        return try ApplicationFileIdentity.capture(at: target.resolvingSymlinksInPath().standardizedFileURL)
     }
 }
 
 public struct TrashService: Sendable {
-    private let policy: SafePathPolicy
+    public typealias ApplicationRecycler = @Sendable (ApplicationTrashRequest) async throws -> URL?
+    public typealias ApplicationMovePermissionProbe = @Sendable (URL, URL) -> Bool
 
-    public init(policy: SafePathPolicy = SafePathPolicy()) {
+    private let policy: SafePathPolicy
+    private let applicationRecycler: ApplicationRecycler
+    private let applicationMovePermissionProbe: ApplicationMovePermissionProbe
+
+    public init(
+        policy: SafePathPolicy = SafePathPolicy(),
+        applicationRecycler: @escaping ApplicationRecycler
+    ) {
         self.policy = policy
+        self.applicationRecycler = applicationRecycler
+        self.applicationMovePermissionProbe = {
+            ApplicationMovePermissionProbeSystem.canMoveWithoutAuthorization(
+                source: $0,
+                trashDirectory: $1
+            )
+        }
+    }
+
+    public init(
+        policy: SafePathPolicy,
+        applicationRecycler: @escaping ApplicationRecycler,
+        applicationMovePermissionProbe: @escaping ApplicationMovePermissionProbe
+    ) {
+        self.policy = policy
+        self.applicationRecycler = applicationRecycler
+        self.applicationMovePermissionProbe = applicationMovePermissionProbe
+    }
+
+    public func applicationRemovalRequirement(
+        for target: URL,
+        expectedIdentity: ApplicationFileIdentity? = nil,
+        expectedBundleIdentifier: String? = nil,
+        currentUserID: UInt32 = geteuid()
+    ) throws -> ApplicationRemovalRequirement {
+        let identity = try policy.applicationIdentity(for: target)
+        if let expectedIdentity, identity != expectedIdentity {
+            throw SafePathError.applicationChanged
+        }
+        if let expectedBundleIdentifier,
+           !expectedBundleIdentifier.isEmpty,
+           Bundle(url: target)?.bundleIdentifier != expectedBundleIdentifier {
+            throw SafePathError.applicationChanged
+        }
+        let parent = target.resolvingSymlinksInPath().standardizedFileURL.deletingLastPathComponent().path
+        let systemApplicationsPath = policy.systemApplicationsDirectory
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        let trashDirectory = policy.homeDirectory.appendingPathComponent(".Trash", isDirectory: true)
+        if parent == systemApplicationsPath,
+           identity.ownerUserID != currentUserID,
+           !applicationMovePermissionProbe(target, trashDirectory) {
+            return .administratorAuthentication
+        }
+        return .standard
     }
 
     public func trashCleanupTargets(_ targets: [URL]) async -> [TrashOutcome] {
@@ -98,11 +264,74 @@ public struct TrashService: Sendable {
         }
     }
 
-    public func trashApplication(_ target: URL) async -> TrashOutcome {
-        await trash([target]) { candidate in
-            try policy.validateApplicationTarget(candidate)
-        }.first
-            ?? TrashOutcome(source: target, trashedURL: nil, errorDescription: "没有可处理的目标。")
+    public func trashApplication(
+        _ target: URL,
+        expectedIdentity: ApplicationFileIdentity? = nil,
+        expectedBundleIdentifier: String? = nil
+    ) async -> TrashOutcome {
+        let source = URL(fileURLWithPath: target.path, isDirectory: true).standardizedFileURL
+        do {
+            try policy.validateApplicationTarget(source)
+            let firstIdentity = try policy.applicationIdentity(for: source)
+            if let expectedIdentity, firstIdentity != expectedIdentity {
+                throw SafePathError.applicationChanged
+            }
+            if let expectedBundleIdentifier, !expectedBundleIdentifier.isEmpty {
+                guard Bundle(url: source)?.bundleIdentifier == expectedBundleIdentifier else {
+                    throw SafePathError.applicationChanged
+                }
+            }
+
+            // Keep an async boundary between the scan-time check and the final
+            // execution-time check so path replacement is caught before Finder
+            // receives the request.
+            await Task.yield()
+            try Task.checkCancellation()
+            try policy.validateApplicationTarget(source)
+            let finalIdentity = try policy.applicationIdentity(for: source)
+            guard finalIdentity == firstIdentity else {
+                throw SafePathError.applicationChanged
+            }
+
+            let trashDirectory = policy.homeDirectory.appendingPathComponent(".Trash", isDirectory: true)
+            let request = ApplicationTrashRequest(
+                source: source,
+                expectedIdentity: finalIdentity,
+                expectedBundleIdentifier: expectedBundleIdentifier,
+                trashDirectory: trashDirectory
+            )
+            guard let trashedURL = try await applicationRecycler(request) else {
+                throw WorkspaceRecycleError.missingResult
+            }
+            guard !FileManager.default.fileExists(atPath: source.path) else {
+                throw WorkspaceRecycleError.sourceStillPresent
+            }
+            let destination = trashedURL.standardizedFileURL
+            let destinationValues = try? destination.resourceValues(forKeys: [.isSymbolicLinkKey])
+            let expectedTrashParent = trashDirectory.resolvingSymlinksInPath().standardizedFileURL
+            let actualTrashParent = destination
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+                .deletingLastPathComponent()
+            guard FileManager.default.fileExists(atPath: destination.path),
+                  destinationValues?.isSymbolicLink != true,
+                  actualTrashParent == expectedTrashParent,
+                  (try? ApplicationFileIdentity.capture(at: destination)) == finalIdentity else {
+                throw WorkspaceRecycleError.missingResult
+            }
+            if let expectedBundleIdentifier,
+               !expectedBundleIdentifier.isEmpty,
+               Bundle(url: destination)?.bundleIdentifier != expectedBundleIdentifier {
+                throw WorkspaceRecycleError.missingResult
+            }
+            return TrashOutcome(
+                source: source,
+                trashedURL: destination,
+                errorDescription: nil
+            )
+        } catch {
+            return applicationFailureOutcome(source: source, error: error)
+        }
     }
 
     private func trash(
@@ -121,13 +350,93 @@ public struct TrashService: Sendable {
                         errorDescription: nil
                     )
                 } catch {
+                    let nsError = error as NSError
                     return TrashOutcome(
                         source: source,
                         trashedURL: nil,
-                        errorDescription: error.localizedDescription
+                        errorDescription: error.localizedDescription,
+                        failureKind: error is SafePathError ? .validation : .operationFailed,
+                        technicalDescription: "错误域：\(nsError.domain)\n错误码：\(nsError.code)\n目标：\(source.path)\n系统说明：\(nsError.localizedDescription)"
                     )
                 }
             }
         }.value
+    }
+
+    private func applicationFailureOutcome(source: URL, error: Error) -> TrashOutcome {
+        let nsError = error as NSError
+        let failureKind: TrashFailureKind
+        let message: String
+
+        if !FileManager.default.fileExists(atPath: source.path) {
+            failureKind = .missingResult
+            message = "App 已离开原位置，但 CleanNest 无法确认它仍是废纸篓中的同一项目；相关文件未处理，请检查废纸篓。"
+        } else if let safeError = error as? SafePathError {
+            failureKind = safeError == .applicationChanged ? .targetChanged : .validation
+            message = safeError.localizedDescription
+        } else if Self.isAuthorizationCancellation(nsError) {
+            failureKind = .authorizationCancelled
+            message = "已取消 macOS 管理员认证；App 和相关文件均未改动。"
+        } else if Self.isPermissionFailure(nsError) {
+            failureKind = .permissionDenied
+            message = "macOS 未授予移动此 App 所需的权限；App 和相关文件均未改动。"
+        } else if error as? WorkspaceRecycleError == .missingResult {
+            failureKind = .missingResult
+            message = "macOS 没有确认 App 已进入废纸篓；相关文件未处理。"
+        } else if error as? WorkspaceRecycleError == .sourceStillPresent {
+            failureKind = .missingResult
+            message = "macOS 返回后 App 仍在原位置；相关文件未处理。"
+        } else {
+            failureKind = .operationFailed
+            message = "macOS 未能将此 App 移到废纸篓；App 和相关文件均未改动。"
+        }
+
+        let technicalDescription = [
+            "操作：通过 CleanNest 安全废纸篓通道移动 App",
+            "目标：\(source.path)",
+            "错误域：\(nsError.domain)",
+            "错误码：\(nsError.code)",
+            "系统说明：\(nsError.localizedDescription)"
+        ].joined(separator: "\n")
+
+        return TrashOutcome(
+            source: source,
+            trashedURL: nil,
+            errorDescription: message,
+            failureKind: failureKind,
+            technicalDescription: technicalDescription
+        )
+    }
+
+    private static func isAuthorizationCancellation(_ error: NSError) -> Bool {
+        (error.domain == NSCocoaErrorDomain && error.code == NSUserCancelledError)
+            || (error.domain == NSOSStatusErrorDomain && error.code == Int(errAuthorizationCanceled))
+            || (error.domain == NSOSStatusErrorDomain && error.code == -128)
+    }
+
+    private static func isPermissionFailure(_ error: NSError) -> Bool {
+        if error.domain == NSCocoaErrorDomain {
+            return error.code == NSFileWriteNoPermissionError
+                || error.code == NSFileReadNoPermissionError
+        }
+        if error.domain == NSPOSIXErrorDomain {
+            return error.code == Int(EACCES) || error.code == Int(EPERM)
+        }
+        return error.domain == NSOSStatusErrorDomain
+            && (error.code == Int(errAuthorizationDenied) || error.code == -1743)
+    }
+}
+
+private enum WorkspaceRecycleError: LocalizedError, Equatable {
+    case missingResult
+    case sourceStillPresent
+
+    var errorDescription: String? {
+        switch self {
+        case .missingResult:
+            return "NSWorkspace 没有返回废纸篓目标。"
+        case .sourceStillPresent:
+            return "NSWorkspace 返回后源路径仍然存在。"
+        }
     }
 }

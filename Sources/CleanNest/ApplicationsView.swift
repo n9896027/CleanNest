@@ -52,15 +52,28 @@ struct ApplicationsView: View {
                 }
             }
         }
-        .alert("卸载 \(store.selectedApplication?.name ?? "这个 App")？", isPresented: $confirmingUninstall) {
+        .alert(CNL10n.format("卸载 %@？", store.selectedApplication?.name ?? CNL10n.string("这个 App")), isPresented: $confirmingUninstall) {
             Button("返回检查", role: .cancel) { }
-            Button("移到废纸篓", role: .destructive) {
+            Button(CNL10n.string(requiresAdministratorAuthentication ? "认证并移到废纸篓" : "移到废纸篓"), role: .destructive) {
                 Task { await store.uninstallSelectedApplication(includeLeftovers: includeLeftovers) }
             }
         } message: {
             let count = includeLeftovers ? store.selectedApplicationLeftovers.count : 0
-            Text("App 本体和 \(count) 个相关项目将移到废纸篓。系统级 App 若需要管理员权限会被安全跳过。")
+            if requiresAdministratorAuthentication {
+                Text(CNL10n.format("这个 App 由系统或其他管理员账户安装。下一步 macOS 会显示原生管理员认证；CleanNest 不会读取或保存密码。认证成功并确认 App 已进入废纸篓后，才会处理 %d 个相关项目。", count))
+            } else {
+                Text(CNL10n.format("App 本体和 %d 个相关项目将移到废纸篓。只有确认 App 本体成功后，CleanNest 才会处理相关项目。", count))
+            }
         }
+    }
+
+    private var selectedRemovalRequirement: ApplicationRemovalRequirement? {
+        guard let application = store.selectedApplication else { return nil }
+        return store.applicationRemovalRequirement(for: application)
+    }
+
+    private var requiresAdministratorAuthentication: Bool {
+        selectedRemovalRequirement == .administratorAuthentication
     }
 
     private var applicationList: some View {
@@ -135,6 +148,23 @@ struct ApplicationsView: View {
                             actionTitle: "请求退出"
                         ) {
                             store.askApplicationToQuit(application)
+                        }
+                    }
+
+                    if requiresAdministratorAuthentication {
+                        InlineBanner(
+                            title: "需要管理员认证",
+                            detail: "此 App 不是当前账户所有。确认卸载后，macOS 会用原生窗口完成认证；CleanNest 不会看到、读取或保存你的密码。",
+                            kind: .info
+                        )
+                    } else if selectedRemovalRequirement == nil {
+                        InlineBanner(
+                            title: "App 状态已经变化",
+                            detail: "当前路径无法通过安全校验。请重新扫描；CleanNest 不会对未知目标尝试卸载。",
+                            kind: .warning,
+                            actionTitle: "重新扫描"
+                        ) {
+                            Task { await store.scanApplications() }
                         }
                     }
 
@@ -219,17 +249,27 @@ struct ApplicationsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("预计处理 \(1 + (includeLeftovers ? store.selectedApplicationLeftovers.count : 0)) 项")
                             .font(.subheadline.weight(.semibold))
-                        Text("全部移到废纸篓")
+                        Text(CNL10n.string(requiresAdministratorAuthentication ? "先由 macOS 完成管理员认证，再移到废纸篓" : "全部移到废纸篓"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("卸载 \(application.name)", role: .destructive) {
+                    Button(
+                        CNL10n.format(
+                            requiresAdministratorAuthentication ? "认证并卸载 %@" : "卸载 %@",
+                            application.name
+                        ),
+                        role: .destructive
+                    ) {
                         confirmingUninstall = true
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(CNTheme.danger)
-                    .disabled(store.applicationIsRunning(application) || store.isWorking)
+                    .disabled(
+                        store.applicationIsRunning(application)
+                            || store.isWorking
+                            || selectedRemovalRequirement == nil
+                    )
                 }
                 .padding(.horizontal, CNTheme.pagePadding)
                 .padding(.vertical, 12)

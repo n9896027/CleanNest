@@ -140,6 +140,6 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-現在の開発バージョンは **0.5.0（Build 9）** です。CI は Apple Silicon と Intel の runner でビルドおよびテストを行います。再現可能な不具合や機能提案は [Issues](https://github.com/n9896027/CleanNest/issues) へ、セキュリティ脆弱性は非公開で報告してください。
+現在の開発バージョンは **0.5.0（Build 10）** です。CI は Apple Silicon と Intel の runner でビルドおよびテストを行います。再現可能な不具合や機能提案は [Issues](https://github.com/n9896027/CleanNest/issues) へ、セキュリティ脆弱性は非公開で報告してください。
 
 アプリ UI と詳細なメンテナ向け文書は現在、主に簡体字中国語です。この日本語 README はプロジェクトの範囲を正確に説明するものであり、UI の完全な日本語化を意味しません。

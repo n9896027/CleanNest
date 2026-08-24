@@ -718,7 +718,7 @@ struct MaintenanceView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("维护任务使用独立动作模型，可以继续添加 Spotlight 重建、网络诊断、启动项管理等能力。")
                             .font(.subheadline)
-                        Text("需要管理员权限的任务会使用 macOS 原生认证 helper，不会让 App 读取或保存密码。")
+                        Text("需要管理员权限的任务会使用 macOS 原生认证流程，不会让 App 读取或保存密码。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

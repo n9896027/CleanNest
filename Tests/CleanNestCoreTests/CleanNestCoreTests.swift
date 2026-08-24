@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import XCTest
 import CleanNestCore
+import CleanNestMutation
 
 final class CleanNestCoreTests: XCTestCase {
     private var temporaryDirectories: [URL] = []
@@ -224,12 +225,313 @@ final class CleanNestCoreTests: XCTestCase {
         assertThrows(.symbolicLink) { try policy.validateCleanupTarget(linked) }
     }
 
+    func testApplicationPolicyAcceptsOnlyDirectNonSymlinkAppsAndProtectsCurrentApp() throws {
+        let sandbox = try makeTemporaryDirectory()
+        let home = sandbox.appendingPathComponent("Home", isDirectory: true)
+        let systemApplications = sandbox.appendingPathComponent("SystemApplications", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: systemApplications, withIntermediateDirectories: true)
+
+        let directApp = systemApplications.appendingPathComponent("Direct.app", isDirectory: true)
+        let nestedApp = systemApplications
+            .appendingPathComponent("Folder", isDirectory: true)
+            .appendingPathComponent("Nested.app", isDirectory: true)
+        let linkedApp = systemApplications.appendingPathComponent("Linked.app", isDirectory: true)
+        try makeApplication(at: directApp, bundleIdentifier: "com.example.direct")
+        try makeApplication(at: nestedApp, bundleIdentifier: "com.example.nested")
+        try FileManager.default.createSymbolicLink(at: linkedApp, withDestinationURL: directApp)
+
+        let policy = SafePathPolicy(
+            homeDirectory: home,
+            systemApplicationsDirectory: systemApplications,
+            protectedApplicationURLs: []
+        )
+        XCTAssertNoThrow(try policy.validateApplicationTarget(directApp))
+        assertThrows(.invalidApplication) { try policy.validateApplicationTarget(nestedApp) }
+        assertThrows(.symbolicLink) { try policy.validateApplicationTarget(linkedApp) }
+
+        let protectedPolicy = SafePathPolicy(
+            homeDirectory: home,
+            systemApplicationsDirectory: systemApplications,
+            protectedApplicationURLs: [directApp]
+        )
+        assertThrows(.currentApplication) { try protectedPolicy.validateApplicationTarget(directApp) }
+    }
+
+    func testApplicationRemovalRequirementDetectsDifferentOwnerInSystemApplications() throws {
+        let fixture = try makeApplicationFixture()
+        let identity = try ApplicationFileIdentity.capture(at: fixture.application)
+        let service = TrashService(
+            policy: fixture.policy,
+            applicationRecycler: { _ in nil },
+            applicationMovePermissionProbe: { _, _ in false }
+        )
+
+        XCTAssertEqual(
+            try service.applicationRemovalRequirement(
+                for: fixture.application,
+                currentUserID: identity.ownerUserID
+            ),
+            .standard
+        )
+        XCTAssertEqual(
+            try service.applicationRemovalRequirement(
+                for: fixture.application,
+                currentUserID: identity.ownerUserID &+ 1
+            ),
+            .administratorAuthentication
+        )
+
+        let directlyWritableService = TrashService(
+            policy: fixture.policy,
+            applicationRecycler: { _ in nil },
+            applicationMovePermissionProbe: { _, _ in true }
+        )
+        XCTAssertEqual(
+            try directlyWritableService.applicationRemovalRequirement(
+                for: fixture.application,
+                currentUserID: identity.ownerUserID &+ 1
+            ),
+            .standard
+        )
+
+        let changedIdentity = ApplicationFileIdentity(
+            deviceID: identity.deviceID,
+            fileID: identity.fileID &+ 1,
+            ownerUserID: identity.ownerUserID
+        )
+        assertThrows(.applicationChanged) {
+            _ = try service.applicationRemovalRequirement(
+                for: fixture.application,
+                expectedIdentity: changedIdentity
+            )
+        }
+        assertThrows(.applicationChanged) {
+            _ = try service.applicationRemovalRequirement(
+                for: fixture.application,
+                expectedIdentity: identity,
+                expectedBundleIdentifier: "com.example.replaced"
+            )
+        }
+    }
+
+    func testApplicationTrashUsesValidatedIdentityAndConfirmsSourceMoved() async throws {
+        let fixture = try makeApplicationFixture()
+        let identity = try ApplicationFileIdentity.capture(at: fixture.application)
+        let trashDirectory = fixture.policy.homeDirectory.appendingPathComponent(".Trash", isDirectory: true)
+        try FileManager.default.createDirectory(at: trashDirectory, withIntermediateDirectories: true)
+        let destination = trashDirectory.appendingPathComponent(fixture.application.lastPathComponent)
+        let service = TrashService(policy: fixture.policy, applicationRecycler: { request in
+            try FileManager.default.moveItem(at: request.source, to: destination)
+            return destination
+        })
+
+        let outcome = await service.trashApplication(
+            fixture.application,
+            expectedIdentity: identity,
+            expectedBundleIdentifier: fixture.bundleIdentifier
+        )
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertEqual(outcome.trashedURL?.standardizedFileURL, destination.standardizedFileURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.application.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    func testApplicationTrashRejectsPathReplacementBeforeRecyclerRuns() async throws {
+        let fixture = try makeApplicationFixture()
+        let scannedIdentity = try ApplicationFileIdentity.capture(at: fixture.application)
+        let original = fixture.sandbox.appendingPathComponent("Original.app", isDirectory: true)
+        try FileManager.default.moveItem(at: fixture.application, to: original)
+        try makeApplication(at: fixture.application, bundleIdentifier: fixture.bundleIdentifier)
+        XCTAssertNotEqual(try ApplicationFileIdentity.capture(at: fixture.application), scannedIdentity)
+
+        let service = TrashService(policy: fixture.policy, applicationRecycler: { _ in
+            throw NSError(domain: "UnexpectedRecyclerInvocation", code: 1)
+        })
+        let outcome = await service.trashApplication(
+            fixture.application,
+            expectedIdentity: scannedIdentity,
+            expectedBundleIdentifier: fixture.bundleIdentifier
+        )
+
+        XCTAssertFalse(outcome.succeeded)
+        XCTAssertEqual(outcome.failureKind, .targetChanged)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.application.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: original.path))
+    }
+
+    func testApplicationTrashClassifiesNativeAuthorizationCancellation() async throws {
+        let fixture = try makeApplicationFixture()
+        let service = TrashService(policy: fixture.policy, applicationRecycler: { _ in
+            throw NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError)
+        })
+
+        let outcome = await service.trashApplication(
+            fixture.application,
+            expectedIdentity: try ApplicationFileIdentity.capture(at: fixture.application),
+            expectedBundleIdentifier: fixture.bundleIdentifier
+        )
+
+        XCTAssertEqual(outcome.failureKind, .authorizationCancelled)
+        XCTAssertTrue(outcome.errorDescription?.contains("已取消") == true)
+        XCTAssertTrue(outcome.technicalDescription?.contains(NSCocoaErrorDomain) == true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.application.path))
+    }
+
+    func testApplicationTrashClassifiesPermissionFailureAndFalseSuccess() async throws {
+        let permissionFixture = try makeApplicationFixture(name: "Permission.app")
+        let permissionService = TrashService(policy: permissionFixture.policy, applicationRecycler: { _ in
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))
+        })
+        let permissionOutcome = await permissionService.trashApplication(
+            permissionFixture.application,
+            expectedIdentity: try ApplicationFileIdentity.capture(at: permissionFixture.application),
+            expectedBundleIdentifier: permissionFixture.bundleIdentifier
+        )
+        XCTAssertEqual(permissionOutcome.failureKind, .permissionDenied)
+        XCTAssertTrue(permissionOutcome.technicalDescription?.contains("\(EACCES)") == true)
+
+        let falseSuccessFixture = try makeApplicationFixture(name: "FalseSuccess.app")
+        let falseSuccessService = TrashService(policy: falseSuccessFixture.policy, applicationRecycler: { _ in
+            falseSuccessFixture.sandbox.appendingPathComponent("NotActuallyTrash.app")
+        })
+        let falseSuccessOutcome = await falseSuccessService.trashApplication(
+            falseSuccessFixture.application,
+            expectedIdentity: try ApplicationFileIdentity.capture(at: falseSuccessFixture.application),
+            expectedBundleIdentifier: falseSuccessFixture.bundleIdentifier
+        )
+        XCTAssertEqual(falseSuccessOutcome.failureKind, .missingResult)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: falseSuccessFixture.application.path))
+    }
+
+    func testApplicationTrashRejectsDestinationOutsideCurrentUsersTrash() async throws {
+        let fixture = try makeApplicationFixture(name: "WrongDestination.app")
+        let identity = try ApplicationFileIdentity.capture(at: fixture.application)
+        let outsideTrash = fixture.sandbox.appendingPathComponent("OutsideTrash", isDirectory: true)
+        try FileManager.default.createDirectory(at: outsideTrash, withIntermediateDirectories: true)
+        let destination = outsideTrash.appendingPathComponent(fixture.application.lastPathComponent)
+        let service = TrashService(policy: fixture.policy, applicationRecycler: { request in
+            try FileManager.default.moveItem(at: request.source, to: destination)
+            return destination
+        })
+
+        let outcome = await service.trashApplication(
+            fixture.application,
+            expectedIdentity: identity,
+            expectedBundleIdentifier: fixture.bundleIdentifier
+        )
+
+        XCTAssertFalse(outcome.succeeded)
+        XCTAssertEqual(outcome.failureKind, .missingResult)
+        XCTAssertTrue(outcome.errorDescription?.contains("已离开原位置") == true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.application.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    func testAtomicApplicationTrashMoverMovesExactBundleAndAvoidsCollisions() throws {
+        let fixture = try makeApplicationFixture(name: "Atomic.app")
+        let trashDirectory = fixture.sandbox.appendingPathComponent("Trash", isDirectory: true)
+        try FileManager.default.createDirectory(at: trashDirectory, withIntermediateDirectories: true)
+        let collision = trashDirectory.appendingPathComponent("Atomic.app", isDirectory: true)
+        try makeApplication(at: collision, bundleIdentifier: "com.example.collision")
+        let identity = try ApplicationFileIdentity.capture(at: fixture.application)
+
+        let destination = try AtomicApplicationTrashMover.move(
+            ApplicationTrashRequest(
+                source: fixture.application,
+                expectedIdentity: identity,
+                expectedBundleIdentifier: fixture.bundleIdentifier,
+                trashDirectory: trashDirectory
+            )
+        )
+
+        XCTAssertEqual(destination.lastPathComponent, "Atomic 2.app")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.application.path))
+        XCTAssertEqual(try ApplicationFileIdentity.capture(at: destination), identity)
+        XCTAssertEqual(
+            AtomicApplicationTrashMover.findMovedItem(
+                in: trashDirectory,
+                matching: identity
+            )?.resolvingSymlinksInPath(),
+            destination.resolvingSymlinksInPath()
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: collision.path))
+    }
+
+    func testAtomicApplicationTrashMoverRejectsChangedIdentity() throws {
+        let fixture = try makeApplicationFixture(name: "Changed.app")
+        let trashDirectory = fixture.sandbox.appendingPathComponent("Trash", isDirectory: true)
+        try FileManager.default.createDirectory(at: trashDirectory, withIntermediateDirectories: true)
+        let identity = try ApplicationFileIdentity.capture(at: fixture.application)
+        let changed = ApplicationFileIdentity(
+            deviceID: identity.deviceID,
+            fileID: identity.fileID &+ 1,
+            ownerUserID: identity.ownerUserID
+        )
+
+        XCTAssertThrowsError(
+            try AtomicApplicationTrashMover.move(
+                ApplicationTrashRequest(
+                    source: fixture.application,
+                    expectedIdentity: changed,
+                    expectedBundleIdentifier: fixture.bundleIdentifier,
+                    trashDirectory: trashDirectory
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? SafePathError, .applicationChanged)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.application.path))
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CleanNestCoreTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         temporaryDirectories.append(directory)
         return directory
+    }
+
+    private func makeApplicationFixture(
+        name: String = "Fixture.app",
+        bundleIdentifier: String = "com.example.fixture"
+    ) throws -> (
+        sandbox: URL,
+        application: URL,
+        bundleIdentifier: String,
+        policy: SafePathPolicy
+    ) {
+        let sandbox = try makeTemporaryDirectory()
+        let home = sandbox.appendingPathComponent("Home", isDirectory: true)
+        let systemApplications = sandbox.appendingPathComponent("SystemApplications", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: systemApplications, withIntermediateDirectories: true)
+        let application = systemApplications.appendingPathComponent(name, isDirectory: true)
+        try makeApplication(at: application, bundleIdentifier: bundleIdentifier)
+        let policy = SafePathPolicy(
+            homeDirectory: home,
+            systemApplicationsDirectory: systemApplications,
+            protectedApplicationURLs: []
+        )
+        return (sandbox, application, bundleIdentifier, policy)
+    }
+
+    private func makeApplication(at url: URL, bundleIdentifier: String) throws {
+        let contents = url.appendingPathComponent("Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        let plist: [String: Any] = [
+            "CFBundleIdentifier": bundleIdentifier,
+            "CFBundleName": url.deletingPathExtension().lastPathComponent,
+            "CFBundlePackageType": "APPL",
+            "CFBundleVersion": "1"
+        ]
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: plist,
+            format: .xml,
+            options: 0
+        )
+        try data.write(to: contents.appendingPathComponent("Info.plist"), options: .atomic)
     }
 
     private func assertThrows(

@@ -18,6 +18,16 @@ macOS 没有公开 API 能直接读取完全磁盘访问开关。CleanNest 只�
 
 电池状态来自系统电源接口，不依赖完全磁盘访问。Mac mini、Mac Studio、Mac Pro 与 iMac 没有内置电池时，CleanNest 会明确显示“没有内置电池”；只有命令或解析真正失败时才显示“读取失败”。
 
+## App 卸载与管理员认证
+
+完全磁盘访问只解决受保护数据的读取问题，不会自动赋予 root 权限。CleanNest 卸载 App 时先复核目标仍是标准 Applications 目录中的同一 App，并检查当前账户对来源目录和废纸篓的真实写入权限。
+
+- 如果当前管理员账户已经可以移动 `/Applications` 中的项目，CleanNest 使用同卷原子重命名直接移入当前用户废纸篓，不会因为 App 显示为 `root` 所有就制造无效认证提示。
+- 如果权限确实不足或无法同卷移动，CleanNest 才请求 Finder 执行废纸篓操作；macOS 可能先询问是否允许 CleanNest 控制 Finder，再显示系统管理员认证。CleanNest 不接收、读取或保存管理员密码。
+- 只有 App 本体已从原路径消失且在废纸篓中得到确认后，才会处理预览中按精确 Bundle ID 匹配的相关文件。任何取消、权限拒绝、目标变化或结果不确定都会停止后续处理。
+
+启用 Hardened Runtime 的构建只为 GUI App 签入 `com.apple.security.automation.apple-events`，并在 Info.plist 提供 `NSAppleEventsUsageDescription`；内置只读 MCP 不带该 entitlement，也不链接 AppKit 或 Apple Events 实现。即使存在 entitlement，首次控制 Finder 仍必须由用户在 macOS 权限窗口中明确允许。
+
 ## 为什么重建后权限可能失效
 
 TCC 会结合 App 路径、Bundle ID 和代码签名身份识别应用。ad-hoc 签名常随每次构建改变代码哈希，系统可能把新构建视为另一个应用。

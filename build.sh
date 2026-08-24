@@ -12,6 +12,7 @@ STAGING_PATH="$PROJECT_DIR/build/.$APP_NAME.app.staging.$$"
 ICON_TOOL="$PROJECT_DIR/build/CleanNestIconGenerator"
 ICONSET_PATH="$PROJECT_DIR/build/AppIcon.iconset"
 ICON_PATH="$PROJECT_DIR/build/AppIcon.icns"
+ENTITLEMENTS_PATH="$PROJECT_DIR/Resources/CleanNest.entitlements"
 PREFERRED_SIGNING_IDENTITY="Yuan OS Local Code Signing"
 
 running_bundle_pids() {
@@ -56,6 +57,18 @@ designated_requirement() {
         return 1
     fi
     printf '%s\n' "$requirement"
+}
+
+verify_automation_entitlement() {
+    local entitlement_value
+    entitlement_value="$(
+        codesign -d --entitlements :- "$1" 2>/dev/null \
+            | plutil -extract 'com\.apple\.security\.automation\.apple-events' raw -o - -
+    )"
+    if [[ "$entitlement_value" != "true" ]]; then
+        echo "签名验证失败：缺少 Finder 自动化所需的 Apple Events entitlement。" >&2
+        return 1
+    fi
 }
 
 # Never rebuild or replace an app bundle that still backs a live process. TCC
@@ -134,17 +147,19 @@ else
 fi
 
 plutil -lint "$STAGING_PATH/Contents/Info.plist"
+plutil -lint "$ENTITLEMENTS_PATH"
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
     codesign --force --sign "$SIGN_IDENTITY" "$STAGING_PATH/Contents/MacOS/$MCP_NAME"
-    codesign --force --sign "$SIGN_IDENTITY" "$STAGING_PATH"
+    codesign --force --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_IDENTITY" "$STAGING_PATH"
 else
     # A real distribution identity must opt into Hardened Runtime and a trusted
     # timestamp before the bundle can be submitted to Apple's notarization service.
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$STAGING_PATH/Contents/MacOS/$MCP_NAME"
-    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$STAGING_PATH"
+    codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_IDENTITY" "$STAGING_PATH"
 fi
 codesign --verify --strict --verbose=2 "$STAGING_PATH/Contents/MacOS/$MCP_NAME"
 codesign --verify --strict --verbose=2 "$STAGING_PATH"
+verify_automation_entitlement "$STAGING_PATH"
 DESIGNATED_REQUIREMENT="$(designated_requirement "$STAGING_PATH")"
 if [[ "$SIGN_IDENTITY" != "-" && "$DESIGNATED_REQUIREMENT" == *"cdhash"* ]]; then
     echo "签名验证失败：稳定签名身份仍生成了仅绑定 cdhash 的 designated requirement。" >&2
@@ -164,6 +179,7 @@ STAGING_PATH=""
 
 codesign --verify --strict --verbose=2 "$BUNDLE_PATH"
 codesign --verify --strict --verbose=2 "$MCP_EXECUTABLE"
+verify_automation_entitlement "$BUNDLE_PATH"
 FINAL_REQUIREMENT="$(designated_requirement "$BUNDLE_PATH")"
 if [[ "$FINAL_REQUIREMENT" != "$DESIGNATED_REQUIREMENT" ]]; then
     echo "签名验证失败：发布后 designated requirement 发生变化。" >&2

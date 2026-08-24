@@ -18,11 +18,15 @@ public struct ApplicationScanner: Sendable {
             for root in roots {
                 for url in FileTree.directChildren(of: root)
                 where url.pathExtension.lowercased() == "app" {
+                    let resourceValues = try? url.resourceValues(forKeys: [
+                        .contentModificationDateKey,
+                        .isSymbolicLinkKey
+                    ])
+                    guard resourceValues?.isSymbolicLink != true else { continue }
                     let bundle = Bundle(url: url)
                     let displayName = bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
                     let bundleName = bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
                     let version = bundle?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-                    let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
 
                     applications.append(
                         InstalledApplication(
@@ -31,7 +35,8 @@ public struct ApplicationScanner: Sendable {
                             version: version,
                             url: url,
                             allocatedBytes: FileTree.allocatedSize(of: url),
-                            modifiedAt: modified
+                            modifiedAt: resourceValues?.contentModificationDate,
+                            fileIdentity: try? ApplicationFileIdentity.capture(at: url)
                         )
                     )
                 }
