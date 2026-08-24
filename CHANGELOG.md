@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-24
+
 ### Added
 
 - 增加原生增量磁盘索引：显示实时部分结果、复用统计、取消恢复、深度刷新与本机缓存清除；缓存不保存完整路径或文件内容。
@@ -62,6 +64,7 @@
 - 完全磁盘访问探测、受保护目录阻断、符号链接保护和废纸篓恢复策略。
 - CodeQL、Dependabot、分支保护和完整 App Bundle CI。
 
-[Unreleased]: https://github.com/n9896027/CleanNest/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/n9896027/CleanNest/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/n9896027/CleanNest/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/n9896027/CleanNest/compare/f321556b258666ac5f700fbd6bb4e60b4c3cf93d...v0.4.0
 [0.3.1]: https://github.com/n9896027/CleanNest/commit/f321556b258666ac5f700fbd6bb4e60b4c3cf93d
