@@ -5,9 +5,12 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIGURATION="${1:-release}"
 APP_NAME="CleanNest"
 MCP_NAME="CleanNestMCP"
+LOGIN_ITEM_NAME="CleanNestLoginItem"
 BUNDLE_PATH="$PROJECT_DIR/build/$APP_NAME.app"
 APP_EXECUTABLE="$BUNDLE_PATH/Contents/MacOS/$APP_NAME"
 MCP_EXECUTABLE="$BUNDLE_PATH/Contents/MacOS/$MCP_NAME"
+LOGIN_ITEM_BUNDLE="$BUNDLE_PATH/Contents/Library/LoginItems/$LOGIN_ITEM_NAME.app"
+LOGIN_ITEM_EXECUTABLE="$LOGIN_ITEM_BUNDLE/Contents/MacOS/$LOGIN_ITEM_NAME"
 STAGING_PATH="$PROJECT_DIR/build/.$APP_NAME.app.staging.$$"
 ICON_TOOL="$PROJECT_DIR/build/CleanNestIconGenerator"
 ICONSET_PATH="$PROJECT_DIR/build/AppIcon.iconset"
@@ -79,24 +82,27 @@ trap cleanup_staging_bundle EXIT
 
 cd "$PROJECT_DIR"
 
-echo "[1/5] 编译 CleanNest 与只读 MCP ($CONFIGURATION)"
-if [[ -n "${CLEANNEST_PREBUILT_EXECUTABLE:-}" || -n "${CLEANNEST_PREBUILT_MCP_EXECUTABLE:-}" ]]; then
-    if [[ -z "${CLEANNEST_PREBUILT_EXECUTABLE:-}" || -z "${CLEANNEST_PREBUILT_MCP_EXECUTABLE:-}" ]]; then
-        echo "预编译模式必须同时提供 App 与 MCP 两个可执行文件。" >&2
+echo "[1/5] 编译 CleanNest、登录项与只读 MCP ($CONFIGURATION)"
+if [[ -n "${CLEANNEST_PREBUILT_EXECUTABLE:-}" || -n "${CLEANNEST_PREBUILT_MCP_EXECUTABLE:-}" || -n "${CLEANNEST_PREBUILT_LOGIN_ITEM_EXECUTABLE:-}" ]]; then
+    if [[ -z "${CLEANNEST_PREBUILT_EXECUTABLE:-}" || -z "${CLEANNEST_PREBUILT_MCP_EXECUTABLE:-}" || -z "${CLEANNEST_PREBUILT_LOGIN_ITEM_EXECUTABLE:-}" ]]; then
+        echo "预编译模式必须同时提供 App、登录项与 MCP 三个可执行文件。" >&2
         exit 1
     fi
-    if [[ ! -x "$CLEANNEST_PREBUILT_EXECUTABLE" || ! -x "$CLEANNEST_PREBUILT_MCP_EXECUTABLE" ]]; then
+    if [[ ! -x "$CLEANNEST_PREBUILT_EXECUTABLE" || ! -x "$CLEANNEST_PREBUILT_MCP_EXECUTABLE" || ! -x "$CLEANNEST_PREBUILT_LOGIN_ITEM_EXECUTABLE" ]]; then
         echo "预编译可执行文件不存在或不可执行。" >&2
         exit 1
     fi
     APP_SOURCE="$CLEANNEST_PREBUILT_EXECUTABLE"
     MCP_SOURCE="$CLEANNEST_PREBUILT_MCP_EXECUTABLE"
+    LOGIN_ITEM_SOURCE="$CLEANNEST_PREBUILT_LOGIN_ITEM_EXECUTABLE"
 else
     swift build -c "$CONFIGURATION" --product "$APP_NAME"
     swift build -c "$CONFIGURATION" --product "$MCP_NAME"
+    swift build -c "$CONFIGURATION" --product "$LOGIN_ITEM_NAME"
     BIN_DIR="$(swift build -c "$CONFIGURATION" --show-bin-path)"
     APP_SOURCE="$BIN_DIR/$APP_NAME"
     MCP_SOURCE="$BIN_DIR/$MCP_NAME"
+    LOGIN_ITEM_SOURCE="$BIN_DIR/$LOGIN_ITEM_NAME"
 fi
 
 if [[ "$BUNDLE_PATH" != "$PROJECT_DIR/build/CleanNest.app" ]]; then
@@ -106,7 +112,10 @@ fi
 
 echo "[2/5] 生成 App 图标"
 mkdir -p "$PROJECT_DIR/build"
-swiftc -framework AppKit "$PROJECT_DIR/Tools/IconGenerator.swift" -o "$ICON_TOOL"
+swiftc -framework AppKit -framework SwiftUI \
+    "$PROJECT_DIR/Sources/CleanNest/BrandMark.swift" \
+    "$PROJECT_DIR/Tools/IconGenerator.swift" \
+    -o "$ICON_TOOL"
 rm -rf -- "$ICONSET_PATH"
 rm -f -- "$ICON_PATH"
 "$ICON_TOOL" "$ICONSET_PATH"
@@ -114,10 +123,15 @@ iconutil -c icns "$ICONSET_PATH" -o "$ICON_PATH"
 
 echo "[3/5] 组装 App Bundle"
 cleanup_staging_bundle
-mkdir -p "$STAGING_PATH/Contents/MacOS" "$STAGING_PATH/Contents/Resources"
+mkdir -p "$STAGING_PATH/Contents/MacOS" "$STAGING_PATH/Contents/Resources" \
+    "$STAGING_PATH/Contents/Library/LoginItems/$LOGIN_ITEM_NAME.app/Contents/MacOS"
 install -m 755 "$APP_SOURCE" "$STAGING_PATH/Contents/MacOS/$APP_NAME"
 install -m 755 "$MCP_SOURCE" "$STAGING_PATH/Contents/MacOS/$MCP_NAME"
+install -m 755 "$LOGIN_ITEM_SOURCE" \
+    "$STAGING_PATH/Contents/Library/LoginItems/$LOGIN_ITEM_NAME.app/Contents/MacOS/$LOGIN_ITEM_NAME"
 install -m 644 "$PROJECT_DIR/Resources/Info.plist" "$STAGING_PATH/Contents/Info.plist"
+install -m 644 "$PROJECT_DIR/Resources/CleanNestLoginItem-Info.plist" \
+    "$STAGING_PATH/Contents/Library/LoginItems/$LOGIN_ITEM_NAME.app/Contents/Info.plist"
 install -m 644 "$ICON_PATH" "$STAGING_PATH/Contents/Resources/AppIcon.icns"
 
 echo "[4/5] 导出英文、简体中文与繁体中文资源"
@@ -147,17 +161,24 @@ else
 fi
 
 plutil -lint "$STAGING_PATH/Contents/Info.plist"
+plutil -lint "$STAGING_PATH/Contents/Library/LoginItems/$LOGIN_ITEM_NAME.app/Contents/Info.plist"
 plutil -lint "$ENTITLEMENTS_PATH"
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
     codesign --force --sign "$SIGN_IDENTITY" "$STAGING_PATH/Contents/MacOS/$MCP_NAME"
+    codesign --force --sign "$SIGN_IDENTITY" \
+        "$STAGING_PATH/Contents/Library/LoginItems/$LOGIN_ITEM_NAME.app"
     codesign --force --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_IDENTITY" "$STAGING_PATH"
 else
     # A real distribution identity must opt into Hardened Runtime and a trusted
     # timestamp before the bundle can be submitted to Apple's notarization service.
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$STAGING_PATH/Contents/MacOS/$MCP_NAME"
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
+        "$STAGING_PATH/Contents/Library/LoginItems/$LOGIN_ITEM_NAME.app"
     codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_IDENTITY" "$STAGING_PATH"
 fi
 codesign --verify --strict --verbose=2 "$STAGING_PATH/Contents/MacOS/$MCP_NAME"
+codesign --verify --strict --verbose=2 \
+    "$STAGING_PATH/Contents/Library/LoginItems/$LOGIN_ITEM_NAME.app"
 codesign --verify --strict --verbose=2 "$STAGING_PATH"
 verify_automation_entitlement "$STAGING_PATH"
 DESIGNATED_REQUIREMENT="$(designated_requirement "$STAGING_PATH")"
@@ -179,6 +200,7 @@ STAGING_PATH=""
 
 codesign --verify --strict --verbose=2 "$BUNDLE_PATH"
 codesign --verify --strict --verbose=2 "$MCP_EXECUTABLE"
+codesign --verify --strict --verbose=2 "$LOGIN_ITEM_BUNDLE"
 verify_automation_entitlement "$BUNDLE_PATH"
 FINAL_REQUIREMENT="$(designated_requirement "$BUNDLE_PATH")"
 if [[ "$FINAL_REQUIREMENT" != "$DESIGNATED_REQUIREMENT" ]]; then

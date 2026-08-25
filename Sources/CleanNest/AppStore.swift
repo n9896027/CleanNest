@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Darwin
 import Foundation
+import ServiceManagement
 import CleanNestCore
 
 enum SidebarItem: String, CaseIterable, Identifiable {
@@ -11,6 +12,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     case analyze = "磁盘浏览"
     case status = "系统状态"
     case maintenance = "系统维护"
+    case models = "本地模型"
     case evolution = "本机学习"
     case activity = "活动记录"
     case settings = "设置"
@@ -26,6 +28,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .analyze: return "chart.pie"
         case .status: return "waveform.path.ecg"
         case .maintenance: return "wrench.and.screwdriver"
+        case .models: return "rectangle.stack.badge.play"
         case .evolution: return "sparkles.rectangle.stack"
         case .activity: return "clock.arrow.circlepath"
         case .settings: return "gearshape"
@@ -34,7 +37,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 
     static let spaceItems: [SidebarItem] = [.cleanup, .applications, .analyze]
     static let systemItems: [SidebarItem] = [.status, .maintenance]
-    static let intelligenceItems: [SidebarItem] = [.evolution]
+    static let intelligenceItems: [SidebarItem] = [.models, .evolution]
 }
 
 enum OperationPhase: Equatable {
@@ -111,48 +114,6 @@ enum LocalAIBenchmarkPhase: Equatable {
     var isRunning: Bool { self == .running }
 }
 
-struct ActivityEntry: Identifiable, Codable, Hashable {
-    enum Outcome: String, Codable {
-        case success = "完成"
-        case partial = "部分完成"
-        case failed = "未完成"
-
-        var symbol: String {
-            switch self {
-            case .success: return "checkmark.circle.fill"
-            case .partial: return "exclamationmark.circle.fill"
-            case .failed: return "xmark.circle.fill"
-            }
-        }
-    }
-
-    let id: UUID
-    let date: Date
-    let title: String
-    let detail: String
-    let outcome: Outcome
-    let affectedItems: Int
-    let bytes: Int64
-
-    init(
-        id: UUID = UUID(),
-        date: Date = Date(),
-        title: String,
-        detail: String,
-        outcome: Outcome,
-        affectedItems: Int = 0,
-        bytes: Int64 = 0
-    ) {
-        self.id = id
-        self.date = date
-        self.title = title
-        self.detail = detail
-        self.outcome = outcome
-        self.affectedItems = affectedItems
-        self.bytes = bytes
-    }
-}
-
 @MainActor
 final class AppStore: ObservableObject {
     @Published var selection: SidebarItem? = .overview
@@ -179,6 +140,16 @@ final class AppStore: ObservableObject {
     @Published private(set) var metricsDiagnostic = "正在准备本机历史记录…"
     @Published private(set) var metricsRetentionDays = 30
     @Published private(set) var metricsSamplingIsActive = false
+    @Published private(set) var menuBarConfiguration = MenuBarMonitorConfiguration.defaults
+    @Published private(set) var nativeMonitorSample: NativeMonitorSample?
+    @Published private(set) var nativeMonitorHistory: [NativeMonitorSample] = []
+    @Published private(set) var nativeMonitorIsActive = false
+    @Published private(set) var nativeMonitorDiagnostic = "正在准备菜单栏实时监测…"
+    @Published private(set) var menuBarVisibilityDiagnostic = "正在确认菜单栏显示状态…"
+    @Published private(set) var globalHotKeyDiagnostic = "正在注册 ⌘⌥M…"
+    @Published private(set) var launchAtLoginEnabled = false
+    @Published private(set) var launchAtLoginRequiresApproval = false
+    @Published private(set) var launchAtLoginDiagnostic = "正在读取登录启动状态…"
 
     @Published var cleanupCandidates: [CleanupCandidate] = []
     @Published var selectedCleanupIDs = Set<String>()
@@ -205,6 +176,15 @@ final class AppStore: ObservableObject {
     @Published private(set) var localAIProbeLatencyMilliseconds: Double?
     @Published private(set) var localAIBenchmarkPhase: LocalAIBenchmarkPhase = .idle
     @Published private(set) var localAIBenchmarkResult: LocalAIBenchmarkResult?
+    @Published private(set) var localModelRuntimeSnapshot = LocalModelRuntimeSnapshot.empty
+    @Published private(set) var localModelDiscoveryPhase: LocalModelRuntimePhase = .unknown
+    @Published private(set) var localModelDiscoveryIsRunning = false
+    @Published private(set) var localModelRuntimeDiagnostic = "尚未检查本地模型运行时"
+    @Published private(set) var localModelMenuBarEnabled = true
+    @Published private(set) var stoppingExternalLocalModelRuntimeID: String?
+    @Published private(set) var externalLocalModelStopMessage: String?
+    @Published private(set) var externalLocalModelStopMessageIsWarning = false
+    @Published private(set) var externalLocalModelForceCandidateID: String?
 
     @Published var applications: [InstalledApplication] = []
     @Published var applicationSearch = ""
@@ -249,13 +229,18 @@ final class AppStore: ObservableObject {
     private let diskAnalyzer = NativeDiskAnalyzer()
     private let processMemoryInspector = ProcessMemoryInspector()
     private let metricsStore = MetricsStore()
+    private let nativeSystemMonitor = NativeSystemMonitor()
     private let diskEvidenceIndexer = DiskEvidenceIndexer()
     private let trashService = TrashService(
         applicationRecycler: WorkspaceApplicationRecycler.recycle
     )
-    private let localAIRuntime = LocalMLXRuntime()
+    private let localAIRuntime = LocalModelOwnedRuntime()
     private let localModelCatalog = LocalModelCatalog()
+    private let localModelRuntimeDiscovery = LocalModelRuntimeDiscovery()
     private let appUpdateClient = GitHubAppUpdateClient()
+    private let loginItemService = SMAppService.loginItem(
+        identifier: "com.zone.cleannest.loginitem"
+    )
     private let settings = UserDefaults.standard
     private var leftoverRequestID = UUID()
     private var localAIProbeID = UUID()
@@ -269,8 +254,12 @@ final class AppStore: ObservableObject {
     private var didResignAfterOpeningFullDiskAccessSettings = false
     private var lastFullDiskAccessSettingsOpenAttempt = Date.distantPast
     private var metricsSamplingTask: Task<Void, Never>?
+    private var nativeMonitorTask: Task<Void, Never>?
+    private var nativeMonitorSamplingID = UUID()
     private var activeDiskScanTask: Task<Void, Never>?
     private var appUpdateCheckID = UUID()
+    private var localModelDiscoveryID = UUID()
+    private var localModelRuntimeMonitorTask: Task<Void, Never>?
 
     init() {
         demoMode = ProcessInfo.processInfo.environment["CLEANNEST_DEMO"] == "1"
@@ -281,11 +270,19 @@ final class AppStore: ObservableObject {
         if settings.object(forKey: "localAIEnabled") != nil {
             localAIEnabled = settings.bool(forKey: "localAIEnabled")
         }
+        if settings.object(forKey: "localModelMenuBarEnabled") != nil {
+            localModelMenuBarEnabled = settings.bool(forKey: "localModelMenuBarEnabled")
+        }
         if settings.object(forKey: "metricsRetentionDays") != nil {
             metricsRetentionDays = Self.validMetricsRetentionDays(
                 settings.integer(forKey: "metricsRetentionDays")
             )
         }
+        if let data = settings.data(forKey: "menuBarMonitorConfiguration"),
+           let saved = try? JSONDecoder().decode(MenuBarMonitorConfiguration.self, from: data) {
+            menuBarConfiguration = saved.normalized
+        }
+        refreshLaunchAtLoginStatus()
         localAIEndpoint = settings.string(forKey: "localAIEndpoint") ?? "http://127.0.0.1:8080/v1"
         localAIServiceModelID = settings.string(forKey: "localAIServiceModelID") ?? ""
         // A model is a user-replaceable runtime dependency. Never silently
@@ -311,6 +308,7 @@ final class AppStore: ObservableObject {
                 self.localAIServiceState = .unavailable(detail)
                 self.localAIDiagnostic = detail
             }
+            Task { await self.refreshLocalModelRuntimes() }
         }
         if demoMode {
             // Demo and screenshot runs must never inherit a user's persisted
@@ -392,6 +390,52 @@ final class AppStore: ObservableObject {
             ?? URL(fileURLWithPath: trimmed).lastPathComponent
     }
 
+    var primaryLocalModelRuntime: LocalModelRuntimeInstance? {
+        localModelRuntimeSnapshot.primaryInstance
+    }
+
+    var localModelRuntimeStatusTitle: String {
+        switch localModelDiscoveryPhase {
+        case .discovering:
+            return "正在发现本地模型"
+        case .runningHealthy:
+            let count = localModelRuntimeSnapshot.healthyInstances.count
+            return count == 1 ? "1 个模型服务健康运行" : "\(count) 个模型服务健康运行"
+        case .runningUnverified:
+            return "发现运行迹象，等待确认"
+        case .failed:
+            return "运行时检查没有完成"
+        case .stopped:
+            return "当前没有模型在运行"
+        case .unknown:
+            return "尚未检查本地模型"
+        }
+    }
+
+    var configuredLocalModelCanStart: Bool {
+        let modelPath = localAIModelPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let executablePath = localAIExecutablePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !modelPath.isEmpty,
+              !executablePath.isEmpty,
+              FileManager.default.isExecutableFile(atPath: executablePath),
+              localModelRuntimeSnapshot.healthyInstances.isEmpty,
+              !localAIServiceState.isBusy else { return false }
+        let executableName = URL(fileURLWithPath: executablePath).lastPathComponent.lowercased()
+        guard executableName == "omlx"
+                || executableName.hasPrefix("omlx-")
+                || executableName.contains("mlx_lm.server")
+                || executableName.contains("mlx-lm-server") else { return false }
+        if let configuredPort = (try? LocalAIEndpoint(rawValue: localAIEndpoint))?.port,
+           localModelRuntimeSnapshot.instances.contains(where: { instance in
+               instance.listeners.contains { $0.port == configuredPort }
+           }) {
+            return false
+        }
+        return localModelCatalog.descriptor(
+            at: URL(fileURLWithPath: modelPath, isDirectory: true)
+        ) != nil
+    }
+
     func localAIModelDescriptor(path: String) -> LocalModelDescriptor? {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, (trimmed as NSString).isAbsolutePath else { return nil }
@@ -407,6 +451,7 @@ final class AppStore: ObservableObject {
 
     func bootstrap() async {
         if demoMode { return }
+        startNativeMonitoring()
         await refreshLocalModelCatalog()
         await prepareMetricsHistory()
         await refreshFullDiskAccessProbe()
@@ -418,6 +463,7 @@ final class AppStore: ObservableObject {
         if localAIEnabled {
             await probeLocalAI()
         }
+        startLocalModelRuntimeMonitoring()
     }
 
     func refreshLocalModelCatalog() async {
@@ -446,6 +492,479 @@ final class AppStore: ObservableObject {
         localAIModelCatalogDiagnostic = models.isEmpty
             ? "未发现完整模型，可手动选择包含 config.json 与 safetensors 的目录。"
             : "发现 \(models.count) 个可用的 MLX 模型。"
+    }
+
+    func refreshLocalModelRuntimes(force: Bool = false) async {
+        guard !demoMode else { return }
+        guard force || !localModelDiscoveryIsRunning else { return }
+        let discoveryID = UUID()
+        localModelDiscoveryID = discoveryID
+        localModelDiscoveryIsRunning = true
+        localModelDiscoveryPhase = .discovering
+        localModelRuntimeDiagnostic = "正在交叉检查进程、监听端口与平台 API…"
+        let discovery = localModelRuntimeDiscovery
+        let endpoint = localAIEndpoint
+        let snapshot = await Task.detached(priority: .utility) {
+            await discovery.discover(configuredEndpoint: endpoint)
+        }.value
+        guard localModelDiscoveryID == discoveryID else { return }
+        let verified = snapshot.markingOwned(processID: localAIRuntime.ownedProcessIdentifier)
+        localModelRuntimeSnapshot = verified
+        localModelDiscoveryPhase = verified.phase
+        localModelRuntimeDiagnostic = verified.diagnostic
+        localModelDiscoveryIsRunning = false
+    }
+
+    func setLocalModelMenuBarEnabled(_ enabled: Bool) {
+        localModelMenuBarEnabled = enabled
+        guard !demoMode else { return }
+        settings.set(enabled, forKey: "localModelMenuBarEnabled")
+    }
+
+    func startConfiguredLocalModelRuntime() async {
+        guard configuredLocalModelCanStart else {
+            localModelRuntimeDiagnostic = localAIModelPath.isEmpty
+                ? "请先在设置中选择本机模型与服务程序。"
+                : "当前启动配置不完整，或已有健康服务占用该端点。"
+            return
+        }
+        if !localAIEnabled {
+            localAIEnabled = true
+            if !demoMode { settings.set(true, forKey: "localAIEnabled") }
+            localAIServiceState = .unchecked
+        }
+        await startLocalAI()
+        await refreshLocalModelRuntimes()
+    }
+
+    func stopOwnedLocalModelRuntime() async {
+        guard localAIRuntime.ownsRunningProcess else {
+            localModelRuntimeDiagnostic = "这不是 CleanNest 启动的进程；请使用带风险确认的外部服务关闭流程。"
+            return
+        }
+        await stopLocalAI()
+        await refreshLocalModelRuntimes()
+    }
+
+    func stopExternalLocalModelRuntime(
+        _ requestedRuntime: LocalModelRuntimeInstance,
+        force: Bool = false
+    ) async {
+        guard !demoMode else {
+            externalLocalModelStopMessage = "演示模式不会结束任何外部进程。"
+            externalLocalModelStopMessageIsWarning = true
+            return
+        }
+        guard stoppingExternalLocalModelRuntimeID == nil else { return }
+        guard let requestedProcess = requestedRuntime.process else {
+            externalLocalModelStopMessage = "外部模型服务没有可验证的进程身份。"
+            externalLocalModelStopMessageIsWarning = true
+            externalLocalModelForceCandidateID = nil
+            return
+        }
+        if let refusal = LocalModelExternalControlPolicy.refusalReason(for: requestedRuntime) {
+            externalLocalModelStopMessage = refusal
+            externalLocalModelStopMessageIsWarning = true
+            externalLocalModelForceCandidateID = nil
+            return
+        }
+
+        stoppingExternalLocalModelRuntimeID = requestedRuntime.id
+        externalLocalModelStopMessage = force
+            ? "正在重新核对进程身份，准备强制结束…"
+            : "正在重新核对进程身份，准备正常关闭…"
+        externalLocalModelStopMessageIsWarning = false
+        if !force { externalLocalModelForceCandidateID = nil }
+        defer { stoppingExternalLocalModelRuntimeID = nil }
+
+        await refreshLocalModelRuntimes(force: true)
+        guard let currentRuntime = localModelRuntimeSnapshot.instances.first(where: {
+            $0.process?.pid == requestedProcess.pid
+                && $0.platform == requestedRuntime.platform
+        }),
+        let currentProcess = currentRuntime.process else {
+            externalLocalModelStopMessage = "原服务已退出或身份已改变；CleanNest 没有向新进程发送信号。"
+            externalLocalModelStopMessageIsWarning = true
+            externalLocalModelForceCandidateID = nil
+            addActivity(
+                title: "关闭外部模型服务",
+                detail: "\(requestedRuntime.platform.displayName) · PID \(requestedProcess.pid) · 身份已变化",
+                outcome: .failed
+            )
+            return
+        }
+        if let mismatch = LocalModelExternalControlPolicy.identityMismatchReason(
+            expected: requestedProcess,
+            observed: currentProcess
+        ) {
+            externalLocalModelStopMessage = "身份复核未通过：\(mismatch) CleanNest 没有发送信号。"
+            externalLocalModelStopMessageIsWarning = true
+            externalLocalModelForceCandidateID = nil
+            addActivity(
+                title: "关闭外部模型服务",
+                detail: "\(requestedRuntime.platform.displayName) · PID \(requestedProcess.pid) · 身份复核失败",
+                outcome: .failed
+            )
+            return
+        }
+
+        let inspector = processMemoryInspector
+        guard let observedProcess = await Task.detached(priority: .userInitiated, operation: {
+            inspector.process(pid: currentProcess.pid)
+        }).value else {
+            externalLocalModelStopMessage = "原服务已退出，无需再次关闭。"
+            externalLocalModelStopMessageIsWarning = false
+            externalLocalModelForceCandidateID = nil
+            await refreshLocalModelRuntimes(force: true)
+            return
+        }
+        if let mismatch = LocalModelExternalControlPolicy.identityMismatchReason(
+            expected: currentProcess,
+            observed: observedProcess
+        ) {
+            externalLocalModelStopMessage = "系统身份复核未通过：\(mismatch) CleanNest 没有发送信号。"
+            externalLocalModelStopMessageIsWarning = true
+            externalLocalModelForceCandidateID = nil
+            addActivity(
+                title: "关闭外部模型服务",
+                detail: "\(requestedRuntime.platform.displayName) · PID \(requestedProcess.pid) · 系统身份复核失败",
+                outcome: .failed
+            )
+            return
+        }
+
+        let result = await Task.detached(priority: .userInitiated) {
+            inspector.terminate(observedProcess, force: force)
+        }.value
+        let actionTitle = force ? "强制结束外部模型服务" : "关闭外部模型服务"
+        let activityDetail = "\(currentRuntime.platform.displayName) · PID \(currentProcess.pid)"
+
+        switch result {
+        case .terminated:
+            externalLocalModelStopMessage = force
+                ? "\(currentRuntime.platform.displayName) · PID \(currentProcess.pid) 已被强制结束。模型文件和平台设置没有删除。"
+                : "\(currentRuntime.platform.displayName) · PID \(currentProcess.pid) 已正常退出。模型文件和平台设置没有删除。"
+            externalLocalModelStopMessageIsWarning = false
+            externalLocalModelForceCandidateID = nil
+            addActivity(title: actionTitle, detail: activityDetail, outcome: .success, affectedItems: 1)
+            if localAIIsReady {
+                invalidateCleanupAI()
+                _ = invalidateDiskAI()
+                localAIServiceState = .unavailable("外部模型服务已关闭")
+                localAIDiagnostic = "外部模型服务已关闭"
+            }
+
+        case .stillRunning:
+            externalLocalModelStopMessage = force
+                ? "\(currentRuntime.platform.displayName) · PID \(currentProcess.pid) 仍在运行。它可能已被所属平台自动重启。"
+                : "\(currentRuntime.platform.displayName) · PID \(currentProcess.pid) 没有在 3 秒内退出。它可能正在保存状态；如确有需要，可再次确认后强制结束。"
+            externalLocalModelStopMessageIsWarning = true
+            externalLocalModelForceCandidateID = force ? nil : currentRuntime.id
+            addActivity(title: actionTitle, detail: "\(activityDetail) · 仍在运行", outcome: .partial)
+
+        case .alreadyExited:
+            externalLocalModelStopMessage = "原服务已退出，无需再次关闭。"
+            externalLocalModelStopMessageIsWarning = false
+            externalLocalModelForceCandidateID = nil
+
+        case .identityChanged:
+            externalLocalModelStopMessage = "进程身份在关闭期间发生变化；CleanNest 没有向替换进程发送信号。"
+            externalLocalModelStopMessageIsWarning = true
+            externalLocalModelForceCandidateID = nil
+            addActivity(title: actionTitle, detail: "\(activityDetail) · 身份已变化", outcome: .failed)
+
+        case .refused(let reason):
+            externalLocalModelStopMessage = reason
+            externalLocalModelStopMessageIsWarning = true
+            externalLocalModelForceCandidateID = nil
+            addActivity(title: actionTitle, detail: "\(activityDetail) · \(reason)", outcome: .failed)
+
+        case .failed(let reason):
+            externalLocalModelStopMessage = "没有关闭 \(currentRuntime.platform.displayName)：\(reason)"
+            externalLocalModelStopMessageIsWarning = true
+            externalLocalModelForceCandidateID = nil
+            addActivity(title: actionTitle, detail: "\(activityDetail) · \(reason)", outcome: .failed)
+        }
+
+        await refreshLocalModelRuntimes(force: true)
+        if case .terminated = result,
+           let replacement = localModelRuntimeSnapshot.instances.first(where: {
+               $0.platform == currentRuntime.platform
+                   && $0.process?.pid != currentProcess.pid
+                   && !$0.listeners.filter { listener in
+                       currentRuntime.listeners.contains { $0.port == listener.port }
+                   }.isEmpty
+           }) {
+            externalLocalModelStopMessage = "原进程已退出，但所属平台已自动重启服务为 PID \(replacement.process?.pid ?? 0)。"
+            externalLocalModelStopMessageIsWarning = true
+        }
+    }
+
+    func disableExternalLocalModelSupervisor(
+        _ requestedRuntime: LocalModelRuntimeInstance
+    ) async {
+        guard !demoMode else {
+            externalLocalModelStopMessage = "演示模式不会停用任何守护服务。"
+            externalLocalModelStopMessageIsWarning = true
+            return
+        }
+        guard stoppingExternalLocalModelRuntimeID == nil else { return }
+        guard let requestedProcess = requestedRuntime.process,
+              let requestedSupervisor = requestedRuntime.supervisor else {
+            externalLocalModelStopMessage = "没有取得模型进程与守护服务的精确对应关系。"
+            externalLocalModelStopMessageIsWarning = true
+            return
+        }
+        if let refusal = LocalModelSupervisorControlPolicy.disableRefusalReason(
+            runtime: requestedRuntime
+        ) {
+            externalLocalModelStopMessage = refusal
+            externalLocalModelStopMessageIsWarning = true
+            return
+        }
+
+        stoppingExternalLocalModelRuntimeID = requestedRuntime.id
+        externalLocalModelStopMessage = "正在重新核对进程、守护标签与配置文件…"
+        externalLocalModelStopMessageIsWarning = false
+        externalLocalModelForceCandidateID = nil
+        defer { stoppingExternalLocalModelRuntimeID = nil }
+
+        await refreshLocalModelRuntimes(force: true)
+        guard let currentRuntime = localModelRuntimeSnapshot.instances.first(where: {
+            $0.process?.pid == requestedProcess.pid
+                && $0.platform == requestedRuntime.platform
+        }),
+        let currentProcess = currentRuntime.process,
+        let currentSupervisor = currentRuntime.supervisor else {
+            externalLocalModelStopMessage = "模型服务或守护关系已经改变；CleanNest 没有修改 launchd。"
+            externalLocalModelStopMessageIsWarning = true
+            return
+        }
+        if let mismatch = LocalModelExternalControlPolicy.identityMismatchReason(
+            expected: requestedProcess,
+            observed: currentProcess
+        ) ?? LocalModelSupervisorControlPolicy.identityMismatchReason(
+            expected: requestedSupervisor,
+            observed: currentSupervisor
+        ) {
+            externalLocalModelStopMessage = "身份复核未通过：\(mismatch) CleanNest 没有修改 launchd。"
+            externalLocalModelStopMessageIsWarning = true
+            addActivity(
+                title: "停用模型守护服务",
+                detail: "\(requestedRuntime.platform.displayName) · \(requestedSupervisor.label) · 身份复核失败",
+                outcome: .failed
+            )
+            return
+        }
+        if let refusal = LocalModelSupervisorControlPolicy.disableRefusalReason(
+            runtime: currentRuntime
+        ) {
+            externalLocalModelStopMessage = refusal
+            externalLocalModelStopMessageIsWarning = true
+            return
+        }
+
+        do {
+            let launchctl = URL(fileURLWithPath: "/bin/launchctl")
+            let disableResult = try await commandRunner.run(
+                executable: launchctl,
+                arguments: ["disable", currentSupervisor.serviceTarget],
+                timeout: 5
+            )
+            guard disableResult.exitCode == 0 else {
+                externalLocalModelStopMessage = "launchd 没有接受停用请求（退出码 \(disableResult.exitCode)）；当前进程未被关闭。"
+                externalLocalModelStopMessageIsWarning = true
+                addActivity(
+                    title: "停用模型守护服务",
+                    detail: "\(currentRuntime.platform.displayName) · \(currentSupervisor.label) · 停用失败",
+                    outcome: .failed
+                )
+                return
+            }
+
+            let bootoutResult = try await commandRunner.run(
+                executable: launchctl,
+                arguments: ["bootout", currentSupervisor.serviceTarget],
+                timeout: 8
+            )
+            try? await Task.sleep(for: .milliseconds(450))
+            await refreshLocalModelRuntimes(force: true)
+
+            let stillRunning = localModelRuntimeSnapshot.instances.contains { instance in
+                instance.supervisor?.label == currentSupervisor.label
+                    && instance.process != nil
+            }
+            let disabledSupervisor = localModelRuntimeSnapshot.instances
+                .compactMap(\.supervisor)
+                .first { $0.id == currentSupervisor.id && $0.isDisabled }
+
+            if !stillRunning, disabledSupervisor != nil {
+                externalLocalModelStopMessage = "\(currentSupervisor.label) 已停用，PID \(currentProcess.pid) 已退出；launchd 不会再次自动拉起。可在本页重新启用。"
+                externalLocalModelStopMessageIsWarning = false
+                addActivity(
+                    title: "停用模型守护服务",
+                    detail: "\(currentRuntime.platform.displayName) · \(currentSupervisor.label)",
+                    outcome: .success,
+                    affectedItems: 1
+                )
+                if localAIIsReady {
+                    invalidateCleanupAI()
+                    _ = invalidateDiskAI()
+                    localAIServiceState = .unavailable("模型守护服务已停用")
+                    localAIDiagnostic = "模型守护服务已停用"
+                }
+            } else {
+                let bootoutDetail = bootoutResult.exitCode == 0
+                    ? "launchd 尚未确认服务完全退出"
+                    : "bootout 返回退出码 \(bootoutResult.exitCode)"
+                externalLocalModelStopMessage = "自动启动已标记为停用，但 \(bootoutDetail)。请重新发现后再决定是否关闭残留进程。"
+                externalLocalModelStopMessageIsWarning = true
+                addActivity(
+                    title: "停用模型守护服务",
+                    detail: "\(currentRuntime.platform.displayName) · \(currentSupervisor.label) · 部分完成",
+                    outcome: .partial
+                )
+            }
+        } catch is CancellationError {
+            externalLocalModelStopMessage = "停用守护服务已取消；请重新发现当前状态。"
+            externalLocalModelStopMessageIsWarning = true
+            await refreshLocalModelRuntimes(force: true)
+        } catch {
+            externalLocalModelStopMessage = "没有停用守护服务：\(error.localizedDescription)"
+            externalLocalModelStopMessageIsWarning = true
+            await refreshLocalModelRuntimes(force: true)
+        }
+    }
+
+    func enableLocalModelSupervisor(
+        _ requestedRuntime: LocalModelRuntimeInstance
+    ) async {
+        guard !demoMode else {
+            externalLocalModelStopMessage = "演示模式不会启用任何守护服务。"
+            externalLocalModelStopMessageIsWarning = true
+            return
+        }
+        guard stoppingExternalLocalModelRuntimeID == nil else { return }
+        guard let requestedSupervisor = requestedRuntime.supervisor else {
+            externalLocalModelStopMessage = "没有找到可重新启用的守护服务。"
+            externalLocalModelStopMessageIsWarning = true
+            return
+        }
+        if let refusal = LocalModelSupervisorControlPolicy.enableRefusalReason(
+            supervisor: requestedSupervisor
+        ) {
+            externalLocalModelStopMessage = refusal
+            externalLocalModelStopMessageIsWarning = true
+            return
+        }
+
+        stoppingExternalLocalModelRuntimeID = requestedRuntime.id
+        externalLocalModelStopMessage = "正在重新核对守护配置并启用…"
+        externalLocalModelStopMessageIsWarning = false
+        externalLocalModelForceCandidateID = nil
+        defer { stoppingExternalLocalModelRuntimeID = nil }
+
+        await refreshLocalModelRuntimes(force: true)
+        guard let currentRuntime = localModelRuntimeSnapshot.instances.first(where: {
+            $0.supervisor?.id == requestedSupervisor.id
+        }),
+        let currentSupervisor = currentRuntime.supervisor,
+        let sourcePath = currentSupervisor.sourcePath else {
+            externalLocalModelStopMessage = "守护配置已经消失或改变；CleanNest 没有启用服务。"
+            externalLocalModelStopMessageIsWarning = true
+            return
+        }
+        if let mismatch = LocalModelSupervisorControlPolicy.identityMismatchReason(
+            expected: requestedSupervisor,
+            observed: currentSupervisor
+        ) {
+            externalLocalModelStopMessage = "守护配置复核未通过：\(mismatch)"
+            externalLocalModelStopMessageIsWarning = true
+            return
+        }
+        if let refusal = LocalModelSupervisorControlPolicy.enableRefusalReason(
+            supervisor: currentSupervisor
+        ) {
+            externalLocalModelStopMessage = refusal
+            externalLocalModelStopMessageIsWarning = true
+            return
+        }
+
+        do {
+            let launchctl = URL(fileURLWithPath: "/bin/launchctl")
+            let enableResult = try await commandRunner.run(
+                executable: launchctl,
+                arguments: ["enable", currentSupervisor.serviceTarget],
+                timeout: 5
+            )
+            guard enableResult.exitCode == 0 else {
+                externalLocalModelStopMessage = "launchd 没有接受启用请求（退出码 \(enableResult.exitCode)）。"
+                externalLocalModelStopMessageIsWarning = true
+                return
+            }
+            let bootstrapResult = try await commandRunner.run(
+                executable: launchctl,
+                arguments: ["bootstrap", currentSupervisor.domain, sourcePath],
+                timeout: 8
+            )
+            try? await Task.sleep(for: .milliseconds(650))
+            await refreshLocalModelRuntimes(force: true)
+            let running = localModelRuntimeSnapshot.instances.first { instance in
+                instance.supervisor?.label == currentSupervisor.label
+                    && instance.process != nil
+            }
+            if let running {
+                externalLocalModelStopMessage = "\(currentSupervisor.label) 已重新启用，当前 PID 为 \(running.process?.pid ?? 0)。"
+                externalLocalModelStopMessageIsWarning = running.phase != .runningHealthy
+                addActivity(
+                    title: "启用模型守护服务",
+                    detail: "\(currentRuntime.platform.displayName) · \(currentSupervisor.label)",
+                    outcome: running.phase == .runningHealthy ? .success : .partial,
+                    affectedItems: 1
+                )
+                if localAIEnabled { await probeLocalAI() }
+            } else {
+                externalLocalModelStopMessage = bootstrapResult.exitCode == 0
+                    ? "守护服务已启用，但尚未发现运行进程；它可能仍在启动或启动失败。"
+                    : "启用状态已恢复，但 bootstrap 返回退出码 \(bootstrapResult.exitCode)。"
+                externalLocalModelStopMessageIsWarning = true
+                addActivity(
+                    title: "启用模型守护服务",
+                    detail: "\(currentRuntime.platform.displayName) · \(currentSupervisor.label) · 等待启动",
+                    outcome: .partial
+                )
+            }
+        } catch is CancellationError {
+            externalLocalModelStopMessage = "启用守护服务已取消；请重新发现当前状态。"
+            externalLocalModelStopMessageIsWarning = true
+            await refreshLocalModelRuntimes(force: true)
+        } catch {
+            externalLocalModelStopMessage = "没有启用守护服务：\(error.localizedDescription)"
+            externalLocalModelStopMessageIsWarning = true
+            await refreshLocalModelRuntimes(force: true)
+        }
+    }
+
+    func clearExternalLocalModelStopMessage() {
+        externalLocalModelStopMessage = nil
+        externalLocalModelStopMessageIsWarning = false
+        externalLocalModelForceCandidateID = nil
+    }
+
+    private func startLocalModelRuntimeMonitoring() {
+        localModelRuntimeMonitorTask?.cancel()
+        localModelRuntimeMonitorTask = Task { [weak self] in
+            guard let self else { return }
+            await self.refreshLocalModelRuntimes()
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(5))
+                } catch {
+                    break
+                }
+                await self.refreshLocalModelRuntimes()
+            }
+        }
     }
 
     func refreshMetricHistory() async {
@@ -526,13 +1045,213 @@ final class AppStore: ObservableObject {
 
     private func recordMetric(_ snapshot: SystemSnapshot) async {
         do {
-            try await metricsStore.append(MetricSample(snapshot: snapshot))
+            try await metricsStore.append(
+                MetricSample(
+                    snapshot: snapshot,
+                    diskUsedPercent: nativeMonitorSample?.diskUsedPercent,
+                    diskFreeBytes: nativeMonitorSample?.diskFreeBytes,
+                    batteryLevel: nativeMonitorSample?.batteryLevel,
+                    temperatureCelsius: nativeMonitorSample?.temperatureCelsius
+                )
+            )
             _ = try await metricsStore.prune(retainingDays: metricsRetentionDays)
             metricHistory = try await metricsStore.samples(range: metricHistoryRange)
             metricsDiagnostic = "每 60 秒本机采样；保留 \(metricsRetentionDays) 天，不上传。"
         } catch {
             metricsDiagnostic = "本次历史采样未保存：\(error.localizedDescription)"
         }
+    }
+
+    func setMenuBarMonitoringEnabled(_ enabled: Bool) {
+        menuBarConfiguration.isEnabled = enabled
+        persistMenuBarConfiguration()
+        if enabled {
+            startNativeMonitoring()
+        } else {
+            nativeMonitorSamplingID = UUID()
+            nativeMonitorTask?.cancel()
+            nativeMonitorTask = nil
+            nativeMonitorIsActive = false
+            nativeMonitorDiagnostic = "菜单栏监测已关闭；CleanNest 不再进行 2 秒采样。"
+        }
+    }
+
+    func setMenuBarMetricEnabled(_ enabled: Bool, metric: MenuBarMetric) {
+        menuBarConfiguration.setEnabled(enabled, for: metric)
+        menuBarConfiguration = menuBarConfiguration.normalized
+        persistMenuBarConfiguration()
+    }
+
+    func setMenuBarMetricStyle(_ style: MenuBarMetricStyle, metric: MenuBarMetric) {
+        menuBarConfiguration.setStyle(style, for: metric)
+        persistMenuBarConfiguration()
+    }
+
+    func setMenuBarPresentationMode(_ mode: MenuBarPresentationMode) {
+        menuBarConfiguration.presentationMode = mode
+        persistMenuBarConfiguration()
+    }
+
+    func setMenuBarCompactMetric(_ metric: MenuBarMetric) {
+        menuBarConfiguration.compactMetric = metric
+        persistMenuBarConfiguration()
+    }
+
+    func setMenuBarTemperatureUnit(_ unit: MenuBarTemperatureUnit) {
+        menuBarConfiguration.temperatureUnit = unit
+        persistMenuBarConfiguration()
+    }
+
+    func setMenuBarRefreshInterval(_ interval: MenuBarRefreshInterval) {
+        menuBarConfiguration.refreshInterval = interval
+        persistMenuBarConfiguration()
+        startNativeMonitoring()
+    }
+
+    func setMenuBarNetworkMode(_ mode: MenuBarNetworkMode) {
+        menuBarConfiguration.networkMode = mode
+        persistMenuBarConfiguration()
+        startNativeMonitoring()
+    }
+
+    func setMenuBarNetworkInterface(_ name: String?) {
+        menuBarConfiguration.selectedNetworkInterface = name
+        persistMenuBarConfiguration()
+        startNativeMonitoring()
+    }
+
+    func setMenuBarGlobalHotKeyEnabled(_ enabled: Bool) {
+        menuBarConfiguration.globalHotKeyEnabled = enabled
+        persistMenuBarConfiguration()
+    }
+
+    func moveMenuBarMetric(_ metric: MenuBarMetric, by offset: Int) {
+        menuBarConfiguration.move(metric, by: offset)
+        persistMenuBarConfiguration()
+    }
+
+    func setMenuBarVisibilityDiagnostic(_ value: String) {
+        menuBarVisibilityDiagnostic = value
+    }
+
+    func setGlobalHotKeyDiagnostic(_ value: String) {
+        globalHotKeyDiagnostic = value
+    }
+
+    func setLaunchAtLoginEnabled(_ enabled: Bool) {
+        do {
+            if enabled {
+                try loginItemService.register()
+            } else {
+                try loginItemService.unregister()
+            }
+        } catch {
+            launchAtLoginDiagnostic = "登录启动设置未生效：" + error.localizedDescription
+        }
+        refreshLaunchAtLoginStatus()
+    }
+
+    func refreshLaunchAtLoginStatus() {
+        switch loginItemService.status {
+        case .enabled:
+            launchAtLoginEnabled = true
+            launchAtLoginRequiresApproval = false
+            launchAtLoginDiagnostic = "已由 macOS 登录项管理；下次登录后只在菜单栏安静启动。"
+        case .requiresApproval:
+            launchAtLoginEnabled = true
+            launchAtLoginRequiresApproval = true
+            launchAtLoginDiagnostic = "已注册，但 macOS 需要你在“登录项”中允许 CleanNest。"
+        case .notRegistered:
+            launchAtLoginEnabled = false
+            launchAtLoginRequiresApproval = false
+            launchAtLoginDiagnostic = "未设为登录时启动。"
+        case .notFound:
+            launchAtLoginEnabled = false
+            launchAtLoginRequiresApproval = false
+            launchAtLoginDiagnostic = "尚未注册登录项；首次开启后会由 macOS 接管。"
+        @unknown default:
+            launchAtLoginEnabled = false
+            launchAtLoginRequiresApproval = false
+            launchAtLoginDiagnostic = "macOS 返回了未知的登录启动状态。"
+        }
+    }
+
+    func openLoginItemsSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+        ) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    func refreshNativeMonitorNow() async {
+        guard menuBarConfiguration.isEnabled else { return }
+        let sample = await nativeSystemMonitor.sample(configuration: menuBarConfiguration)
+        applyNativeMonitorSample(sample)
+    }
+
+    private func startNativeMonitoring() {
+        nativeMonitorSamplingID = UUID()
+        nativeMonitorTask?.cancel()
+        guard menuBarConfiguration.isEnabled else {
+            nativeMonitorIsActive = false
+            return
+        }
+
+        let samplingID = nativeMonitorSamplingID
+        nativeMonitorIsActive = true
+        let refreshSeconds = menuBarConfiguration.refreshInterval.rawValue
+        nativeMonitorDiagnostic = "每 \(refreshSeconds) 秒本机采样；不需要 Mole，不上传。"
+        nativeMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { break }
+                let configuration = self.menuBarConfiguration
+                let sample = await self.nativeSystemMonitor.sample(configuration: configuration)
+                guard !Task.isCancelled, self.nativeMonitorSamplingID == samplingID else { break }
+                self.applyNativeMonitorSample(sample)
+                do {
+                    try await Task.sleep(for: .seconds(configuration.refreshInterval.rawValue))
+                } catch {
+                    break
+                }
+            }
+            guard let self, self.nativeMonitorSamplingID == samplingID else { return }
+            self.nativeMonitorIsActive = false
+        }
+    }
+
+    private func applyNativeMonitorSample(_ sample: NativeMonitorSample) {
+        nativeMonitorSample = sample
+        if let free = sample.diskFreeBytes {
+            diskFreeBytes = free
+        }
+        nativeMonitorHistory.append(sample)
+        if nativeMonitorHistory.count > 90 {
+            nativeMonitorHistory.removeFirst(nativeMonitorHistory.count - 90)
+        }
+
+        var available = 0
+        for metric in MenuBarMetric.allCases where sample.value(for: metric) != nil {
+            available += 1
+        }
+        let unavailableSensors = [
+            sample.temperatureCelsius == nil ? "温度" : nil,
+            sample.gpuUsage == nil ? "GPU" : nil,
+            sample.fanCount == nil ? "风扇" : nil,
+            sample.batteryStatus == nil ? "电池" : nil
+        ].compactMap { $0 }
+        if unavailableSensors.isEmpty {
+            nativeMonitorDiagnostic = "已读取 " + String(available) + " 项本机指标；每 "
+                + String(menuBarConfiguration.refreshInterval.rawValue) + " 秒刷新，不上传。"
+        } else {
+            nativeMonitorDiagnostic = "已读取 " + String(available) + " 项；"
+                + unavailableSensors.joined(separator: "、") + "本次未取得有效值。"
+        }
+    }
+
+    private func persistMenuBarConfiguration() {
+        guard !demoMode,
+              let data = try? JSONEncoder().encode(menuBarConfiguration.normalized) else { return }
+        settings.set(data, forKey: "menuBarMonitorConfiguration")
     }
 
     func refreshFullDiskAccessProbe() async {
@@ -799,10 +1518,12 @@ final class AppStore: ObservableObject {
         } else {
             localAIServiceState = .disabled
         }
+        await refreshLocalModelRuntimes()
         return true
     }
 
     func stopLocalAI() async {
+        defer { Task { await self.refreshLocalModelRuntimes() } }
         guard localAIRuntime.ownsRunningProcess else { return }
         let stopID = UUID()
         localAIProbeID = stopID
@@ -878,6 +1599,7 @@ final class AppStore: ObservableObject {
     }
 
     func startLocalAI() async {
+        defer { Task { await self.refreshLocalModelRuntimes() } }
         guard !demoMode, localAIEnabled, !localAIServiceState.isBusy else { return }
         persistLocalAISettings()
         let startupID = UUID()
@@ -1102,6 +1824,13 @@ final class AppStore: ObservableObject {
     func shutdownForTermination() {
         metricsSamplingTask?.cancel()
         metricsSamplingTask = nil
+        nativeMonitorSamplingID = UUID()
+        nativeMonitorTask?.cancel()
+        nativeMonitorTask = nil
+        localModelDiscoveryID = UUID()
+        localModelRuntimeMonitorTask?.cancel()
+        localModelRuntimeMonitorTask = nil
+        localModelDiscoveryIsRunning = false
         activeDiskScanTask?.cancel()
         activeDiskScanTask = nil
         invalidateCleanupAI()
@@ -1315,7 +2044,8 @@ final class AppStore: ObservableObject {
                 detail: "所选内容已移到废纸篓，可在清空前恢复。",
                 outcome: .success,
                 affectedItems: succeededPaths.count,
-                bytes: released
+                bytes: released,
+                category: .cleanup
             )
         } else {
             phase = .failed("已完成 \(succeededPaths.count) 项，\(failed.count) 项未成功")
@@ -1325,7 +2055,8 @@ final class AppStore: ObservableObject {
                 detail: "部分项目因权限或路径变化被安全跳过。",
                 outcome: .partial,
                 affectedItems: succeededPaths.count,
-                bytes: released
+                bytes: released,
+                category: .cleanup
             )
         }
     }
@@ -1399,7 +2130,8 @@ final class AppStore: ObservableObject {
             addActivity(
                 title: "卸载 \(application.name)",
                 detail: "缺少可复核的扫描身份，未改动任何文件。",
-                outcome: .failed
+                outcome: .failed,
+                category: .applicationUninstall
             )
             return
         }
@@ -1424,7 +2156,12 @@ final class AppStore: ObservableObject {
             lastTechnicalDetail = [userMessage, appOutcome.technicalDescription]
                 .compactMap { $0 }
                 .joined(separator: "\n\n")
-            addActivity(title: "卸载 \(application.name)", detail: userMessage, outcome: .failed)
+            addActivity(
+                title: "卸载 \(application.name)",
+                detail: userMessage,
+                outcome: .failed,
+                category: .applicationUninstall
+            )
             return
         }
 
@@ -1456,7 +2193,8 @@ final class AppStore: ObservableObject {
                     : "\(authenticationDetail) 相关文件已保留。",
                 outcome: .success,
                 affectedItems: 1 + leftoverOutcomes.filter(\.succeeded).count,
-                bytes: removedBytes
+                bytes: removedBytes,
+                category: .applicationUninstall
             )
         } else {
             phase = .failed("App 已卸载，但 \(failedLeftovers.count) 个相关文件未处理")
@@ -1466,7 +2204,8 @@ final class AppStore: ObservableObject {
                 detail: "App 已移到废纸篓，部分相关文件因权限被保留。",
                 outcome: .partial,
                 affectedItems: 1 + leftoverOutcomes.filter(\.succeeded).count,
-                bytes: removedBytes
+                bytes: removedBytes,
+                category: .applicationUninstall
             )
         }
     }
@@ -2000,6 +2739,16 @@ final class AppStore: ObservableObject {
         NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash"))
     }
 
+    func showMainWindow(selection: SidebarItem) {
+        self.selection = selection
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        let window = NSApp.windows.first { window in
+            window.canBecomeMain && !(window is NSPanel)
+        } ?? NSApp.windows.first
+        window?.makeKeyAndOrderFront(nil)
+    }
+
     func showTechnicalDetail() {
         showingTechnicalDetail = true
     }
@@ -2032,7 +2781,9 @@ final class AppStore: ObservableObject {
             "localAIModelPath",
             "localAIExecutablePath",
             "recentLocalAIModelPaths",
-            "metricsRetentionDays"
+            "localModelMenuBarEnabled",
+            "metricsRetentionDays",
+            "menuBarMonitorConfiguration"
         ]
         for key in keys { settings.removeObject(forKey: key) }
 
@@ -2040,6 +2791,13 @@ final class AppStore: ObservableObject {
         developerMode = true
         includeApplicationCaches = false
         metricsRetentionDays = 30
+        menuBarConfiguration = .defaults
+        persistMenuBarConfiguration()
+        startNativeMonitoring()
+        if loginItemService.status == .enabled || loginItemService.status == .requiresApproval {
+            try? await loginItemService.unregister()
+        }
+        refreshLaunchAtLoginStatus()
         localAIRuntime.stopOwnedProcess()
         localAIProcessOwned = false
         localAIEnabled = false
@@ -2056,6 +2814,12 @@ final class AppStore: ObservableObject {
         localAIBenchmarkResult = nil
         localAIBenchmarkPhase = .idle
         localAIConfigurationError = nil
+        localModelMenuBarEnabled = true
+        stoppingExternalLocalModelRuntimeID = nil
+        externalLocalModelStopMessage = nil
+        externalLocalModelStopMessageIsWarning = false
+        externalLocalModelForceCandidateID = nil
+        settings.set(true, forKey: "localModelMenuBarEnabled")
         invalidateCleanupAI()
         _ = invalidateDiskAI()
         cleanupHasScanned = false
@@ -2266,7 +3030,8 @@ final class AppStore: ObservableObject {
         detail: String,
         outcome: ActivityEntry.Outcome,
         affectedItems: Int = 0,
-        bytes: Int64 = 0
+        bytes: Int64 = 0,
+        category: ActivityEntry.Category? = nil
     ) {
         activities.insert(
             ActivityEntry(
@@ -2274,7 +3039,8 @@ final class AppStore: ObservableObject {
                 detail: detail,
                 outcome: outcome,
                 affectedItems: affectedItems,
-                bytes: bytes
+                bytes: bytes,
+                category: category
             ),
             at: 0
         )
@@ -2421,6 +3187,34 @@ final class AppStore: ObservableObject {
         }
         metricsSamplingIsActive = true
         metricsDiagnostic = "演示模式：每 60 秒本机采样；保留 30 天，不上传。"
+        nativeMonitorIsActive = true
+        nativeMonitorDiagnostic = "演示模式：合成菜单栏指标，不读取本机硬件。"
+        nativeMonitorHistory = (0..<40).map { offset in
+            let phase = Double(offset) / 5
+            return NativeMonitorSample(
+                sampledAt: Date().addingTimeInterval(TimeInterval(offset - 39) * 2),
+                cpuUsage: 28 + sin(phase) * 13,
+                memoryUsedPercent: 56 + cos(phase * 0.7) * 3,
+                memoryUsedBytes: 20_100_000_000,
+                memoryTotalBytes: 36_000_000_000,
+                memoryPressureLevel: .normal,
+                diskUsedPercent: 68,
+                diskFreeBytes: 148_000_000_000,
+                networkDownloadBytesPerSecond: max(0, 1_900_000 + sin(phase * 1.6) * 1_500_000),
+                networkUploadBytesPerSecond: max(0, 180_000 + cos(phase * 1.2) * 140_000),
+                networkInterfaceName: "en0",
+                gpuUsage: 22 + cos(phase) * 15,
+                gpuRendererUsage: 18,
+                gpuTilerUsage: 12,
+                temperatureCelsius: 58 + sin(phase * 0.5) * 4,
+                temperatureSource: "演示 CPU 核心",
+                batteryTemperatureCelsius: 31 + sin(phase * 0.2),
+                batteryTemperatureSource: "演示电池传感器",
+                fanRPM: 1_850 + sin(phase) * 220,
+                fanCount: 2
+            )
+        }
+        nativeMonitorSample = nativeMonitorHistory.last
         diskTotalBytes = 494_000_000_000
         diskFreeBytes = 148_000_000_000
 
@@ -2601,7 +3395,8 @@ final class AppStore: ObservableObject {
             diskAIPhase = .completed
         }
         activities = [
-            ActivityEntry(date: Date().addingTimeInterval(-7_200), title: "清理空间", detail: "14 项已移到废纸篓，可在清空前恢复。", outcome: .success, affectedItems: 14, bytes: 3_820_000_000),
+            ActivityEntry(date: Date().addingTimeInterval(-7_200), title: "清理空间", detail: "14 项已移到废纸篓，可在清空前恢复。", outcome: .success, affectedItems: 14, bytes: 3_820_000_000, category: .cleanup),
+            ActivityEntry(date: Date().addingTimeInterval(-86_400), title: "卸载 Sample App", detail: "App 与精确匹配的相关文件已移到废纸篓。", outcome: .success, affectedItems: 3, bytes: 430_000_000, category: .applicationUninstall),
             ActivityEntry(date: Date().addingTimeInterval(-172_800), title: "重建快速预览缓存", detail: "系统维护任务已完成。", outcome: .success, affectedItems: 1)
         ]
     }

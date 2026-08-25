@@ -20,6 +20,7 @@ struct RootView: View {
                         case .analyze: DiskAnalyzeView()
                         case .status: SystemStatusView()
                         case .maintenance: MaintenanceView()
+                        case .models: LocalModelsView()
                         case .evolution: EvolutionView()
                         case .activity: ActivityView()
                         case .settings: SettingsView()

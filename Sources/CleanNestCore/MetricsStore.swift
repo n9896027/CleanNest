@@ -76,7 +76,13 @@ public struct MetricSample: Identifiable, Codable, Equatable, Sendable {
         self.processCount = processCount
     }
 
-    public init(snapshot: SystemSnapshot) {
+    public init(
+        snapshot: SystemSnapshot,
+        diskUsedPercent: Double? = nil,
+        diskFreeBytes: Int64? = nil,
+        batteryLevel: Double? = nil,
+        temperatureCelsius: Double? = nil
+    ) {
         self.init(
             sampledAt: snapshot.sampledAt,
             healthScore: snapshot.healthScore,
@@ -87,10 +93,10 @@ public struct MetricSample: Identifiable, Codable, Equatable, Sendable {
             memoryAvailableBytes: snapshot.memoryAvailableBytes,
             memoryCompressedBytes: snapshot.memoryCompressedBytes,
             memorySwapUsedBytes: snapshot.memorySwapUsedBytes,
-            diskUsedPercent: snapshot.diskUsedPercent,
-            diskFreeBytes: snapshot.diskFreeBytes,
-            batteryLevel: snapshot.batteryLevel,
-            temperatureCelsius: snapshot.temperatureCelsius,
+            diskUsedPercent: diskUsedPercent ?? snapshot.diskUsedPercent,
+            diskFreeBytes: diskFreeBytes ?? snapshot.diskFreeBytes,
+            batteryLevel: batteryLevel ?? snapshot.batteryLevel,
+            temperatureCelsius: temperatureCelsius ?? snapshot.temperatureCelsius,
             processCount: snapshot.processCount
         )
     }

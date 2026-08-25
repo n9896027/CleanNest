@@ -44,7 +44,9 @@ CleanNest turns Mac cleanup from a black-box button into an understandable, reve
 - **Storage cleanup** — scan developer caches, logs, installers, and other candidates; select items individually and move them to the macOS Trash.
 - **Incremental disk browser** — stream partial results while scanning; reuse only unchanged metadata signatures for 15 minutes; disclose cache hits, live scans, and a cache-bypassing deep refresh.
 - **Cleanup Decision Center** — combine breadcrumb drill-down and a native treemap with deterministic purpose, growth cause, impact, recoverability, confidence, and a safe next action for every item. You can manually mark an item for review, keep it, or decide later without overriding safety boundaries.
-- **System status** — show CPU, memory, disk, battery, temperature, and health information, with 60-second local history plus plain-language memory-pressure and process guidance.
+- **Live menu-bar monitor** — independently sample CPU, memory, network, disk, GPU, temperature, fans, and battery at a selectable 1/2/5/10-second interval. A State-style two-line value/abbreviation layout is the compact default; expanded text, mini graphs, ordering, and per-item visibility remain configurable.
+- **Local Model Runtime Center** — correlate processes, listening sockets, platform APIs, and launchd supervisors to show model IDs, PIDs, memory, exposure, and `KeepAlive` / login-launch evidence. After confirmation, an external service can be disabled together with its exact user supervisor and closed; its configuration remains available for re-enabling.
+- **System status** — combine the native live instrument panel with battery and health information, 60-second local history, and plain-language memory-pressure and process guidance.
 - **Process management** — request a normal process quit only after identity checks, system-process protection, and user confirmation; CleanNest does not automatically force-quit it.
 - **App uninstall** — browse installed apps and preview the app bundle plus related files matched by exact Bundle ID.
 - **System maintenance** — run selected low-risk maintenance tasks and keep their results in one activity history.
@@ -121,6 +123,8 @@ Detailed maintainer documentation is currently written primarily in Simplified C
 | [Architecture](docs/ARCHITECTURE.md) | Modules, data flow, and dangerous-operation boundaries |
 | [Privacy](PRIVACY.md) | Local data, network access, retention, and removal |
 | [Roadmap](ROADMAP.md) | Completed work, near-term priorities, and explicit non-commitments |
+| [0.5.3 verification report](docs/VERIFICATION-0.5.3.md) | Local-model runtime discovery, launchd controls, menu-bar metrics, activity statistics, and remaining real-device gates |
+| [0.5.2 verification report](docs/VERIFICATION-0.5.2.md) | Compact menu-bar monitoring, login-item behavior, and current-Mac evidence |
 | [0.5.0 verification report](docs/VERIFICATION-0.5.0.md) | Local tests, large-directory incremental scan evidence, and gates that remain closed |
 | [Maintainer operations](docs/OPERATIONS.md) | Change control, CI failures, credentials, releases, and security incidents |
 | [Changelog](CHANGELOG.md) | Released and unreleased changes |
@@ -153,6 +157,6 @@ Preview the UI with synthetic data only:
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-The current development version is **0.5.0 (Build 10)**. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
+The current development version is **0.5.3 (Build 17)**. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
 
 Core navigation and the main overview, disk, status, and settings surfaces now include English, Simplified Chinese, and Traditional Chinese resources. Some runtime diagnostics and path-dependent copy can still fall back to the source language; Japanese and Korean currently have localized project overviews rather than full UI resources.

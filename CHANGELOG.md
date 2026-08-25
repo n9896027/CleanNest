@@ -4,6 +4,69 @@
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-08-24
+
+### Added
+
+- 增加独立“本地模型”功能栏与 `MODEL` 菜单栏状态：交叉检查进程、TCP 监听和平台 API，区分健康、待确认、未运行与失败。
+- 增加 oMLX、MLX-LM、Ollama、LM Studio、llama.cpp 与通用 OpenAI 兼容服务的本机只读发现；展示模型短 ID、PID、启动时间、RSS、引擎内存、监听地址和本机/局域网暴露状态。
+- 增加结构化 oMLX / MLX-LM 启动配置；由 CleanNest 启动的服务可直接正常终止，外部模型服务经风险分析与二次确认后也可关闭。
+- 增加外部模型服务的精确进程关闭链：操作前重新发现并核对 PID、启动时间、当前用户与可执行文件，正常退出失败后才提供另一次强制结束确认。
+- 增加模型守护服务发现：把模型 PID 与用户/系统 LaunchAgent、LaunchDaemon、`KeepAlive`、`RunAtLoad`、停用状态和配置来源交叉对应，解释“关闭后瞬间重启”的真实原因。
+- 增加可恢复的用户 LaunchAgent 管理：风险确认并再次复核进程、守护标签、作用域和 plist 文件身份后，才对精确服务执行 `launchctl disable` 与 `bootout`；保留配置并提供重新启用入口。
+- 增加进程/端口/API 三段证据轨道、平台覆盖状态和模型运行详情弹层。
+
+### Changed
+
+- 本机 AI 运行程序选择扩展为 `omlx` 或 `mlx_lm.server`；仍要求 `/v1/models` 返回的短 ID，文件路径不会被当作 API 模型名。
+- 修复系统状态与菜单栏弹窗的长读数截断：内存容量、网络上下行、磁盘、GPU、风扇与电池读数会按可用宽度横排或纵排，不再用省略号隐藏关键值；多网卡来源改为数量摘要。
+- 将 IOKit `AppleSmartBattery` 电池温度并入实时温度指标，与 AppleSMC CPU 温度明确并列，移除页面底部重复的单次温度横幅。
+- 修复网络实时仪表引用无效 SF Symbol 导致图标缺失的问题；改用当前 macOS 可用的上下行图标。
+- 活动记录增加基于真实本机历史的累计成果：累计处理空间、清理项目、卸载 App 与有成果操作；旧记录无需迁移即可参与统计，清空记录时统计同步归零。
+- 版本提升为 0.5.3（Build 17），App、登录项与只读 MCP 版本同步。
+
+### Security
+
+- 运行时发现只检查本机进程、监听端口、回环 API 与明确配置端点；不扫描局域网、不保存内网地址、不显示完整命令行或环境变量。
+- CleanNest 自有进程可直接停止；外部服务必须显示风险分析并复核 PID、启动时间、用户和可执行文件，不按进程名批量结束，也不会自动升级为强制结束。
+- 守护操作仅允许当前用户直接拥有、位于标准用户 LaunchAgents 目录且文件身份稳定的服务；系统/其他用户守护保持只读，不修改或删除 plist，也不按标签前缀批量操作。
+
+## [0.5.2] - 2026-08-24
+
+### Added
+
+- 增加 State 式双层紧凑菜单栏，以数值 + CPU/MEM/TEMP/NET/SSD/GPU/FAN/BAT 短标签取代重复的展开文字，并保留展开模式、曲线模式与顺序调整。
+- 增加 CPU 用户/系统/空闲分解、磁盘读写速率、逐风扇转速、GPU Renderer/Tiler 计数与 IOKit 电池实时状态。
+- 增加 1/2/5/10 秒刷新率、摄氏/华氏切换、物理网卡合计/系统主接口/手动接口模式和 `⌘⌥M` 全局仪表快捷键。
+- 增加 macOS ServiceManagement 登录项，可在登录后只启动菜单栏监测，不强制弹出主窗口。
+- 增加 [0.5.3 本地模型运行中心规格](docs/ROADMAP-0.5.3-LOCAL-MODEL-BAR.md)，冻结平台发现、模型短 ID、内网暴露和安全启停边界。
+
+### Changed
+
+- 网络默认只合计 `en*` 等物理网卡，避免 VPN `utun` 隧道与物理流量重复计数；需要时仍可显式选择系统主接口。
+- 系统状态、菜单栏和长期历史统一使用 macOS 启动卷容量口径，不再混用 Mole 的旧磁盘值。
+- 版本提升为 0.5.2（Build 12），MCP、登录项与 App 版本同步。
+
+### Security
+
+- 登录项仅通过 Apple 的 ServiceManagement 注册；不写 `LaunchAgents`。全局快捷键使用系统 Hot Key API，不要求辅助功能权限。
+
+## [0.5.1] - 2026-08-24
+
+### Added
+
+- 增加原生菜单栏实时监测：每 2 秒本机采样 CPU、内存、网络、磁盘，并在硬件提供有效计数时显示 GPU、CPU 温度与风扇转速。
+- 增加逐项开关、数值/迷你曲线样式、菜单栏详情弹层和系统状态实时仪表。
+
+### Changed
+
+- 统一 App、侧边栏、关于页和构建产物的 CleanNest 标识。
+- 版本提升为 0.5.1（Build 11），MCP 协议版本与 App 同步。
+
+### Security
+
+- 温度与风扇只通过无写方法的 AppleSMC 适配层读取；不控制风扇、不要求管理员密码，网络监测不保存 IP、域名或流量内容。
+
 ## [0.5.0] - 2026-08-24
 
 ### Added
@@ -68,7 +131,10 @@
 - 完全磁盘访问探测、受保护目录阻断、符号链接保护和废纸篓恢复策略。
 - CodeQL、Dependabot、分支保护和完整 App Bundle CI。
 
-[Unreleased]: https://github.com/n9896027/CleanNest/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/n9896027/CleanNest/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/n9896027/CleanNest/compare/v0.5.2...v0.5.3
+[0.5.2]: https://github.com/n9896027/CleanNest/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/n9896027/CleanNest/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/n9896027/CleanNest/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/n9896027/CleanNest/compare/f321556b258666ac5f700fbd6bb4e60b4c3cf93d...v0.4.0
 [0.3.1]: https://github.com/n9896027/CleanNest/commit/f321556b258666ac5f700fbd6bb4e60b4c3cf93d
