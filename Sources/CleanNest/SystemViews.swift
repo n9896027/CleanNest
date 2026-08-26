@@ -782,43 +782,64 @@ struct MaintenanceView: View {
     @EnvironmentObject private var store: AppStore
     @State private var pendingAction: MaintenanceAction?
 
+    private var latestMaintenanceActivity: ActivityEntry? {
+        let titles = Set(MaintenanceAction.allCases.map(\.rawValue))
+        return store.activities.first { titles.contains($0.title) }
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 20) {
                 PageHeader(
                     title: "系统维护",
-                    subtitle: "每项任务独立说明影响；这里没有含糊的“一键加速”。"
-                )
+                    subtitle: "只在出现具体异常时运行一项；执行前先看影响，执行后验证结果。"
+                ) {
+                    StatusPill(
+                        text: CNL10n.format("%d 项本机任务", MaintenanceAction.allCases.count),
+                        symbol: "checkmark.shield",
+                        style: .success
+                    )
+                }
 
-                InlineBanner(
-                    title: "当前任务不需要管理员密码",
-                    detail: "首版只开放重建快速预览、重启 Finder 和重启 Dock。涉及网络、索引或系统缓存的任务暂不自动执行。",
-                    kind: .success
-                )
+                scopePanel
 
-                VStack(spacing: 12) {
-                    ForEach(MaintenanceAction.allCases) { action in
-                        maintenanceCard(action)
+                VStack(alignment: .leading, spacing: 12) {
+                    ContentSectionHeader(
+                        "选择你遇到的问题",
+                        detail: "不需要全部运行，也没有一键优化",
+                        symbol: "stethoscope",
+                        tint: CNTheme.accent
+                    )
+
+                    SurfaceCard {
+                        VStack(spacing: 0) {
+                            ForEach(Array(MaintenanceAction.allCases.enumerated()), id: \.element.id) { index, action in
+                                maintenanceRow(action)
+                                if index < MaintenanceAction.allCases.count - 1 {
+                                    Divider().padding(.leading, 53)
+                                }
+                            }
+                        }
                     }
                 }
 
-                SurfaceCard(title: "后续可扩展", symbol: "slider.horizontal.3") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("维护任务使用独立动作模型，可以继续添加 Spotlight 重建、网络诊断、启动项管理等能力。")
-                            .font(.subheadline)
-                        Text("需要管理员权限的任务会使用 macOS 原生认证流程，不会让 App 读取或保存密码。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                if let latestMaintenanceActivity {
+                    latestResult(latestMaintenanceActivity)
                 }
             }
             .padding(CNTheme.pagePadding)
         }
         .alert(item: $pendingAction) { action in
             Alert(
-                title: Text("执行“\(action.rawValue)”？"),
-                message: Text(action.explanation),
-                primaryButton: .default(Text("执行")) {
+                title: Text("执行“\(CNL10n.string(action.rawValue))”？"),
+                message: Text(CNL10n.format(
+                    "适用于：%@\n\n会发生：%@\n\n安全边界：%@\n\n如果未恢复：%@",
+                    CNL10n.string(action.symptom),
+                    CNL10n.string(action.effect),
+                    CNL10n.string(action.safetyNote),
+                    CNL10n.string(action.recovery)
+                )),
+                primaryButton: .default(Text("确认运行")) {
                     Task { await store.runMaintenance(action) }
                 },
                 secondaryButton: .cancel(Text("取消"))
@@ -826,26 +847,226 @@ struct MaintenanceView: View {
         }
     }
 
-    private func maintenanceCard(_ action: MaintenanceAction) -> some View {
-        HStack(spacing: 15) {
-            Image(systemName: action.symbolName)
-                .font(.system(size: 19, weight: .medium))
-                .foregroundStyle(CNTheme.accent)
-                .frame(width: 42, height: 42)
-                .background(CNTheme.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 7) {
-                    Text(action.rawValue).font(.headline)
-                    StatusPill(text: "可安全重试", symbol: "arrow.clockwise", style: .success)
+    private var scopePanel: some View {
+        SurfaceCard(prominence: .prominent, tint: CNTheme.mint) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 18) {
+                    CNIconTile(symbol: "wrench.and.screwdriver.fill", tint: CNTheme.mint, size: 46)
+                    scopeText
+                    Spacer(minLength: 12)
+                    scopeFacts
                 }
-                Text(action.explanation)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(spacing: 13) {
+                        CNIconTile(symbol: "wrench.and.screwdriver.fill", tint: CNTheme.mint, size: 42)
+                        scopeText
+                    }
+                    scopeFacts
+                }
             }
-            Spacer()
-            Button("运行") { pendingAction = action }
-                .disabled(store.isWorking)
         }
-        .cnCard()
+    }
+
+    private var scopeText: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("这不是加速器")
+                .font(.system(size: 18, weight: .semibold, design: .rounded))
+            Text("只重建预览缓存，或重启出现异常的 macOS 界面服务。")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var scopeFacts: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                scopeFact("不删除文件", symbol: "trash.slash")
+                scopeFact("不需要管理员密码", symbol: "person.badge.key")
+                scopeFact("每次只运行一项", symbol: "1.circle")
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                scopeFact("不删除文件", symbol: "trash.slash")
+                scopeFact("不需要管理员密码", symbol: "person.badge.key")
+                scopeFact("每次只运行一项", symbol: "1.circle")
+            }
+        }
+    }
+
+    private func scopeFact(_ text: String, symbol: String) -> some View {
+        Label(CNL10n.string(text), systemImage: symbol)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(.ultraThinMaterial, in: Capsule())
+    }
+
+    private func maintenanceRow(_ action: MaintenanceAction) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 13) {
+                maintenanceIcon(action)
+                maintenanceDetails(action)
+                    .frame(minWidth: 360, maxWidth: .infinity, alignment: .leading)
+                maintenanceControls(action)
+                    .frame(width: 154, alignment: .trailing)
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    maintenanceIcon(action)
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 8) {
+                            Text(CNL10n.string(action.rawValue))
+                                .font(.headline)
+                            interruptionStatus(action)
+                        }
+                        Text(CNL10n.string(action.symptom))
+                            .font(.subheadline.weight(.medium))
+                    }
+                }
+                maintenanceDetails(action, includesTitle: false)
+                maintenanceControls(action, horizontal: true)
+            }
+        }
+        .padding(.vertical, 13)
+    }
+
+    private func maintenanceIcon(_ action: MaintenanceAction) -> some View {
+        CNIconTile(symbol: action.symbolName, tint: CNTheme.accent, size: 40)
+    }
+
+    private func maintenanceDetails(
+        _ action: MaintenanceAction,
+        includesTitle: Bool = true
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if includesTitle {
+                HStack(spacing: 8) {
+                    Text(CNL10n.string(action.rawValue))
+                        .font(.headline)
+                    interruptionStatus(action)
+                }
+                Text(CNL10n.string(action.symptom))
+                    .font(.subheadline.weight(.medium))
+            }
+            maintenanceDetailLine(symbol: "arrow.triangle.2.circlepath", text: action.effect)
+            maintenanceDetailLine(symbol: "checkmark.shield", text: action.safetyNote)
+        }
+    }
+
+    @ViewBuilder
+    private func interruptionStatus(_ action: MaintenanceAction) -> some View {
+        switch action {
+        case .quickLook:
+            StatusPill(
+                text: CNL10n.string(action.interruptionSummary),
+                symbol: "checkmark.circle",
+                style: .success
+            )
+        case .finder, .dock, .menuBar:
+            StatusPill(
+                text: CNL10n.string(action.interruptionSummary),
+                symbol: "rectangle.2.swap",
+                style: .warning
+            )
+        }
+    }
+
+    private func maintenanceDetailLine(symbol: String, text: String) -> some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: symbol)
+                .font(.caption)
+                .foregroundStyle(CNTheme.accent)
+                .frame(width: 14, height: 16)
+            Text(CNL10n.string(text))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func maintenanceControls(
+        _ action: MaintenanceAction,
+        horizontal: Bool = false
+    ) -> some View {
+        let last = store.activities.first { $0.title == action.rawValue }
+        return Group {
+            if horizontal {
+                HStack(spacing: 9) {
+                    lastStatus(last)
+                    Spacer()
+                    runButton(action)
+                }
+            } else {
+                VStack(alignment: .trailing, spacing: 8) {
+                    lastStatus(last)
+                    runButton(action)
+                }
+            }
+        }
+    }
+
+    private func lastStatus(_ entry: ActivityEntry?) -> some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            if let entry {
+                StatusPill(
+                    text: entry.outcome == .success ? "最近已完成" : "上次未完成",
+                    symbol: entry.outcome.symbol,
+                    style: entry.outcome == .success ? .success : .danger
+                )
+                Text(entry.date, style: .relative)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                StatusPill(text: "尚未运行", symbol: "clock", style: .neutral)
+            }
+        }
+    }
+
+    private func runButton(_ action: MaintenanceAction) -> some View {
+        Button {
+            pendingAction = action
+        } label: {
+            Label("运行此任务…", systemImage: "play.fill")
+        }
+        .buttonStyle(.bordered)
+        .disabled(store.isWorking)
+        .accessibilityLabel(CNL10n.format("运行 %@", action.rawValue))
+    }
+
+    private func latestResult(_ entry: ActivityEntry) -> some View {
+        SurfaceCard(
+            title: "最近一次维护",
+            symbol: "clock.arrow.circlepath",
+            prominence: .quiet,
+            tint: Color.outcome(entry.outcome)
+        ) {
+            HStack(alignment: .top, spacing: 12) {
+                CNIconTile(symbol: entry.outcome.symbol, tint: Color.outcome(entry.outcome), size: 34)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(CNL10n.string(entry.title))
+                            .font(.subheadline.weight(.semibold))
+                        StatusPill(
+                            text: entry.outcome.rawValue,
+                            symbol: nil,
+                            style: entry.outcome == .success ? .success : .danger
+                        )
+                    }
+                    Text(CNL10n.string(entry.detail))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(entry.date.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+                Button("查看全部记录") {
+                    store.selection = .activity
+                }
+                .buttonStyle(.borderless)
+            }
+        }
     }
 }

@@ -1,0 +1,155 @@
+import Foundation
+
+/// Pure scanner orchestration shared by the XPC executable and unit tests.
+/// The GUI target does not call this worker directly: production scans must
+/// cross the process boundary so a failed worker cannot take down the UI.
+public struct ScannerWorker: Sendable {
+    private let diskAnalyzer: NativeDiskAnalyzer
+    private let diskEvidenceIndexer: DiskEvidenceIndexer
+
+    public init(
+        diskAnalyzer: NativeDiskAnalyzer = NativeDiskAnalyzer(),
+        diskEvidenceIndexer: DiskEvidenceIndexer = DiskEvidenceIndexer()
+    ) {
+        self.diskAnalyzer = diskAnalyzer
+        self.diskEvidenceIndexer = diskEvidenceIndexer
+    }
+
+    public func scanCleanup(
+        _ request: CleanupScannerRequest,
+        progress: (@Sendable (ScannerServiceProgress) -> Void)? = nil
+    ) async throws -> CleanupScannerResponse {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        try Task.checkCancellation()
+        progress?(
+            ScannerServiceProgress(
+                requestID: request.requestID,
+                operation: .cleanup,
+                stage: .cleanupCaches,
+                currentName: "Caches"
+            )
+        )
+
+        let standard = await CleanupScanner(homeDirectory: request.homeDirectory).scan(
+            includeApplicationCaches: request.includeApplicationCaches
+        )
+        try Task.checkCancellation()
+
+        progress?(
+            ScannerServiceProgress(
+                requestID: request.requestID,
+                operation: .cleanup,
+                stage: .cleanupPersonalFiles,
+                currentName: "Downloads"
+            )
+        )
+        let personal = await DownloadMediaScanner(homeDirectory: request.homeDirectory).scan(
+            includeMediaAndDuplicates: request.includeMediaAndDuplicates
+        )
+        try Task.checkCancellation()
+
+        let visibleStandard = request.developerMode
+            ? standard
+            : standard.filter { $0.kind != .developer && $0.kind != .packageManager }
+        var candidatesByPath = Dictionary(
+            uniqueKeysWithValues: visibleStandard.map { ($0.url.standardizedFileURL.path, $0) }
+        )
+        for candidate in personal.candidates {
+            candidatesByPath[candidate.url.standardizedFileURL.path] = candidate
+        }
+        let candidates = candidatesByPath.values.sorted {
+            if $0.kind != $1.kind { return $0.kind.rawValue < $1.kind.rawValue }
+            if $0.allocatedBytes != $1.allocatedBytes { return $0.allocatedBytes > $1.allocatedBytes }
+            return $0.url.path < $1.url.path
+        }
+        let endedAt = DispatchTime.now().uptimeNanoseconds
+        let response = CleanupScannerResponse(
+            requestID: request.requestID,
+            candidates: candidates,
+            insights: personal.insights.updatingCandidateCounts(from: candidates),
+            elapsedSeconds: Double(endedAt - startedAt) / 1_000_000_000
+        )
+        progress?(
+            ScannerServiceProgress(
+                requestID: request.requestID,
+                operation: .cleanup,
+                stage: .completed,
+                completed: candidates.count,
+                total: candidates.count
+            )
+        )
+        return response
+    }
+
+    public func scanDisk(
+        _ request: DiskScannerRequest,
+        progress: (@Sendable (ScannerServiceProgress) -> Void)? = nil
+    ) async throws -> DiskScannerResponse {
+        try Task.checkCancellation()
+        progress?(
+            ScannerServiceProgress(
+                requestID: request.requestID,
+                operation: .disk,
+                stage: .preparing,
+                currentName: request.root.lastPathComponent
+            )
+        )
+
+        let outcome = try await diskAnalyzer.analyze(
+            root: request.root,
+            cache: request.cache,
+            mode: request.mode
+        ) { scanProgress in
+            progress?(
+                ScannerServiceProgress(
+                    requestID: request.requestID,
+                    operation: .disk,
+                    stage: .diskContents,
+                    completed: scanProgress.completed,
+                    total: scanProgress.total,
+                    currentName: scanProgress.currentName,
+                    partialReport: scanProgress.partialReport,
+                    cacheHitCount: scanProgress.cacheHitCount,
+                    scannedCount: scanProgress.scannedCount
+                )
+            )
+        }
+        try Task.checkCancellation()
+
+        let evidence = try await diskEvidenceIndexer.build(
+            report: outcome.report,
+            previous: request.previousEvidence,
+            homeDirectory: request.homeDirectory
+        ) { evidenceProgress in
+            progress?(
+                ScannerServiceProgress(
+                    requestID: request.requestID,
+                    operation: .disk,
+                    stage: .diskEvidence,
+                    completed: evidenceProgress.completed,
+                    total: evidenceProgress.total,
+                    currentName: evidenceProgress.currentName,
+                    cacheHitCount: outcome.cacheHitCount,
+                    scannedCount: outcome.scannedCount
+                )
+            )
+        }
+        try Task.checkCancellation()
+        progress?(
+            ScannerServiceProgress(
+                requestID: request.requestID,
+                operation: .disk,
+                stage: .completed,
+                completed: evidence.entries.count,
+                total: evidence.entries.count,
+                cacheHitCount: outcome.cacheHitCount,
+                scannedCount: outcome.scannedCount
+            )
+        )
+        return DiskScannerResponse(
+            requestID: request.requestID,
+            outcome: outcome,
+            evidence: evidence
+        )
+    }
+}

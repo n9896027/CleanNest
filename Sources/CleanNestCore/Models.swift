@@ -40,6 +40,12 @@ public enum CleanupKind: String, CaseIterable, Codable, Sendable {
     case packageManager = "包管理器缓存"
     case logs = "旧日志"
     case installer = "安装包"
+    case archive = "下载压缩包"
+    case screenshot = "截图"
+    case image = "图片文件"
+    case video = "视频文件"
+    case audio = "音频文件"
+    case duplicate = "重复文件"
     case appCache = "应用缓存"
     case leftover = "应用残留"
 
@@ -49,13 +55,64 @@ public enum CleanupKind: String, CaseIterable, Codable, Sendable {
         case .packageManager: return "shippingbox"
         case .logs: return "doc.text"
         case .installer: return "externaldrive.badge.xmark"
+        case .archive: return "archivebox"
+        case .screenshot: return "camera.viewfinder"
+        case .image: return "photo"
+        case .video: return "film"
+        case .audio: return "waveform"
+        case .duplicate: return "square.on.square"
         case .appCache: return "square.stack.3d.up"
         case .leftover: return "app.badge"
         }
     }
+
+    public var isPersonalFile: Bool {
+        switch self {
+        case .installer, .archive, .screenshot, .image, .video, .audio, .duplicate:
+            return true
+        case .developer, .packageManager, .logs, .appCache, .leftover:
+            return false
+        }
+    }
 }
 
-public struct CleanupCandidate: Identifiable, Hashable, Sendable {
+public struct CleanupFileIdentity: Codable, Hashable, Sendable {
+    public let deviceID: UInt64
+    public let fileID: UInt64
+    public let logicalBytes: Int64
+    public let modifiedAt: Date?
+
+    public init(deviceID: UInt64, fileID: UInt64, logicalBytes: Int64, modifiedAt: Date?) {
+        self.deviceID = deviceID
+        self.fileID = fileID
+        self.logicalBytes = logicalBytes
+        self.modifiedAt = modifiedAt
+    }
+}
+
+public struct DuplicateFileEvidence: Codable, Hashable, Sendable {
+    public let groupID: String
+    public let contentSHA256: String
+    public let retainedURL: URL
+    public let retainedIdentity: CleanupFileIdentity
+    public let groupFileCount: Int
+
+    public init(
+        groupID: String,
+        contentSHA256: String,
+        retainedURL: URL,
+        retainedIdentity: CleanupFileIdentity,
+        groupFileCount: Int
+    ) {
+        self.groupID = groupID
+        self.contentSHA256 = contentSHA256
+        self.retainedURL = retainedURL.standardizedFileURL
+        self.retainedIdentity = retainedIdentity
+        self.groupFileCount = groupFileCount
+    }
+}
+
+public struct CleanupCandidate: Codable, Identifiable, Hashable, Sendable {
     public let id: String
     public let name: String
     public let url: URL
@@ -64,6 +121,8 @@ public struct CleanupCandidate: Identifiable, Hashable, Sendable {
     public let modifiedAt: Date?
     public let isRecommended: Bool
     public let detail: String
+    public let fileIdentity: CleanupFileIdentity?
+    public let duplicateEvidence: DuplicateFileEvidence?
 
     public init(
         id: String? = nil,
@@ -73,7 +132,9 @@ public struct CleanupCandidate: Identifiable, Hashable, Sendable {
         allocatedBytes: Int64,
         modifiedAt: Date?,
         isRecommended: Bool,
-        detail: String
+        detail: String,
+        fileIdentity: CleanupFileIdentity? = nil,
+        duplicateEvidence: DuplicateFileEvidence? = nil
     ) {
         self.id = id ?? url.standardizedFileURL.path
         self.name = name
@@ -83,6 +144,8 @@ public struct CleanupCandidate: Identifiable, Hashable, Sendable {
         self.modifiedAt = modifiedAt
         self.isRecommended = isRecommended
         self.detail = detail
+        self.fileIdentity = fileIdentity
+        self.duplicateEvidence = duplicateEvidence
     }
 }
 
@@ -116,7 +179,7 @@ public struct InstalledApplication: Identifiable, Hashable, Sendable {
     }
 }
 
-public struct DiskEntry: Identifiable, Hashable, Sendable {
+public struct DiskEntry: Codable, Identifiable, Hashable, Sendable {
     public let id: String
     public let name: String
     public let url: URL
@@ -132,7 +195,7 @@ public struct DiskEntry: Identifiable, Hashable, Sendable {
     }
 }
 
-public struct DiskReport: Equatable, Sendable {
+public struct DiskReport: Codable, Equatable, Sendable {
     public let root: URL
     public let entries: [DiskEntry]
     public let largeFiles: [DiskEntry]
@@ -325,6 +388,7 @@ public enum MaintenanceAction: String, CaseIterable, Identifiable, Sendable {
     case quickLook = "重建快速预览缓存"
     case finder = "重新启动 Finder"
     case dock = "重新启动 Dock"
+    case menuBar = "重新启动菜单栏服务"
 
     public var id: String { rawValue }
 
@@ -333,21 +397,82 @@ public enum MaintenanceAction: String, CaseIterable, Identifiable, Sendable {
         case .quickLook: return "eye"
         case .finder: return "face.smiling"
         case .dock: return "dock.rectangle"
+        case .menuBar: return "menubar.rectangle"
+        }
+    }
+
+    public var symptom: String {
+        switch self {
+        case .quickLook:
+            return "文件缩略图空白，或按空格后仍显示旧预览。"
+        case .finder:
+            return "桌面或文件窗口没有刷新，或 Finder 长时间无响应。"
+        case .dock:
+            return "Dock 或启动台卡住、图标不更新，或自动隐藏失效。"
+        case .menuBar:
+            return "菜单栏图标、控制中心或时钟没有刷新。"
+        }
+    }
+
+    public var effect: String {
+        switch self {
+        case .quickLook:
+            return "重置 Quick Look 缓存；第一次重新预览时可能稍慢。"
+        case .finder:
+            return "Finder 和桌面会短暂消失，macOS 随后自动重启 Finder。"
+        case .dock:
+            return "Dock 与启动台会短暂消失，macOS 随后自动重启 Dock。"
+        case .menuBar:
+            return "菜单栏和控制中心会短暂消失，macOS 随后自动重启它们。"
+        }
+    }
+
+    public var safetyNote: String {
+        switch self {
+        case .quickLook:
+            return "不删除原文件，不关闭正在编辑的文稿。"
+        case .finder:
+            return "不删除文件；正在进行的拷贝、移动或清空废纸篓可能中断。"
+        case .dock:
+            return "不会退出正在运行的 App，也不改变 Dock 布局。"
+        case .menuBar:
+            return "不会注销用户或退出 App；菜单栏工具会短暂重新连接。"
+        }
+    }
+
+    public var recovery: String {
+        switch self {
+        case .quickLook:
+            return "重新选中文件并按空格；仍异常时可安全重试。"
+        case .finder:
+            return "若 Finder 没有自动返回，可通过 Spotlight 重新打开 Finder。"
+        case .dock:
+            return "若 Dock 没有在数秒内返回，注销后重新登录可恢复。"
+        case .menuBar:
+            return "若菜单栏没有在数秒内返回，注销后重新登录可恢复。"
+        }
+    }
+
+    public var interruptionSummary: String {
+        switch self {
+        case .quickLook: return "不中断界面"
+        case .finder, .dock, .menuBar: return "界面会短暂重载"
         }
     }
 
     public var explanation: String {
         switch self {
-        case .quickLook: return "解决文件缩略图或空格预览不更新的问题。"
-        case .finder: return "重载桌面和文件窗口，打开的窗口会自动恢复。"
-        case .dock: return "重载程序坞与启动台，不会退出正在运行的 App。"
+        case .quickLook: return "快速预览缓存已重置，原文件没有改变。"
+        case .finder: return "Finder 已重新启动并恢复运行。"
+        case .dock: return "Dock 已重新启动并恢复运行。"
+        case .menuBar: return "菜单栏服务已重新启动并恢复运行。"
         }
     }
 
     public var executable: URL {
         switch self {
         case .quickLook: return URL(fileURLWithPath: "/usr/bin/qlmanage")
-        case .finder, .dock: return URL(fileURLWithPath: "/usr/bin/killall")
+        case .finder, .dock, .menuBar: return URL(fileURLWithPath: "/usr/bin/killall")
         }
     }
 
@@ -356,6 +481,16 @@ public enum MaintenanceAction: String, CaseIterable, Identifiable, Sendable {
         case .quickLook: return ["-r", "cache"]
         case .finder: return ["Finder"]
         case .dock: return ["Dock"]
+        case .menuBar: return ["SystemUIServer"]
+        }
+    }
+
+    public var verificationProcessName: String? {
+        switch self {
+        case .quickLook: return nil
+        case .finder: return "Finder"
+        case .dock: return "Dock"
+        case .menuBar: return "SystemUIServer"
         }
     }
 }

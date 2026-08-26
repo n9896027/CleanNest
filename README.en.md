@@ -42,6 +42,8 @@ CleanNest turns Mac cleanup from a black-box button into an understandable, reve
 ## Core capabilities
 
 - **Storage cleanup** — scan developer caches, logs, installers, and other candidates; select items individually and move them to the macOS Trash.
+- **Downloads, screenshots, media, and exact duplicates** — common `ScreenShot`, `Screenshot`, `Screen Shot`, `ScreenCapture`, and Chinese screenshot names enter a dedicated group with one-click select/deselect. Other media still uses age and size gates, while exact duplicates require full SHA-256. Personal files are never preselected, and file identity plus the retained copy are revalidated before execution.
+- **Isolated scanner service** — cleanup, disk sizing, and evidence indexing run inside an embedded, independently signed XPC service. Cancellation, interruption, or a scanner crash leaves the UI alive and cannot replace the last complete result with partial state.
 - **Incremental disk browser** — stream partial results while scanning; reuse only unchanged metadata signatures for 15 minutes; disclose cache hits, live scans, and a cache-bypassing deep refresh.
 - **Cleanup Decision Center** — combine breadcrumb drill-down and a native treemap with deterministic purpose, growth cause, impact, recoverability, confidence, and a safe next action for every item. You can manually mark an item for review, keep it, or decide later without overriding safety boundaries.
 - **Live menu-bar monitor** — independently sample CPU, memory, network, disk, GPU, temperature, fans, and battery at a selectable 1/2/5/10-second interval. A State-style two-line value/abbreviation layout is the compact default; expanded text, mini graphs, ordering, and per-item visibility remain configurable.
@@ -103,6 +105,7 @@ In **Settings (`设置`) → Local AI Analysis (`本机 AI 分析`)**, CleanNest
 - Files go to the macOS Trash by default; CleanNest does not use an irreversible `rm -rf` cleanup path.
 - App removal revalidates the path, device, file identity, and Bundle ID. It uses an atomic Trash move when the current account truly has directory permission, and asks Finder to present native macOS administrator authentication only when required. Related files remain untouched unless the app bundle is confirmed in Trash.
 - High-risk interactive Mole commands are never auto-confirmed through simulated keyboard input.
+- The scanner service has no deletion, process-control, or network capability. If it is unavailable, the app fails explicitly instead of silently falling back to an in-process scan.
 - Pull requests run core tests, a complete app-bundle build, architecture checks, dependency review, and CodeQL.
 - GitHub Actions use least-privilege permissions and immutable Action references; Dependabot checks dependency and Action updates.
 
@@ -123,6 +126,9 @@ Detailed maintainer documentation is currently written primarily in Simplified C
 | [Architecture](docs/ARCHITECTURE.md) | Modules, data flow, and dangerous-operation boundaries |
 | [Privacy](PRIVACY.md) | Local data, network access, retention, and removal |
 | [Roadmap](ROADMAP.md) | Completed work, near-term priorities, and explicit non-commitments |
+| [0.6.0 verification report](docs/VERIFICATION-0.6.0.md) | XPC isolation, cancellation rollback, injected scanner failure, recovery, and cold-start memory evidence |
+| [0.5.5 verification report](docs/VERIFICATION-0.5.5.md) | Scan peak memory, adaptive background work, staged duplicate proof, and cancellation behavior |
+| [0.5.4 verification report](docs/VERIFICATION-0.5.4.md) | Downloads, media, exact duplicate detection, and personal-file safety boundaries |
 | [0.5.3 verification report](docs/VERIFICATION-0.5.3.md) | Local-model runtime discovery, launchd controls, menu-bar metrics, activity statistics, and remaining real-device gates |
 | [0.5.2 verification report](docs/VERIFICATION-0.5.2.md) | Compact menu-bar monitoring, login-item behavior, and current-Mac evidence |
 | [0.5.0 verification report](docs/VERIFICATION-0.5.0.md) | Local tests, large-directory incremental scan evidence, and gates that remain closed |
@@ -157,6 +163,6 @@ Preview the UI with synthetic data only:
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-The current development version is **0.5.3 (Build 17)**. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
+The current development version is **0.6.0 (Build 21)**. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
 
 Core navigation and the main overview, disk, status, and settings surfaces now include English, Simplified Chinese, and Traditional Chinese resources. Some runtime diagnostics and path-dependent copy can still fall back to the source language; Japanese and Korean currently have localized project overviews rather than full UI resources.

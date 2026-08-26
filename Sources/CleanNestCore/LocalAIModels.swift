@@ -331,6 +331,12 @@ public enum CleanupAIRequestBuilder {
         case .packageManager: return "package_manager_cache"
         case .logs: return "old_logs"
         case .installer: return "installer"
+        case .archive: return "download_archive"
+        case .screenshot: return "screenshot"
+        case .image: return "image_file"
+        case .video: return "video_file"
+        case .audio: return "audio_file"
+        case .duplicate: return "duplicate_file"
         case .appCache: return "application_cache"
         case .leftover: return "application_leftover"
         }
