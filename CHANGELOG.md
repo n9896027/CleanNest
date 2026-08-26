@@ -6,6 +6,8 @@
 
 ## [0.6.0] - 2026-08-26
 
+> `0.5.4` 与 `0.5.5` 是未单独打 tag 或发布 Release 的开发里程碑；相关改动随 `0.6.0` 一并发布，因此本版本的公开比较基线是 `v0.5.3`。
+
 ### Added
 
 - 截图清理：`ScreenShot`、`Screenshot`、`Screen Shot`、`ScreenCapture`、`截屏` 与 `截图` 等常见命名不再受 5 MB / 14 天媒体门槛限制，独立进入“截图”分组；分组标题可一键全选或取消全选，实际清理仍需二次确认并只移到废纸篓。
@@ -31,7 +33,7 @@
 - 扫描服务不提供删除、进程控制或网络接口；主 App 在服务不可用时明确失败，不回退到主进程悄悄扫描。
 - 主 App 与服务经精确日期和文件身份往返传输；重复文件的执行前完整 SHA-256 复核与废纸篓恢复边界保持不变。
 
-## [0.5.5] - 2026-08-26
+## 0.5.5 - 2026-08-26
 
 ### Added
 
@@ -55,7 +57,7 @@
 
 - 首尾指纹只用于减少完整哈希次数，永远不作为重复文件证据；候选展示与执行前复核仍使用完整 SHA-256。
 
-## [0.5.4] - 2026-08-26
+## 0.5.4 - 2026-08-26
 
 ### Added
 
@@ -204,9 +206,7 @@
 - CodeQL、Dependabot、分支保护和完整 App Bundle CI。
 
 [Unreleased]: https://github.com/n9896027/CleanNest/compare/v0.6.0...HEAD
-[0.6.0]: https://github.com/n9896027/CleanNest/compare/v0.5.5...v0.6.0
-[0.5.5]: https://github.com/n9896027/CleanNest/compare/v0.5.4...v0.5.5
-[0.5.4]: https://github.com/n9896027/CleanNest/compare/v0.5.3...v0.5.4
+[0.6.0]: https://github.com/n9896027/CleanNest/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/n9896027/CleanNest/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/n9896027/CleanNest/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/n9896027/CleanNest/compare/v0.5.0...v0.5.1
