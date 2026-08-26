@@ -1,12 +1,12 @@
 import CryptoKit
 import Foundation
 
-public enum DiskScanMode: Equatable, Sendable {
+public enum DiskScanMode: String, Codable, Equatable, Sendable {
     case reuseFreshCache
     case bypassCache
 }
 
-public struct DiskScanProgress: Equatable, Sendable {
+public struct DiskScanProgress: Codable, Equatable, Sendable {
     public let completed: Int
     public let total: Int
     public let currentName: String
@@ -36,7 +36,7 @@ public struct DiskScanProgress: Equatable, Sendable {
     }
 }
 
-public struct DiskScanOutcome: Equatable, Sendable {
+public struct DiskScanOutcome: Codable, Equatable, Sendable {
     public let report: DiskReport
     public let updatedCache: DiskScanCacheStore
     public let cacheHitCount: Int
@@ -99,6 +99,9 @@ public struct NativeDiskAnalyzer: Sendable {
         now: Date = Date(),
         progress: (@Sendable (DiskScanProgress) -> Void)? = nil
     ) async throws -> DiskScanOutcome {
+        // A detached worker does not inherit an already-cancelled parent task.
+        // Reject that state before allocating or enumerating anything.
+        try Task.checkCancellation()
         let cacheMaximumAge = self.cacheMaximumAge
         let maximumSignatureChildren = self.maximumSignatureChildren
         let startedAt = DispatchTime.now().uptimeNanoseconds

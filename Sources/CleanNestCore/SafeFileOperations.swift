@@ -146,7 +146,40 @@ public struct SafePathPolicy: Sendable {
         ].map(\.standardizedFileURL)
     }
 
+    public var personalFileRoots: [URL] {
+        [
+            "Desktop",
+            "Documents",
+            "Downloads",
+            "Pictures",
+            "Movies",
+            "Music"
+        ].map { homeDirectory.appendingPathComponent($0, isDirectory: true).standardizedFileURL }
+    }
+
     public func validateCleanupTarget(_ target: URL) throws {
+        let resolved = try validatedExistingTarget(target)
+        let isStrictDescendant = isStrictDescendant(resolved, of: cleanupRoots)
+        guard isStrictDescendant else { throw SafePathError.outsideAllowedRoots }
+    }
+
+    public func validateCleanupCandidate(_ candidate: CleanupCandidate) throws {
+        guard candidate.kind.isPersonalFile else {
+            try validateCleanupTarget(candidate.url)
+            return
+        }
+
+        let resolved = try validatedExistingTarget(candidate.url)
+        guard isStrictDescendant(resolved, of: personalFileRoots) else {
+            throw SafePathError.outsideAllowedRoots
+        }
+        guard candidate.fileIdentity != nil else {
+            throw CleanupEvidenceError.targetChanged
+        }
+        _ = try CleanupFileIdentity.capture(at: resolved)
+    }
+
+    private func validatedExistingTarget(_ target: URL) throws -> URL {
         guard FileManager.default.fileExists(atPath: target.path) else { throw SafePathError.missing }
         if (try? target.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
             throw SafePathError.symbolicLink
@@ -161,12 +194,14 @@ public struct SafePathPolicy: Sendable {
             homeDirectory.appendingPathComponent("Library")
         ].map { $0.standardizedFileURL.path }
         guard !protected.contains(resolved.path) else { throw SafePathError.protectedPath }
+        return resolved
+    }
 
-        let isStrictDescendant = cleanupRoots.contains { root in
+    private func isStrictDescendant(_ target: URL, of roots: [URL]) -> Bool {
+        roots.contains { root in
             let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL.path
-            return resolved.path.hasPrefix(resolvedRoot + "/")
+            return target.path.hasPrefix(resolvedRoot + "/")
         }
-        guard isStrictDescendant else { throw SafePathError.outsideAllowedRoots }
     }
 
     public func validateApplicationTarget(_ target: URL) throws {
@@ -264,6 +299,21 @@ public struct TrashService: Sendable {
         }
     }
 
+    public func trashCleanupCandidates(_ candidates: [CleanupCandidate]) async -> [TrashOutcome] {
+        let candidatesByPath = Dictionary(
+            uniqueKeysWithValues: candidates.map {
+                ($0.url.standardizedFileURL.path, $0)
+            }
+        )
+        return await trash(candidates.map(\.url)) { target in
+            guard let candidate = candidatesByPath[target.standardizedFileURL.path] else {
+                throw CleanupEvidenceError.targetChanged
+            }
+            try policy.validateCleanupCandidate(candidate)
+            try CleanupEvidenceValidator.validate(candidate)
+        }
+    }
+
     public func trashApplication(
         _ target: URL,
         expectedIdentity: ApplicationFileIdentity? = nil,
@@ -351,11 +401,19 @@ public struct TrashService: Sendable {
                     )
                 } catch {
                     let nsError = error as NSError
+                    let failureKind: TrashFailureKind
+                    if error is CleanupEvidenceError {
+                        failureKind = .targetChanged
+                    } else if error is SafePathError {
+                        failureKind = .validation
+                    } else {
+                        failureKind = .operationFailed
+                    }
                     return TrashOutcome(
                         source: source,
                         trashedURL: nil,
                         errorDescription: error.localizedDescription,
-                        failureKind: error is SafePathError ? .validation : .operationFailed,
+                        failureKind: failureKind,
                         technicalDescription: "错误域：\(nsError.domain)\n错误码：\(nsError.code)\n目标：\(source.path)\n系统说明：\(nsError.localizedDescription)"
                     )
                 }

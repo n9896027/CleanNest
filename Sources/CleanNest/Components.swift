@@ -4,11 +4,18 @@ import CleanNestCore
 struct PageHeader<Accessory: View>: View {
     let title: String
     let subtitle: String
+    let eyebrow: String?
     @ViewBuilder let accessory: Accessory
 
-    init(title: String, subtitle: String, @ViewBuilder accessory: () -> Accessory) {
+    init(
+        title: String,
+        subtitle: String,
+        eyebrow: String? = nil,
+        @ViewBuilder accessory: () -> Accessory
+    ) {
         self.title = title
         self.subtitle = subtitle
+        self.eyebrow = eyebrow
         self.accessory = accessory()
     }
 
@@ -28,20 +35,22 @@ struct PageHeader<Accessory: View>: View {
 
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 7) {
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: [CNTheme.cyan, CNTheme.accent],
-                            startPoint: .leading,
-                            endPoint: .trailing
+            if let eyebrow {
+                HStack(spacing: 7) {
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [CNTheme.cyan, CNTheme.accent],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
                         )
-                    )
-                    .frame(width: 18, height: 3)
-                Text(CNL10n.string("洞察闭环 · 只在本机"))
-                    .font(.system(size: 10, weight: .semibold))
-                    .tracking(0.8)
-                    .foregroundStyle(.tertiary)
+                        .frame(width: 18, height: 3)
+                    Text(CNL10n.string(eyebrow))
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(0.8)
+                        .foregroundStyle(.tertiary)
+                }
             }
             Text(CNL10n.string(title))
                 .font(.system(size: 34, weight: .semibold, design: .rounded))
@@ -55,8 +64,8 @@ struct PageHeader<Accessory: View>: View {
 }
 
 extension PageHeader where Accessory == EmptyView {
-    init(title: String, subtitle: String) {
-        self.init(title: title, subtitle: subtitle) { EmptyView() }
+    init(title: String, subtitle: String, eyebrow: String? = nil) {
+        self.init(title: title, subtitle: subtitle, eyebrow: eyebrow) { EmptyView() }
     }
 }
 

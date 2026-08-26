@@ -10,7 +10,8 @@ let package = Package(
         .executable(name: "CleanNest", targets: ["CleanNest"]),
         .executable(name: "CleanNestLoginItem", targets: ["CleanNestLoginItem"]),
         .executable(name: "CleanNestSelfTest", targets: ["CleanNestSelfTest"]),
-        .executable(name: "CleanNestMCP", targets: ["CleanNestMCP"])
+        .executable(name: "CleanNestMCP", targets: ["CleanNestMCP"]),
+        .executable(name: "CleanNestScanner", targets: ["CleanNestScanner"])
     ],
     targets: [
         .target(
@@ -45,6 +46,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "CleanNestMCP",
+            dependencies: ["CleanNestCore"]
+        ),
+        .executableTarget(
+            name: "CleanNestScanner",
             dependencies: ["CleanNestCore"]
         ),
         .testTarget(

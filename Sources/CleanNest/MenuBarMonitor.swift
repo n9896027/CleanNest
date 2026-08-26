@@ -394,17 +394,16 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
         popover.delegate = self
         popover.contentSize = NSSize(width: 390, height: 500)
 
-        Publishers.CombineLatest3(
+        Publishers.CombineLatest(
             store.$menuBarConfiguration,
-            store.$nativeMonitorSample,
-            store.$nativeMonitorHistory
+            store.$nativeMonitorSample
         )
         .receive(on: RunLoop.main)
-        .sink { [weak self] configuration, sample, history in
+        .sink { [weak self, weak store] configuration, sample in
             self?.updateStatusItems(
                 configuration: configuration,
                 sample: sample,
-                history: history
+                history: store?.nativeMonitorHistory ?? []
             )
         }
         .store(in: &cancellables)

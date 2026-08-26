@@ -21,7 +21,7 @@ public struct CleanupScanner: Sendable {
     }
 
     public func scan(includeApplicationCaches: Bool = false) async -> [CleanupCandidate] {
-        await Task.detached(priority: .userInitiated) {
+        let worker = Task.detached(priority: .userInitiated) {
             let now = Date()
             let day: TimeInterval = 86_400
             var rules = [
@@ -69,15 +69,6 @@ public struct CleanupScanner: Sendable {
                     recommended: false,
                     detail: "旧日志，仅在不再排查问题时选择",
                     maximumChildren: 250
-                ),
-                Rule(
-                    root: homeDirectory.appendingPathComponent("Downloads", isDirectory: true),
-                    kind: .installer,
-                    minimumAgeDays: 7,
-                    allowedExtensions: ["dmg", "pkg", "xip", "iso"],
-                    recommended: true,
-                    detail: "已下载的安装镜像，请确认不再需要",
-                    maximumChildren: 500
                 )
             ]
 
@@ -96,8 +87,10 @@ public struct CleanupScanner: Sendable {
             }
 
             var candidates: [CleanupCandidate] = []
-            for rule in rules where FileManager.default.fileExists(atPath: rule.root.path) {
+            ruleLoop: for rule in rules where FileManager.default.fileExists(atPath: rule.root.path) {
+                guard !Task.isCancelled else { break ruleLoop }
                 for child in FileTree.directChildren(of: rule.root).prefix(rule.maximumChildren) {
+                    guard !Task.isCancelled else { break ruleLoop }
                     guard let values = try? child.resourceValues(forKeys: [
                         .isSymbolicLinkKey,
                         .contentModificationDateKey,
@@ -147,6 +140,11 @@ public struct CleanupScanner: Sendable {
                 if $0.kind != $1.kind { return $0.kind.rawValue < $1.kind.rawValue }
                 return $0.allocatedBytes > $1.allocatedBytes
             }
-        }.value
+        }
+        return await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 }

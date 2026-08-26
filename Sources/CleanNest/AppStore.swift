@@ -142,7 +142,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var metricsSamplingIsActive = false
     @Published private(set) var menuBarConfiguration = MenuBarMonitorConfiguration.defaults
     @Published private(set) var nativeMonitorSample: NativeMonitorSample?
-    @Published private(set) var nativeMonitorHistory: [NativeMonitorSample] = []
+    private(set) var nativeMonitorHistory: [NativeMonitorSample] = []
     @Published private(set) var nativeMonitorIsActive = false
     @Published private(set) var nativeMonitorDiagnostic = "正在准备菜单栏实时监测…"
     @Published private(set) var menuBarVisibilityDiagnostic = "正在确认菜单栏显示状态…"
@@ -154,8 +154,12 @@ final class AppStore: ObservableObject {
     @Published var cleanupCandidates: [CleanupCandidate] = []
     @Published var selectedCleanupIDs = Set<String>()
     @Published var includeApplicationCaches = false
+    @Published var includeMediaAndDuplicates = true
+    @Published private(set) var cleanupScanInsights = CleanupScanInsights.empty
+    @Published private(set) var cleanupScanIncludedMediaAndDuplicates = false
     @Published var developerMode = true
     @Published var cleanupHasScanned = false
+    @Published private(set) var cleanupScanIsActive = false
     @Published var localAIEnabled = true
     @Published var localAIEndpoint = "http://127.0.0.1:8080/v1"
     @Published var localAIServiceModelID = ""
@@ -224,13 +228,11 @@ final class AppStore: ObservableObject {
     let demoMode: Bool
 
     private let commandRunner = CommandRunner()
-    private let cleanupScanner = CleanupScanner()
     private let applicationScanner = ApplicationScanner()
-    private let diskAnalyzer = NativeDiskAnalyzer()
+    private let scannerServiceClient = ScannerServiceClient()
     private let processMemoryInspector = ProcessMemoryInspector()
     private let metricsStore = MetricsStore()
     private let nativeSystemMonitor = NativeSystemMonitor()
-    private let diskEvidenceIndexer = DiskEvidenceIndexer()
     private let trashService = TrashService(
         applicationRecycler: WorkspaceApplicationRecycler.recycle
     )
@@ -256,10 +258,12 @@ final class AppStore: ObservableObject {
     private var metricsSamplingTask: Task<Void, Never>?
     private var nativeMonitorTask: Task<Void, Never>?
     private var nativeMonitorSamplingID = UUID()
+    private var activeCleanupScanTask: Task<Void, Never>?
     private var activeDiskScanTask: Task<Void, Never>?
     private var appUpdateCheckID = UUID()
     private var localModelDiscoveryID = UUID()
     private var localModelRuntimeMonitorTask: Task<Void, Never>?
+    private var applicationIsActive = true
 
     init() {
         demoMode = ProcessInfo.processInfo.environment["CLEANNEST_DEMO"] == "1"
@@ -333,6 +337,22 @@ final class AppStore: ObservableObject {
 
     var selectedCleanupCount: Int {
         cleanupCandidates.reduce(0) { $0 + (selectedCleanupIDs.contains($1.id) ? 1 : 0) }
+    }
+
+    var cleanupScreenshotCount: Int {
+        cleanupCandidates.reduce(0) { $0 + ($1.kind == .screenshot ? 1 : 0) }
+    }
+
+    var selectedPersonalCleanupCount: Int {
+        cleanupCandidates.reduce(0) {
+            $0 + (selectedCleanupIDs.contains($1.id) && $1.kind.isPersonalFile ? 1 : 0)
+        }
+    }
+
+    var selectedDuplicateCleanupCount: Int {
+        cleanupCandidates.reduce(0) {
+            $0 + (selectedCleanupIDs.contains($1.id) && $1.duplicateEvidence != nil ? 1 : 0)
+        }
     }
 
     var filteredApplications: [InstalledApplication] {
@@ -958,12 +978,26 @@ final class AppStore: ObservableObject {
             await self.refreshLocalModelRuntimes()
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(for: .seconds(5))
+                    try await Task.sleep(
+                        for: .seconds(self.localModelRuntimePollingIntervalSeconds)
+                    )
                 } catch {
                     break
                 }
                 await self.refreshLocalModelRuntimes()
             }
+        }
+    }
+
+    private var localModelRuntimePollingIntervalSeconds: Int {
+        guard applicationIsActive else { return 60 }
+        if selection == .models { return 10 }
+        guard localModelMenuBarEnabled else { return 60 }
+        switch localModelDiscoveryPhase {
+        case .runningHealthy, .runningUnverified:
+            return 15
+        case .unknown, .discovering, .stopped, .failed:
+            return 30
         }
     }
 
@@ -1220,9 +1254,11 @@ final class AppStore: ObservableObject {
     }
 
     private func applyNativeMonitorSample(_ sample: NativeMonitorSample) {
-        nativeMonitorSample = sample
         if let free = sample.diskFreeBytes {
-            diskFreeBytes = free
+            let minimumMeaningfulChange: Int64 = 16 * 1_048_576
+            if abs(free - diskFreeBytes) >= minimumMeaningfulChange {
+                diskFreeBytes = free
+            }
         }
         nativeMonitorHistory.append(sample)
         if nativeMonitorHistory.count > 90 {
@@ -1239,13 +1275,19 @@ final class AppStore: ObservableObject {
             sample.fanCount == nil ? "风扇" : nil,
             sample.batteryStatus == nil ? "电池" : nil
         ].compactMap { $0 }
+        let diagnostic: String
         if unavailableSensors.isEmpty {
-            nativeMonitorDiagnostic = "已读取 " + String(available) + " 项本机指标；每 "
+            diagnostic = "已读取 " + String(available) + " 项本机指标；每 "
                 + String(menuBarConfiguration.refreshInterval.rawValue) + " 秒刷新，不上传。"
         } else {
-            nativeMonitorDiagnostic = "已读取 " + String(available) + " 项；"
+            diagnostic = "已读取 " + String(available) + " 项；"
                 + unavailableSensors.joined(separator: "、") + "本次未取得有效值。"
         }
+        if nativeMonitorDiagnostic != diagnostic {
+            nativeMonitorDiagnostic = diagnostic
+        }
+        // Publish one coherent UI update after the sample, history and diagnostics agree.
+        nativeMonitorSample = sample
     }
 
     private func persistMenuBarConfiguration() {
@@ -1283,11 +1325,17 @@ final class AppStore: ObservableObject {
     }
 
     func applicationDidResignActive() {
+        applicationIsActive = false
         guard waitingForFullDiskAccessReturn else { return }
         didResignAfterOpeningFullDiskAccessSettings = true
     }
 
     func applicationDidBecomeActive() async {
+        applicationIsActive = true
+        if !demoMode,
+           Date().timeIntervalSince(localModelRuntimeSnapshot.capturedAt) >= 15 {
+            await refreshLocalModelRuntimes()
+        }
         guard waitingForFullDiskAccessReturn,
               didResignAfterOpeningFullDiskAccessSettings else { return }
         waitingForFullDiskAccessReturn = false
@@ -1975,18 +2023,67 @@ final class AppStore: ObservableObject {
 
     func scanCleanup() async {
         guard !demoMode else { return }
-        guard !isWorking else { return }
+        guard !isWorking, activeCleanupScanTask == nil else { return }
+        let task = Task<Void, Never> { [weak self] in
+            guard let self else { return }
+            await self.performCleanupScan()
+        }
+        activeCleanupScanTask = task
+        cleanupScanIsActive = true
+        await task.value
+        activeCleanupScanTask = nil
+        cleanupScanIsActive = false
+        if case .scanning = phase { phase = .idle }
+    }
+
+    func cancelCleanupScan() {
+        activeCleanupScanTask?.cancel()
+        phase = .scanning("正在取消清理扫描…")
+        lastTechnicalDetail = "本次独立扫描已取消；上一次完整结果保持不变。"
+    }
+
+    private func performCleanupScan() async {
         invalidateCleanupAI()
-        phase = .scanning("正在检查可清理内容…")
-        let scanned = await cleanupScanner.scan(includeApplicationCaches: includeApplicationCaches)
-        let results = developerMode
-            ? scanned
-            : scanned.filter { $0.kind != .developer && $0.kind != .packageManager }
-        cleanupCandidates = results
-        selectedCleanupIDs = Set(results.filter(\.isRecommended).map(\.id))
-        cleanupHasScanned = true
-        persistCleanupPreview()
-        phase = .idle
+        phase = .scanning("正在启动独立扫描服务…")
+        let request = CleanupScannerRequest(
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            includeApplicationCaches: includeApplicationCaches,
+            includeMediaAndDuplicates: includeMediaAndDuplicates,
+            developerMode: developerMode
+        )
+        do {
+            let response = try await scannerServiceClient.scanCleanup(request) { [weak self] progress in
+                await self?.applyScannerProgress(progress)
+            }
+            try Task.checkCancellation()
+            guard response.requestID == request.requestID else {
+                throw ScannerServiceClientError.invalidResponse
+            }
+            cleanupCandidates = response.candidates
+            cleanupScanInsights = response.insights
+            cleanupScanIncludedMediaAndDuplicates = includeMediaAndDuplicates
+            selectedCleanupIDs = Set(response.candidates.filter(\.isRecommended).map(\.id))
+            cleanupHasScanned = true
+            persistCleanupPreview()
+            lastTechnicalDetail = "独立扫描服务已完成 \(response.candidates.count) 项结果，耗时 \(String(format: "%.2f", response.elapsedSeconds)) 秒；高成本文件遍历未在 CleanNest 主进程内执行。"
+            phase = .idle
+        } catch is CancellationError {
+            phase = .idle
+            lastTechnicalDetail = "清理扫描已取消；上一次完整结果保持不变。"
+        } catch {
+            phase = .failed("清理扫描没有完成")
+            lastTechnicalDetail = error.localizedDescription
+        }
+    }
+
+    private func relieveAllocatorPressure() async -> UInt64 {
+        await Task.detached(priority: .utility) {
+            UInt64(malloc_zone_pressure_relief(nil, 0))
+        }.value
+    }
+
+    nonisolated private static func reportableByteCount(_ bytes: UInt64) -> Int64 {
+        bytes > UInt64(Int64.max) ? Int64.max : Int64(bytes)
     }
 
     func toggleCleanup(_ candidate: CleanupCandidate) {
@@ -1999,6 +2096,15 @@ final class AppStore: ObservableObject {
 
     func selectAllCleanup() {
         selectedCleanupIDs = Set(cleanupCandidates.map(\.id))
+    }
+
+    func setCleanupSelection(_ candidates: [CleanupCandidate], selected: Bool) {
+        let ids = Set(candidates.map(\.id))
+        if selected {
+            selectedCleanupIDs.formUnion(ids)
+        } else {
+            selectedCleanupIDs.subtract(ids)
+        }
     }
 
     func clearCleanupSelection() {
@@ -2016,7 +2122,7 @@ final class AppStore: ObservableObject {
         guard !selected.isEmpty else { return }
 
         phase = .executing("正在把所选内容移到废纸篓…")
-        let outcomes = await trashService.trashCleanupTargets(selected.map(\.url))
+        let outcomes = await trashService.trashCleanupCandidates(selected)
         let succeededPaths = Set(outcomes.filter(\.succeeded).map { $0.source.standardizedFileURL.path })
         let failed = outcomes.filter { !$0.succeeded }
         let released = selected
@@ -2032,6 +2138,7 @@ final class AppStore: ObservableObject {
         if !succeededCandidates.isEmpty { saveEvolutionMemory() }
 
         cleanupCandidates.removeAll { succeededPaths.contains($0.url.standardizedFileURL.path) }
+        cleanupScanInsights = cleanupScanInsights.updatingCandidateCounts(from: cleanupCandidates)
         selectedCleanupIDs.subtract(selected.map(\.id))
         invalidateCleanupAI()
         refreshDiskCapacity()
@@ -2275,7 +2382,13 @@ final class AppStore: ObservableObject {
 
     private func performDiskAnalysis(_ target: URL, mode: DiskScanMode) async {
         let cancelledCollectionTask = invalidateDiskAI()
-        let previousRoot = diskReport?.root.standardizedFileURL.path
+        let previousReport = diskReport
+        let previousRoot = previousReport?.root.standardizedFileURL.path
+        let previousHasScanned = diskHasScanned
+        let previousCacheHitCount = diskScanCacheHitCount
+        let previousScannedCount = diskScanScannedCount
+        let previousElapsedSeconds = diskScanElapsedSeconds
+        let previousCompletedAt = diskScanCompletedAt
         diskRoot = target
         if previousRoot != nil, previousRoot != target.path {
             diskHasScanned = false
@@ -2317,62 +2430,105 @@ final class AppStore: ObservableObject {
                 cache = DiskScanCacheStore()
                 lastTechnicalDetail = "磁盘增量索引无法读取，本次改为完整扫描：\(error.localizedDescription)"
             }
-            let outcome = try await diskAnalyzer.analyze(
+            let previousEvidence = try? DiskEvidencePersistence.load(
+                from: CleanNestDataPaths.diskEvidenceSnapshot()
+            )
+            let request = DiskScannerRequest(
                 root: target,
+                homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
                 cache: cache,
-                mode: mode
+                mode: mode,
+                previousEvidence: previousEvidence
+            )
+            let response = try await scannerServiceClient.scanDisk(
+                request
             ) { [weak self] progress in
-                Task { @MainActor in
-                    self?.diskScanProgress = progress
-                    self?.diskPartialReport = progress.partialReport
-                    self?.diskScanCacheHitCount = progress.cacheHitCount
-                    self?.diskScanScannedCount = progress.scannedCount
-                }
+                await self?.applyScannerProgress(progress)
             }
             try Task.checkCancellation()
+            guard response.requestID == request.requestID else {
+                throw ScannerServiceClientError.invalidResponse
+            }
+            let outcome = response.outcome
             try DiskScanCachePersistence.save(outcome.updatedCache, to: cacheURL)
+            try DiskEvidencePersistence.save(
+                response.evidence,
+                to: CleanNestDataPaths.diskEvidenceSnapshot()
+            )
+            diskReport = outcome.report
+            diskEvidenceReport = response.evidence
+            diskHasScanned = true
+            diskPartialReport = nil
+            diskEvidenceProgress = nil
+            diskScanProgress = nil
             diskScanCacheHitCount = outcome.cacheHitCount
             diskScanScannedCount = outcome.scannedCount
             diskScanElapsedSeconds = outcome.elapsedSeconds
             diskScanCompletedAt = Date()
-            try await finishDiskAnalysis(outcome.report)
-            lastTechnicalDetail = outcome.usedCache
-                ? "磁盘分析完成：复用 \(outcome.cacheHitCount) 项，实扫 \(outcome.scannedCount) 项，耗时 \(String(format: "%.2f", outcome.elapsedSeconds)) 秒。缓存只在元数据签名匹配且 15 分钟内复用。"
-                : "磁盘分析完成：实扫 \(outcome.scannedCount) 项，耗时 \(String(format: "%.2f", outcome.elapsedSeconds)) 秒。"
+            let returnedBytes = await relieveAllocatorPressure()
+            let scanDetail = outcome.usedCache
+                ? "独立磁盘扫描完成：复用 \(outcome.cacheHitCount) 项，实扫 \(outcome.scannedCount) 项，耗时 \(String(format: "%.2f", outcome.elapsedSeconds)) 秒。缓存只在元数据签名匹配且 15 分钟内复用。"
+                : "独立磁盘扫描完成：实扫 \(outcome.scannedCount) 项，耗时 \(String(format: "%.2f", outcome.elapsedSeconds)) 秒。"
+            lastTechnicalDetail = scanDetail
+                + " 已向系统归还约 \(CleanNestFormatting.bytes(Self.reportableByteCount(returnedBytes))) 的空闲分配页。"
             phase = .idle
         } catch is CancellationError {
-            if let previousReport = diskReport {
+            if let previousReport {
                 diskRoot = previousReport.root
-                diskHasScanned = true
             }
+            diskHasScanned = previousHasScanned
+            diskScanCacheHitCount = previousCacheHitCount
+            diskScanScannedCount = previousScannedCount
+            diskScanElapsedSeconds = previousElapsedSeconds
+            diskScanCompletedAt = previousCompletedAt
             diskPartialReport = nil
             phase = .idle
         } catch {
+            if let previousReport { diskRoot = previousReport.root }
+            diskHasScanned = previousHasScanned
+            diskScanCacheHitCount = previousCacheHitCount
+            diskScanScannedCount = previousScannedCount
+            diskScanElapsedSeconds = previousElapsedSeconds
+            diskScanCompletedAt = previousCompletedAt
+            diskPartialReport = nil
             phase = .failed("磁盘分析没有完成")
             lastTechnicalDetail = error.localizedDescription
         }
     }
 
-    private func finishDiskAnalysis(_ report: DiskReport) async throws {
-        try Task.checkCancellation()
-        diskScanProgress = nil
-        diskEvidenceProgress = DiskEvidenceProgress(completed: 0, total: report.entries.count, currentName: "")
-
-        let previous = try? DiskEvidencePersistence.load(from: CleanNestDataPaths.diskEvidenceSnapshot())
-        let evidence = try await diskEvidenceIndexer.build(
-            report: report,
-            previous: previous,
-            progress: { [weak self] progress in
-                Task { @MainActor in self?.diskEvidenceProgress = progress }
-            }
-        )
-        try Task.checkCancellation()
-        try DiskEvidencePersistence.save(evidence, to: CleanNestDataPaths.diskEvidenceSnapshot())
-        diskReport = report
-        diskEvidenceReport = evidence
-        diskHasScanned = true
-        diskPartialReport = nil
-        diskEvidenceProgress = nil
+    private func applyScannerProgress(_ progress: ScannerServiceProgress) {
+        switch progress.stage {
+        case .preparing:
+            phase = .scanning("正在连接独立扫描服务…")
+        case .cleanupCaches:
+            phase = .scanning("独立服务正在检查可重建缓存…")
+        case .cleanupPersonalFiles:
+            phase = .scanning("独立服务正在检查下载、媒体与重复文件…")
+        case .diskContents:
+            diskEvidenceProgress = nil
+            let value = DiskScanProgress(
+                completed: progress.completed,
+                total: progress.total,
+                currentName: progress.currentName,
+                partialReport: progress.partialReport,
+                cacheHitCount: progress.cacheHitCount,
+                scannedCount: progress.scannedCount
+            )
+            diskScanProgress = value
+            diskPartialReport = value.partialReport
+            diskScanCacheHitCount = value.cacheHitCount
+            diskScanScannedCount = value.scannedCount
+        case .diskEvidence:
+            diskScanProgress = nil
+            diskEvidenceProgress = DiskEvidenceProgress(
+                completed: progress.completed,
+                total: progress.total,
+                currentName: progress.currentName
+            )
+            phase = .scanning("独立服务正在生成磁盘证据…")
+        case .completed:
+            break
+        }
     }
 
     func clearDiskScanCache() {
@@ -2636,17 +2792,92 @@ final class AppStore: ObservableObject {
             phase = .success("演示模式：\(action.rawValue) 未实际执行")
             return
         }
+        guard !isWorking else { return }
         phase = .executing("正在\(action.rawValue)…")
+        let previousProcessIDs = if let processName = action.verificationProcessName {
+            await maintenanceProcessIDs(named: processName)
+        } else {
+            Set<Int32>()
+        }
+
+        if let processName = action.verificationProcessName,
+           previousProcessIDs.isEmpty {
+            let detail = "CleanNest 无法确认当前的 \(processName) 进程，因此没有执行 \(action.rawValue)，避免把未验证的操作显示成成功。"
+            phase = .failed("\(action.rawValue)未执行")
+            lastTechnicalDetail = detail
+            addActivity(title: action.rawValue, detail: detail, outcome: .failed)
+            return
+        }
+
         do {
-            let result = try await commandRunner.runChecked(executable: action.executable, arguments: action.arguments)
-            lastTechnicalDetail = result.standardOutput + result.standardError
+            let result = try await commandRunner.runChecked(
+                executable: action.executable,
+                arguments: action.arguments,
+                timeout: 15
+            )
+
+            if let processName = action.verificationProcessName {
+                let restarted = await waitForMaintenanceProcessRestart(
+                    named: processName,
+                    excluding: previousProcessIDs
+                )
+                guard restarted else {
+                    let detail = "\(action.rawValue)命令已返回，但 CleanNest 没有在 4 秒内验证 \(processName) 以新进程恢复运行。\(action.recovery)"
+                    phase = .failed("\(action.rawValue)尚未验证完成")
+                    lastTechnicalDetail = detail
+                    addActivity(title: action.rawValue, detail: detail, outcome: .failed)
+                    return
+                }
+            }
+
+            let output = (result.standardOutput + result.standardError)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            lastTechnicalDetail = [
+                "已执行：\(action.executable.path) \(action.arguments.joined(separator: " "))",
+                action.verificationProcessName.map { "已验证：\($0) 以新进程恢复运行。" },
+                output.isEmpty ? nil : output
+            ]
+            .compactMap { $0 }
+            .joined(separator: "\n")
             phase = .success("\(action.rawValue)已完成")
             addActivity(title: action.rawValue, detail: action.explanation, outcome: .success, affectedItems: 1)
         } catch {
             phase = .failed("\(action.rawValue)没有完成")
-            lastTechnicalDetail = error.localizedDescription
-            addActivity(title: action.rawValue, detail: error.localizedDescription, outcome: .failed)
+            let detail = "\(error.localizedDescription) \(action.recovery)"
+            lastTechnicalDetail = detail
+            addActivity(title: action.rawValue, detail: detail, outcome: .failed)
         }
+    }
+
+    private func waitForMaintenanceProcessRestart(
+        named processName: String,
+        excluding previousProcessIDs: Set<Int32>
+    ) async -> Bool {
+        for attempt in 0..<16 {
+            let currentProcessIDs = await maintenanceProcessIDs(named: processName)
+            if !currentProcessIDs.subtracting(previousProcessIDs).isEmpty {
+                return true
+            }
+            if attempt < 15 {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+        }
+        return false
+    }
+
+    private func maintenanceProcessIDs(named processName: String) async -> Set<Int32> {
+        guard let result = try? await commandRunner.runChecked(
+            executable: URL(fileURLWithPath: "/usr/bin/pgrep"),
+            arguments: ["-x", processName],
+            timeout: 2
+        ) else {
+            return []
+        }
+        return Set(
+            result.standardOutput
+                .split(whereSeparator: \.isNewline)
+                .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        )
     }
 
     func revealInFinder(_ url: URL) {
@@ -2790,6 +3021,9 @@ final class AppStore: ObservableObject {
         customEnginePath = ""
         developerMode = true
         includeApplicationCaches = false
+        includeMediaAndDuplicates = true
+        cleanupScanInsights = .empty
+        cleanupScanIncludedMediaAndDuplicates = false
         metricsRetentionDays = 30
         menuBarConfiguration = .defaults
         persistMenuBarConfiguration()
@@ -3221,10 +3455,23 @@ final class AppStore: ObservableObject {
         cleanupCandidates = [
             CleanupCandidate(name: "DerivedData", url: home.appendingPathComponent("Library/Developer/Xcode/DerivedData/Demo"), kind: .developer, allocatedBytes: 4_820_000_000, modifiedAt: Date().addingTimeInterval(-1_900_000), isRecommended: true, detail: "Xcode 会在需要时重新生成"),
             CleanupCandidate(name: "Homebrew 下载缓存", url: home.appendingPathComponent("Library/Caches/Homebrew/downloads"), kind: .packageManager, allocatedBytes: 2_360_000_000, modifiedAt: Date().addingTimeInterval(-1_200_000), isRecommended: true, detail: "安装包可重新下载"),
-            CleanupCandidate(name: "旧版设计工具安装包", url: home.appendingPathComponent("Downloads/DesignTool.dmg"), kind: .installer, allocatedBytes: 1_430_000_000, modifiedAt: Date().addingTimeInterval(-2_800_000), isRecommended: true, detail: "请确认不再需要重新安装"),
+            CleanupCandidate(name: "DesignTool.dmg", url: home.appendingPathComponent("Downloads/DesignTool.dmg"), kind: .installer, allocatedBytes: 1_430_000_000, modifiedAt: Date().addingTimeInterval(-2_800_000), isRecommended: false, detail: "下载的安装介质 · 个人文件，默认不勾选"),
             CleanupCandidate(name: CleanupScanner.npmCacheDisplayName, url: home.appendingPathComponent(".npm/_cacache/content-v2"), kind: .packageManager, allocatedBytes: 890_000_000, modifiedAt: Date().addingTimeInterval(-3 * 86_400), isRecommended: false, detail: CleanupScanner.npmCacheDetail),
-            CleanupCandidate(name: "旧诊断日志", url: home.appendingPathComponent("Library/Logs/DiagnosticReports"), kind: .logs, allocatedBytes: 124_000_000, modifiedAt: Date().addingTimeInterval(-7_800_000), isRecommended: false, detail: "排查问题时可能有用")
+            CleanupCandidate(name: "旧诊断日志", url: home.appendingPathComponent("Library/Logs/DiagnosticReports"), kind: .logs, allocatedBytes: 124_000_000, modifiedAt: Date().addingTimeInterval(-7_800_000), isRecommended: false, detail: "排查问题时可能有用"),
+            CleanupCandidate(name: "素材归档.zip", url: home.appendingPathComponent("Downloads/素材归档.zip"), kind: .archive, allocatedBytes: 760_000_000, modifiedAt: Date().addingTimeInterval(-1_600_000), isRecommended: false, detail: "普通 ZIP 资料归档；不能仅凭扩展名判断可删除"),
+            CleanupCandidate(name: "访谈原片.mov", url: home.appendingPathComponent("Movies/访谈原片.mov"), kind: .video, allocatedBytes: 2_640_000_000, modifiedAt: Date().addingTimeInterval(-4_200_000), isRecommended: false, detail: "较大的视频文件 · 来自影片 · 仅供手动复核"),
+            CleanupCandidate(name: "访谈原片 副本.mov", url: home.appendingPathComponent("Downloads/访谈原片 副本.mov"), kind: .duplicate, allocatedBytes: 2_640_000_000, modifiedAt: Date().addingTimeInterval(-3_900_000), isRecommended: false, detail: "与“访谈原片.mov”字节完全相同；保留该副本，执行前会重新核验 SHA-256")
         ]
+        cleanupScanInsights = CleanupScanInsights(
+            examinedFileCount: 1_284,
+            installerCount: 1,
+            archiveCount: 1,
+            videoCount: 1,
+            duplicateGroupCount: 1,
+            duplicateFileCount: 1,
+            duplicateBytes: 2_640_000_000
+        )
+        cleanupScanIncludedMediaAndDuplicates = true
         selectedCleanupIDs = Set(cleanupCandidates.filter(\.isRecommended).map(\.id))
         cleanupHasScanned = true
         let demoModelID = "Qwen3.8-27B-Uncensored-8bit"

@@ -313,7 +313,7 @@ public struct DiskEvidenceReport: Codable, Equatable, Sendable {
     }
 }
 
-public struct DiskEvidenceProgress: Equatable, Sendable {
+public struct DiskEvidenceProgress: Codable, Equatable, Sendable {
     public let completed: Int
     public let total: Int
     public let currentName: String
@@ -502,17 +502,27 @@ public struct DiskEvidenceIndexer: Sendable {
                 options: [.skipsPackageDescendants],
                 errorHandler: { _, _ in true }
             )
-            while let child = enumerator?.nextObject() as? URL {
-                if Task.isCancelled { break }
-                guard let values = try? child.resourceValues(forKeys: keys) else { continue }
-                if values.isSymbolicLink == true {
-                    enumerator?.skipDescendants()
-                    continue
-                }
-                consume(child, values: values)
-                if observedFiles >= maximumFiles {
-                    scanWasLimited = true
-                    break
+            let batchSize = 256
+            var exhausted = enumerator == nil
+            while !exhausted, !scanWasLimited, !Task.isCancelled {
+                autoreleasepool {
+                    for _ in 0..<batchSize {
+                        guard !Task.isCancelled,
+                              let child = enumerator?.nextObject() as? URL else {
+                            exhausted = true
+                            break
+                        }
+                        guard let values = try? child.resourceValues(forKeys: keys) else { continue }
+                        if values.isSymbolicLink == true {
+                            enumerator?.skipDescendants()
+                            continue
+                        }
+                        consume(child, values: values)
+                        if observedFiles >= maximumFiles {
+                            scanWasLimited = true
+                            break
+                        }
+                    }
                 }
             }
         } else if let values = try? entry.url.resourceValues(forKeys: keys) {

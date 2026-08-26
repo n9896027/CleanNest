@@ -4,12 +4,30 @@ import CleanNestCore
 struct OverviewView: View {
     @EnvironmentObject private var store: AppStore
 
+    private enum FocusAction {
+        case scanCleanup
+        case openCleanup
+        case openSystemStatus
+    }
+
+    private struct FocusState {
+        let title: String
+        let detail: String
+        let actionTitle: String
+        let action: FocusAction
+        let symbol: String
+        let tint: Color
+        let pillText: String
+        let pillStyle: StatusPill.Style
+        let safetyHint: String
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 26) {
+            VStack(alignment: .leading, spacing: 24) {
                 PageHeader(
                     title: "总览",
-                    subtitle: "先看清空间去了哪里，再决定要不要处理。所有分析都在本机完成。"
+                    subtitle: "查看这台 Mac 当前状态，并从一项明确任务开始。"
                 ) {
                     StatusPill(
                         text: store.demoMode ? "演示数据" : (store.engine == nil ? "部分功能待设置" : "本地运行"),
@@ -21,7 +39,7 @@ struct OverviewView: View {
                 if store.engine == nil {
                     InlineBanner(
                         title: "连接开源清理引擎",
-                        detail: "状态与磁盘分析需要 Mole CLI。你可以在 App 内免费安装，不必打开终端。",
+                        detail: "系统健康评估与部分磁盘分析需要 Mole CLI；清理扫描、App 卸载和原生实时状态仍可使用。",
                         kind: .warning,
                         actionTitle: "去设置"
                     ) {
@@ -29,10 +47,9 @@ struct OverviewView: View {
                     }
                 }
 
-                InsightLoopRail()
-                storageWorkspace
-                nextActions
-                activityAndLearning
+                currentStatePanel
+                commonTasks
+                recentResults
             }
             .frame(maxWidth: CNTheme.contentMaxWidth, alignment: .leading)
             .padding(CNTheme.pagePadding)
@@ -43,112 +60,204 @@ struct OverviewView: View {
         max(0, store.diskTotalBytes - store.diskFreeBytes)
     }
 
-    private var storageWorkspace: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            ContentSectionHeader(
-                "启动磁盘",
-                detail: "只读容量快照",
+    private var diskUsedFraction: Double? {
+        guard store.diskTotalBytes > 0 else { return nil }
+        return min(1, max(0, Double(usedBytes) / Double(store.diskTotalBytes)))
+    }
+
+    private var focusState: FocusState {
+        if store.nativeMonitorSample?.memoryPressureLevel == .critical {
+            return FocusState(
+                title: "内存压力较高",
+                detail: "macOS 已报告严重内存压力。先查看占用进程，再决定是否退出。",
+                actionTitle: "查看内存进程",
+                action: .openSystemStatus,
+                symbol: "memorychip.fill",
+                tint: CNTheme.danger,
+                pillText: "需要处理",
+                pillStyle: .danger,
+                safetyHint: "只读查看，不会自动结束进程"
+            )
+        }
+
+        if let diskUsedFraction, diskUsedFraction >= 0.90 {
+            return FocusState(
+                title: "可用空间偏低",
+                detail: CNL10n.format(
+                    "启动磁盘只剩 %@（%@ 已使用）。建议先扫描，再逐项确认。",
+                    CleanNestFormatting.bytes(store.diskFreeBytes),
+                    CleanNestFormatting.percent(diskUsedFraction * 100)
+                ),
+                actionTitle: store.cleanupHasScanned ? "查看清理清单" : "扫描可清理内容",
+                action: store.cleanupHasScanned ? .openCleanup : .scanCleanup,
                 symbol: "internaldrive.fill",
-                tint: CNTheme.cyan
+                tint: CNTheme.warning,
+                pillText: "需要处理",
+                pillStyle: .warning,
+                safetyHint: "扫描与预览不会删除文件"
+            )
+        }
+
+        if store.nativeMonitorSample?.memoryPressureLevel == .warning {
+            return FocusState(
+                title: "内存压力正在升高",
+                detail: "macOS 已报告内存压力警告。查看连续采样和占用进程，再决定是否退出。",
+                actionTitle: "查看内存进程",
+                action: .openSystemStatus,
+                symbol: "memorychip",
+                tint: CNTheme.warning,
+                pillText: "建议查看",
+                pillStyle: .warning,
+                safetyHint: "只读查看，不会自动结束进程"
+            )
+        }
+
+        if store.cleanupHasScanned, !store.cleanupCandidates.isEmpty {
+            return FocusState(
+                title: "扫描结果等待确认",
+                detail: CNL10n.format(
+                    "发现 %d 项内容，合计 %@；其中 %d 项已按低风险规则预选。",
+                    store.cleanupCandidates.count,
+                    CleanNestFormatting.bytes(store.cleanupPotentialBytes),
+                    store.selectedCleanupCount
+                ),
+                actionTitle: "查看清理清单",
+                action: .openCleanup,
+                symbol: "checklist",
+                tint: CNTheme.accent,
+                pillText: "等待你决定",
+                pillStyle: .neutral,
+                safetyHint: "移到废纸篓前仍需要你确认"
+            )
+        }
+
+        if !store.cleanupHasScanned {
+            return FocusState(
+                title: "还没有清理清单",
+                detail: "先扫描缓存、下载中的安装包与归档，以及按设置启用的媒体与重复文件。",
+                actionTitle: "扫描可清理内容",
+                action: .scanCleanup,
+                symbol: "sparkle.magnifyingglass",
+                tint: CNTheme.accent,
+                pillText: "未扫描",
+                pillStyle: .neutral,
+                safetyHint: "扫描只读，不会删除文件"
+            )
+        }
+
+        return FocusState(
+            title: "当前没有需要立即处理的项目",
+            detail: "磁盘余量和内存压力正常，本轮清理扫描也没有发现候选项。",
+            actionTitle: "查看系统状态",
+            action: .openSystemStatus,
+            symbol: "checkmark.shield.fill",
+            tint: CNTheme.success,
+            pillText: "状态正常",
+            pillStyle: .success,
+            safetyHint: "系统状态为只读采样"
+        )
+    }
+
+    private var currentStatePanel: some View {
+        let focus = focusState
+        return VStack(alignment: .leading, spacing: 21) {
+            ContentSectionHeader(
+                "当前状态",
+                detail: "实时本机数据",
+                symbol: "gauge.with.dots.needle.67percent",
+                tint: focus.tint
             ) {
-                StatusPill(text: "只读概览", symbol: "eye", style: .neutral)
+                StatusPill(text: focus.pillText, symbol: focus.symbol, style: focus.pillStyle)
             }
 
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 38) {
-                    storageNarrative
-                    Spacer(minLength: 14)
+                HStack(alignment: .center, spacing: 34) {
+                    focusContent(focus)
+                    Spacer(minLength: 12)
                     StorageRing(used: usedBytes, total: store.diskTotalBytes)
                 }
-                VStack(alignment: .leading, spacing: 20) {
-                    HStack(spacing: 20) {
-                        StorageRing(used: usedBytes, total: store.diskTotalBytes)
-                        storageNarrative
-                    }
+                VStack(alignment: .leading, spacing: 18) {
+                    focusContent(focus)
+                    StorageRing(used: usedBytes, total: store.diskTotalBytes)
                 }
             }
 
-            factStrip
+            Divider().opacity(0.65)
+            summaryMetrics
         }
         .cnHeroPanel()
     }
 
-    private var storageNarrative: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(CNL10n.format("还有 %@ 可用", CleanNestFormatting.bytes(store.diskFreeBytes)))
-                .font(.system(size: 34, weight: .semibold, design: .rounded))
-                .tracking(-0.72)
-                .monospacedMetric()
-            Text(CNL10n.format(
-                "在 %@ 的磁盘中，已使用 %@。先扫描可清理内容，再逐项确认。",
-                CleanNestFormatting.bytes(store.diskTotalBytes),
-                CleanNestFormatting.bytes(usedBytes)
-            ))
+    private func focusContent(_ focus: FocusState) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(CNL10n.string(focus.title))
+                .font(.system(size: 28, weight: .semibold, design: .rounded))
+                .tracking(-0.45)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(CNL10n.string(focus.detail))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: 590, alignment: .leading)
-
-            HStack(spacing: 10) {
+                .frame(maxWidth: 650, alignment: .leading)
+            HStack(spacing: 11) {
                 Button {
-                    Task {
-                        await store.scanCleanup()
-                        store.selection = .cleanup
-                    }
+                    perform(focus.action)
                 } label: {
-                    Label(
-                        CNL10n.string(store.cleanupHasScanned ? "重新扫描" : "扫描可清理内容"),
-                        systemImage: "sparkle.magnifyingglass"
-                    )
+                    Label(CNL10n.string(focus.actionTitle), systemImage: focus.symbol)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(store.isWorking)
-                .shadow(color: CNTheme.accent.opacity(0.22), radius: 10, y: 4)
 
-                Text("不会自动删除")
+                Text(CNL10n.string(focus.safetyHint))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
-    private var factStrip: some View {
+    private var summaryMetrics: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) {
-                fact(
-                    title: "建议查看",
-                    value: store.cleanupHasScanned ? CleanNestFormatting.bytes(store.cleanupPotentialBytes) : "尚未扫描",
-                    detail: store.cleanupHasScanned ? "执行前可逐项取消" : "先建立可清理证据",
-                    tint: CNTheme.warning
-                )
-                fact(
-                    title: "系统状态",
-                    value: store.systemSnapshot?.healthScore.map { CNL10n.format("%d 分", $0) } ?? "等待检查",
-                    detail: "只读探测，不制造焦虑",
-                    tint: CNTheme.success
-                )
-                fact(
-                    title: "本机学习",
-                    value: CNL10n.format("%d 项偏好", store.evolutionMemory.learnedCleanupCount),
-                    detail: "只来自你的明确判断",
-                    tint: CNTheme.violet
-                )
-            }
-            VStack(spacing: 13) {
-                fact(title: "建议查看", value: store.cleanupHasScanned ? CleanNestFormatting.bytes(store.cleanupPotentialBytes) : "尚未扫描", detail: "执行前可逐项取消", tint: CNTheme.warning)
-                fact(title: "系统状态", value: store.systemSnapshot?.healthScore.map { CNL10n.format("%d 分", $0) } ?? "等待检查", detail: "只读探测，不制造焦虑", tint: CNTheme.success)
-                fact(title: "本机学习", value: CNL10n.format("%d 项偏好", store.evolutionMemory.learnedCleanupCount), detail: "只来自你的明确判断", tint: CNTheme.violet)
-            }
+            HStack(spacing: 10) { summaryMetricTiles }
+            VStack(spacing: 10) { summaryMetricTiles }
         }
     }
 
-    private func fact(title: String, value: String, detail: String, tint: Color) -> some View {
-        HStack(spacing: 11) {
-            Capsule()
-                .fill(tint)
-                .frame(width: 3, height: 34)
-                .shadow(color: tint.opacity(0.35), radius: 4)
+    @ViewBuilder
+    private var summaryMetricTiles: some View {
+        summaryMetric(
+            title: "可用空间",
+            value: store.diskTotalBytes > 0 ? CleanNestFormatting.bytes(store.diskFreeBytes) : "等待读取",
+            detail: diskUsedFraction.map { CNL10n.format("已使用 %@", CleanNestFormatting.percent($0 * 100)) } ?? "启动磁盘",
+            symbol: "internaldrive",
+            tint: diskUsedFraction.map { $0 >= 0.90 ? CNTheme.warning : CNTheme.cyan } ?? CNTheme.cyan
+        )
+        summaryMetric(
+            title: "清理扫描",
+            value: store.cleanupHasScanned ? CNL10n.format("%d 项待查看", store.cleanupCandidates.count) : "尚未扫描",
+            detail: store.cleanupHasScanned ? CNL10n.format("候选内容合计 %@", CleanNestFormatting.bytes(store.cleanupPotentialBytes)) : "扫描不会删除文件",
+            symbol: "checklist",
+            tint: CNTheme.accent
+        )
+        summaryMetric(
+            title: "内存压力",
+            value: memoryPressureLabel,
+            detail: memoryUsageDetail,
+            symbol: "memorychip",
+            tint: memoryPressureTint
+        )
+    }
+
+    private func summaryMetric(
+        title: String,
+        value: String,
+        detail: String,
+        symbol: String,
+        tint: Color
+    ) -> some View {
+        HStack(alignment: .top, spacing: 11) {
+            CNIconTile(symbol: symbol, tint: tint, size: 32)
             VStack(alignment: .leading, spacing: 4) {
                 Text(CNL10n.string(title))
                     .font(.caption)
@@ -156,89 +265,71 @@ struct OverviewView: View {
                 Text(CNL10n.string(value))
                     .font(.system(size: 17, weight: .semibold, design: .rounded))
                     .monospacedMetric()
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(CNL10n.string(detail))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, minHeight: 62, alignment: .topLeading)
+        .padding(13)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .stroke(Color.white.opacity(0.075), lineWidth: 0.65)
+                .stroke(tint.opacity(0.14), lineWidth: 0.65)
         )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(CNL10n.format("%@：%@。%@", title, value, detail))
     }
 
-    private var nextActions: some View {
+    private var commonTasks: some View {
         VStack(alignment: .leading, spacing: 13) {
             ContentSectionHeader(
-                "下一步",
-                detail: "选择一个明确任务，CleanNest 不会替你自动删除",
-                symbol: "arrow.right.circle",
+                "常用任务",
+                detail: "直接进入功能，不执行自动删除",
+                symbol: "square.grid.2x2",
                 tint: CNTheme.accent
             )
 
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) {
-                    actionTile(
-                        title: "看清最大文件夹",
-                        detail: "从主目录开始定位空间占用",
-                        symbol: "chart.pie",
-                        tint: CNTheme.cyan
-                    ) {
-                        store.selection = .analyze
-                        Task { if !store.diskHasScanned { await store.analyze() } }
-                    }
-                    actionTile(
-                        title: "管理已安装 App",
-                        detail: "预览本体与精确匹配的相关文件",
-                        symbol: "app.dashed",
-                        tint: CNTheme.violet
-                    ) {
-                        store.selection = .applications
-                        Task { if !store.applicationsHaveScanned { await store.scanApplications() } }
-                    }
-                    actionTile(
-                        title: "运行系统维护",
-                        detail: "按任务执行，不做含糊的一键加速",
-                        symbol: "wrench.and.screwdriver",
-                        tint: CNTheme.mint
-                    ) {
-                        store.selection = .maintenance
-                    }
-                }
-                VStack(spacing: 10) {
-                    actionTile(
-                    title: "看清最大文件夹",
-                    detail: "从主目录开始定位空间占用",
-                    symbol: "chart.pie",
-                    tint: CNTheme.cyan
-                ) {
-                    store.selection = .analyze
-                    Task { if !store.diskHasScanned { await store.analyze() } }
-                }
-                    actionTile(
-                    title: "管理已安装 App",
-                    detail: "预览 App 本体与精确匹配的相关文件",
-                    symbol: "app.dashed",
-                    tint: CNTheme.violet
-                ) {
-                    store.selection = .applications
-                    Task { if !store.applicationsHaveScanned { await store.scanApplications() } }
-                }
-                    actionTile(
-                    title: "运行系统维护",
-                    detail: "按任务执行，不做含糊的一键加速",
-                    symbol: "wrench.and.screwdriver",
-                    tint: CNTheme.mint
-                ) {
-                    store.selection = .maintenance
-                }
-                }
+                HStack(spacing: 12) { taskTiles }
+                VStack(spacing: 10) { taskTiles }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var taskTiles: some View {
+        actionTile(
+            title: "清理文件",
+            detail: "扫描缓存、安装包、归档、媒体与重复文件",
+            symbol: "sparkles",
+            tint: CNTheme.mint
+        ) {
+            if store.cleanupHasScanned {
+                store.selection = .cleanup
+            } else {
+                perform(.scanCleanup)
+            }
+        }
+        actionTile(
+            title: "卸载 App",
+            detail: "预览 App 本体与精确匹配的相关文件",
+            symbol: "app.dashed",
+            tint: CNTheme.violet
+        ) {
+            store.selection = .applications
+            Task { if !store.applicationsHaveScanned { await store.scanApplications() } }
+        }
+        actionTile(
+            title: "浏览磁盘",
+            detail: "按文件夹大小定位空间占用",
+            symbol: "chart.pie",
+            tint: CNTheme.cyan
+        ) {
+            store.selection = .analyze
+            Task { if !store.diskHasScanned { await store.analyze() } }
         }
     }
 
@@ -252,23 +343,86 @@ struct OverviewView: View {
         OverviewActionTile(title: title, detail: detail, symbol: symbol, tint: tint, action: action)
     }
 
-    private var activityAndLearning: some View {
-        SurfaceCard(title: "本机动态", symbol: "waveform.path", prominence: .quiet, tint: CNTheme.mint) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 20) {
-                    recentActivity
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Divider().frame(height: 50)
-                    learningAction
-                        .frame(maxWidth: .infinity, alignment: .leading)
+    private var recentResults: some View {
+        let statistics = ActivityStatistics(entries: store.activities)
+        return SurfaceCard(title: "最近结果", symbol: "clock.arrow.circlepath", prominence: .quiet, tint: CNTheme.mint) {
+            if store.activities.isEmpty {
+                HStack(alignment: .top, spacing: 11) {
+                    CNIconTile(symbol: "clock", tint: Color(nsColor: .secondaryLabelColor), size: 31)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("还没有操作记录").font(.subheadline.weight(.medium))
+                        Text("完成一次清理或维护后，这里会显示结果和恢复方式。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
                 }
-                VStack(alignment: .leading, spacing: 14) {
-                    recentActivity
-                    Divider()
-                    learningAction
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 18) {
+                        resultStatistics(statistics)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Divider().frame(height: 76)
+                        recentActivity
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    VStack(alignment: .leading, spacing: 14) {
+                        resultStatistics(statistics)
+                        Divider()
+                        recentActivity
+                    }
                 }
+
+                Label("记录统计；移到废纸篓不等于磁盘已释放。", systemImage: "info.circle")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+
+                Button {
+                    store.selection = .activity
+                } label: {
+                    Label("查看全部记录", systemImage: "arrow.right")
+                }
+                .buttonStyle(.borderless)
             }
         }
+    }
+
+    private func resultStatistics(_ statistics: ActivityStatistics) -> some View {
+        HStack(spacing: 20) {
+            resultStatistic(
+                label: "累计处理空间",
+                value: CleanNestFormatting.bytes(statistics.processedBytes),
+                detail: "来自清理与卸载记录"
+            )
+            resultStatistic(
+                label: "清理项目",
+                value: statistics.cleanedItems.formatted(),
+                detail: "已移到废纸篓"
+            )
+            resultStatistic(
+                label: "卸载 App",
+                value: statistics.uninstalledApplications.formatted(),
+                detail: "App 本体已移到废纸篓"
+            )
+        }
+    }
+
+    private func resultStatistic(label: String, value: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(CNL10n.string(label))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 20, weight: .semibold, design: .rounded))
+                .monospacedMetric()
+            Text(CNL10n.string(detail))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(CNL10n.format("%@：%@。%@", label, value, detail))
     }
 
     @ViewBuilder
@@ -283,167 +437,47 @@ struct OverviewView: View {
                 }
                 Spacer()
             }
-        } else {
-            HStack(alignment: .top, spacing: 11) {
-                CNIconTile(symbol: "clock", tint: Color(nsColor: .secondaryLabelColor), size: 31)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("还没有操作记录").font(.subheadline.weight(.medium))
-                    Text("完成一次清理或维护后，这里会显示结果和恢复方式。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
         }
     }
 
-    private var learningAction: some View {
-        Button {
-            store.selection = .evolution
-        } label: {
-            HStack(spacing: 11) {
-                CNIconTile(symbol: "sparkles.rectangle.stack", tint: CNTheme.violet, size: 31)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(store.evolutionMemory.learnedCleanupCount > 0 ? "查看已经学会的偏好" : "建立第一条本机偏好")
-                        .font(.subheadline.weight(.medium))
-                    Text("可检查、撤销或随时清空，不上传文件内容。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-            .contentShape(Rectangle())
+    private var memoryPressureLabel: String {
+        switch store.nativeMonitorSample?.memoryPressureLevel {
+        case .normal: return CNL10n.string("正常")
+        case .warning: return CNL10n.string("警告")
+        case .critical: return CNL10n.string("严重")
+        case .unknown: return CNL10n.string("未知")
+        case nil: return CNL10n.string("等待采样")
         }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct InsightLoopRail: View {
-    @EnvironmentObject private var store: AppStore
-
-    private var completed: [Bool] {
-        [
-            store.diskHasScanned,
-            store.diskEvidenceReport != nil,
-            store.selectedCleanupCount > 0,
-            store.activities.contains { $0.outcome == .success && $0.affectedItems > 0 },
-            store.evolutionMemory.enabledRuleCount > 0
-        ]
     }
 
-    private var currentIndex: Int {
-        completed.firstIndex(of: false) ?? max(0, completed.count - 1)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("你的洞察闭环")
-                        .font(.system(size: 15.5, weight: .semibold))
-                    Text("每一步都对应真实本机状态；点击任一步可继续。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                StatusPill(
-                    text: completed.allSatisfy { $0 } ? "闭环已建立" : "第 \(currentIndex + 1) / 5 步",
-                    symbol: completed.allSatisfy { $0 } ? "checkmark.circle" : "scope",
-                    style: completed.allSatisfy { $0 } ? .success : .neutral
-                )
-            }
-
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 0) {
-                    stage(0, "定位", "看见占用", "magnifyingglass") { openDisk() }
-                    connector(after: 0)
-                    stage(1, "解释", "确定性证据", "doc.text.magnifyingglass") { openDisk() }
-                    connector(after: 1)
-                    stage(2, "决策", "逐项选择", "checklist") { openCleanup() }
-                    connector(after: 2)
-                    stage(3, "验证", "实际结果", "checkmark.shield") { store.selection = .activity }
-                    connector(after: 3)
-                    stage(4, "学习", "审核规则", "sparkles.rectangle.stack") { store.selection = .evolution }
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    stage(0, "定位", "看见占用", "magnifyingglass") { openDisk() }
-                    stage(1, "解释", "确定性证据", "doc.text.magnifyingglass") { openDisk() }
-                    stage(2, "决策", "逐项选择", "checklist") { openCleanup() }
-                    stage(3, "验证", "实际结果", "checkmark.shield") { store.selection = .activity }
-                    stage(4, "学习", "审核规则", "sparkles.rectangle.stack") { store.selection = .evolution }
-                }
-            }
+    private var memoryUsageDetail: String {
+        guard let value = store.nativeMonitorSample?.memoryUsedPercent else {
+            return CNL10n.string("原生实时采样")
         }
-        .padding(17)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(
-                    LinearGradient(
-                        colors: [CNTheme.cyan.opacity(0.28), Color.white.opacity(0.08), CNTheme.violet.opacity(0.16)],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    ),
-                    lineWidth: 0.75
-                )
-        )
+        return CNL10n.format("内存已用 %@", CleanNestFormatting.percent(value))
     }
 
-    private func stage(
-        _ index: Int,
-        _ title: String,
-        _ detail: String,
-        _ symbol: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        let isComplete = completed[index]
-        let isCurrent = index == currentIndex && !isComplete
-        let tint = isComplete ? CNTheme.success : (isCurrent ? CNTheme.accent : Color.secondary)
-        return Button(action: action) {
-            HStack(spacing: 9) {
-                ZStack {
-                    Circle()
-                        .fill(tint.opacity(isCurrent ? 0.18 : 0.10))
-                    Image(systemName: isComplete ? "checkmark" : symbol)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(tint)
-                }
-                .frame(width: 30, height: 30)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(isCurrent || isComplete ? Color.primary : Color.secondary)
-                    Text(detail)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 7)
-            .contentShape(Rectangle())
+    private var memoryPressureTint: Color {
+        switch store.nativeMonitorSample?.memoryPressureLevel {
+        case .normal: return CNTheme.success
+        case .warning: return CNTheme.warning
+        case .critical: return CNTheme.danger
+        case .unknown, nil: return CNTheme.violet
         }
-        .buttonStyle(.plain)
-        .background(isCurrent ? CNTheme.accent.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 12))
-        .accessibilityLabel("\(title)，\(detail)，\(isComplete ? "已完成" : (isCurrent ? "当前步骤" : "尚未完成"))")
     }
 
-    private func connector(after index: Int) -> some View {
-        Capsule()
-            .fill(completed[index] ? CNTheme.success.opacity(0.45) : Color.secondary.opacity(0.14))
-            .frame(width: 18, height: 2)
-    }
-
-    private func openDisk() {
-        store.selection = .analyze
-        if !store.diskHasScanned { Task { await store.analyze() } }
-    }
-
-    private func openCleanup() {
-        store.selection = .cleanup
-        if !store.cleanupHasScanned { Task { await store.scanCleanup() } }
+    private func perform(_ action: FocusAction) {
+        switch action {
+        case .scanCleanup:
+            Task {
+                await store.scanCleanup()
+                store.selection = .cleanup
+            }
+        case .openCleanup:
+            store.selection = .cleanup
+        case .openSystemStatus:
+            store.selection = .status
+        }
     }
 }
 
@@ -473,7 +507,7 @@ private struct OverviewActionTile: View {
                     Text(CNL10n.string(detail))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
@@ -534,13 +568,14 @@ private struct StorageRing: View {
                 Text("\(Int((fraction * 100).rounded()))%")
                     .font(.system(size: 25, weight: .semibold, design: .rounded))
                     .monospacedMetric()
-                Text("已使用")
+                Text("磁盘已使用")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
         .frame(width: 148, height: 148)
         .padding(7)
-        .accessibilityLabel("磁盘已使用 \(Int((fraction * 100).rounded())) 百分比")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(CNL10n.format("磁盘已使用 %d 百分比", Int((fraction * 100).rounded())))
     }
 }
