@@ -76,11 +76,47 @@ public struct CleanupScanInsights: Codable, Equatable, Sendable {
     public let duplicateFileCount: Int
     public let duplicateBytes: Int64
     public let skippedCloudItemCount: Int
+    public let skippedSymbolicLinkCount: Int
+    public let skippedPackageCount: Int
+    public let skippedUnreadableItemCount: Int
+    public let skippedDepthLimitCount: Int
+    public let skippedUnsafeRootCount: Int
     public let reachedFileLimit: Bool
     public let reachedHashLimit: Bool
 
+    private enum CodingKeys: String, CodingKey {
+        case examinedFileCount
+        case installerCount
+        case archiveCount
+        case imageCount
+        case videoCount
+        case audioCount
+        case duplicateGroupCount
+        case duplicateFileCount
+        case duplicateBytes
+        case skippedCloudItemCount
+        case skippedSymbolicLinkCount
+        case skippedPackageCount
+        case skippedUnreadableItemCount
+        case skippedDepthLimitCount
+        case skippedUnsafeRootCount
+        case reachedFileLimit
+        case reachedHashLimit
+    }
+
     public var mediaCount: Int { imageCount + videoCount + audioCount }
     public var wasLimited: Bool { reachedFileLimit || reachedHashLimit }
+
+    public var skippedItemCount: Int {
+        [
+            skippedCloudItemCount,
+            skippedSymbolicLinkCount,
+            skippedPackageCount,
+            skippedUnreadableItemCount,
+            skippedDepthLimitCount,
+            skippedUnsafeRootCount
+        ].reduce(0, Self.saturatingAdd)
+    }
 
     public init(
         examinedFileCount: Int = 0,
@@ -93,6 +129,11 @@ public struct CleanupScanInsights: Codable, Equatable, Sendable {
         duplicateFileCount: Int = 0,
         duplicateBytes: Int64 = 0,
         skippedCloudItemCount: Int = 0,
+        skippedSymbolicLinkCount: Int = 0,
+        skippedPackageCount: Int = 0,
+        skippedUnreadableItemCount: Int = 0,
+        skippedDepthLimitCount: Int = 0,
+        skippedUnsafeRootCount: Int = 0,
         reachedFileLimit: Bool = false,
         reachedHashLimit: Bool = false
     ) {
@@ -106,8 +147,36 @@ public struct CleanupScanInsights: Codable, Equatable, Sendable {
         self.duplicateFileCount = duplicateFileCount
         self.duplicateBytes = duplicateBytes
         self.skippedCloudItemCount = skippedCloudItemCount
+        self.skippedSymbolicLinkCount = skippedSymbolicLinkCount
+        self.skippedPackageCount = skippedPackageCount
+        self.skippedUnreadableItemCount = skippedUnreadableItemCount
+        self.skippedDepthLimitCount = skippedDepthLimitCount
+        self.skippedUnsafeRootCount = skippedUnsafeRootCount
         self.reachedFileLimit = reachedFileLimit
         self.reachedHashLimit = reachedHashLimit
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            examinedFileCount: try values.decode(Int.self, forKey: .examinedFileCount),
+            installerCount: try values.decode(Int.self, forKey: .installerCount),
+            archiveCount: try values.decode(Int.self, forKey: .archiveCount),
+            imageCount: try values.decode(Int.self, forKey: .imageCount),
+            videoCount: try values.decode(Int.self, forKey: .videoCount),
+            audioCount: try values.decode(Int.self, forKey: .audioCount),
+            duplicateGroupCount: try values.decode(Int.self, forKey: .duplicateGroupCount),
+            duplicateFileCount: try values.decode(Int.self, forKey: .duplicateFileCount),
+            duplicateBytes: try values.decode(Int64.self, forKey: .duplicateBytes),
+            skippedCloudItemCount: try values.decode(Int.self, forKey: .skippedCloudItemCount),
+            skippedSymbolicLinkCount: try values.decodeIfPresent(Int.self, forKey: .skippedSymbolicLinkCount) ?? 0,
+            skippedPackageCount: try values.decodeIfPresent(Int.self, forKey: .skippedPackageCount) ?? 0,
+            skippedUnreadableItemCount: try values.decodeIfPresent(Int.self, forKey: .skippedUnreadableItemCount) ?? 0,
+            skippedDepthLimitCount: try values.decodeIfPresent(Int.self, forKey: .skippedDepthLimitCount) ?? 0,
+            skippedUnsafeRootCount: try values.decodeIfPresent(Int.self, forKey: .skippedUnsafeRootCount) ?? 0,
+            reachedFileLimit: try values.decode(Bool.self, forKey: .reachedFileLimit),
+            reachedHashLimit: try values.decode(Bool.self, forKey: .reachedHashLimit)
+        )
     }
 
     public func updatingCandidateCounts(from candidates: [CleanupCandidate]) -> CleanupScanInsights {
@@ -124,19 +193,62 @@ public struct CleanupScanInsights: Codable, Equatable, Sendable {
             duplicateFileCount: duplicateCandidates.count,
             duplicateBytes: duplicateCandidates.reduce(0) { $0 + $1.allocatedBytes },
             skippedCloudItemCount: skippedCloudItemCount,
+            skippedSymbolicLinkCount: skippedSymbolicLinkCount,
+            skippedPackageCount: skippedPackageCount,
+            skippedUnreadableItemCount: skippedUnreadableItemCount,
+            skippedDepthLimitCount: skippedDepthLimitCount,
+            skippedUnsafeRootCount: skippedUnsafeRootCount,
             reachedFileLimit: reachedFileLimit,
             reachedHashLimit: reachedHashLimit
         )
+    }
+
+    public func mergingTraversalEvidence(_ other: CleanupScanInsights) -> CleanupScanInsights {
+        CleanupScanInsights(
+            examinedFileCount: Self.saturatingAdd(examinedFileCount, other.examinedFileCount),
+            installerCount: Self.saturatingAdd(installerCount, other.installerCount),
+            archiveCount: Self.saturatingAdd(archiveCount, other.archiveCount),
+            imageCount: Self.saturatingAdd(imageCount, other.imageCount),
+            videoCount: Self.saturatingAdd(videoCount, other.videoCount),
+            audioCount: Self.saturatingAdd(audioCount, other.audioCount),
+            duplicateGroupCount: Self.saturatingAdd(duplicateGroupCount, other.duplicateGroupCount),
+            duplicateFileCount: Self.saturatingAdd(duplicateFileCount, other.duplicateFileCount),
+            duplicateBytes: Self.saturatingAdd(duplicateBytes, other.duplicateBytes),
+            skippedCloudItemCount: Self.saturatingAdd(skippedCloudItemCount, other.skippedCloudItemCount),
+            skippedSymbolicLinkCount: Self.saturatingAdd(skippedSymbolicLinkCount, other.skippedSymbolicLinkCount),
+            skippedPackageCount: Self.saturatingAdd(skippedPackageCount, other.skippedPackageCount),
+            skippedUnreadableItemCount: Self.saturatingAdd(skippedUnreadableItemCount, other.skippedUnreadableItemCount),
+            skippedDepthLimitCount: Self.saturatingAdd(skippedDepthLimitCount, other.skippedDepthLimitCount),
+            skippedUnsafeRootCount: Self.saturatingAdd(skippedUnsafeRootCount, other.skippedUnsafeRootCount),
+            reachedFileLimit: reachedFileLimit || other.reachedFileLimit,
+            reachedHashLimit: reachedHashLimit || other.reachedHashLimit
+        )
+    }
+
+    private static func saturatingAdd(_ lhs: Int, _ rhs: Int) -> Int {
+        guard rhs > 0 else { return max(0, lhs) }
+        return lhs > Int.max - rhs ? Int.max : lhs + rhs
+    }
+
+    private static func saturatingAdd(_ lhs: Int64, _ rhs: Int64) -> Int64 {
+        guard rhs > 0 else { return max(0, lhs) }
+        return lhs > Int64.max - rhs ? Int64.max : lhs + rhs
     }
 }
 
 public struct DownloadMediaScanResult: Sendable {
     public let candidates: [CleanupCandidate]
     public let insights: CleanupScanInsights
+    public let roots: [CleanupScanRootEvidence]
 
-    public init(candidates: [CleanupCandidate], insights: CleanupScanInsights) {
+    public init(
+        candidates: [CleanupCandidate],
+        insights: CleanupScanInsights,
+        roots: [CleanupScanRootEvidence] = []
+    ) {
         self.candidates = candidates
         self.insights = insights
+        self.roots = roots
     }
 }
 
@@ -481,7 +593,14 @@ public struct DownloadMediaScanner: Sendable {
 
     private struct CollectionResult {
         let records: [FileRecord]
+        let roots: [CleanupScanRootEvidence]
+        let examinedFileCount: Int
         let skippedCloudItems: Int
+        let skippedSymbolicLinks: Int
+        let skippedPackages: Int
+        let skippedUnreadableItems: Int
+        let skippedDepthLimits: Int
+        let skippedUnsafeRoots: Int
         let reachedFileLimit: Bool
     }
 
@@ -503,7 +622,11 @@ public struct DownloadMediaScanner: Sendable {
         let homeDirectory = self.homeDirectory
         let configuration = self.configuration
         let worker = Task.detached(priority: .userInitiated) {
-            let collection = Self.collectFiles(homeDirectory: homeDirectory, configuration: configuration)
+            let collection = Self.collectFiles(
+                homeDirectory: homeDirectory,
+                configuration: configuration,
+                includeMediaAndDuplicates: includeMediaAndDuplicates
+            )
             var candidatesByPath: [String: CleanupCandidate] = [:]
 
             for record in collection.records
@@ -548,14 +671,20 @@ public struct DownloadMediaScanner: Sendable {
                 return $0.url.path < $1.url.path
             }
             let baseInsights = CleanupScanInsights(
-                examinedFileCount: collection.records.count,
+                examinedFileCount: collection.examinedFileCount,
                 skippedCloudItemCount: collection.skippedCloudItems,
+                skippedSymbolicLinkCount: collection.skippedSymbolicLinks,
+                skippedPackageCount: collection.skippedPackages,
+                skippedUnreadableItemCount: collection.skippedUnreadableItems,
+                skippedDepthLimitCount: collection.skippedDepthLimits,
+                skippedUnsafeRootCount: collection.skippedUnsafeRoots,
                 reachedFileLimit: collection.reachedFileLimit,
                 reachedHashLimit: reachedHashLimit
             )
             return DownloadMediaScanResult(
                 candidates: candidates,
-                insights: baseInsights.updatingCandidateCounts(from: candidates)
+                insights: baseInsights.updatingCandidateCounts(from: candidates),
+                roots: collection.roots
             )
         }
         return await withTaskCancellationHandler {
@@ -567,7 +696,8 @@ public struct DownloadMediaScanner: Sendable {
 
     private static func collectFiles(
         homeDirectory: URL,
-        configuration: DownloadMediaScanConfiguration
+        configuration: DownloadMediaScanConfiguration,
+        includeMediaAndDuplicates: Bool
     ) -> CollectionResult {
         let fileManager = FileManager.default
         let resourceKeys: [URLResourceKey] = [
@@ -582,21 +712,55 @@ public struct DownloadMediaScanner: Sendable {
             .isUbiquitousItemKey,
             .ubiquitousItemDownloadingStatusKey
         ]
-        let roots: [(RootRole, URL)] = RootRole.scanOrder.map {
+        let roles = includeMediaAndDuplicates
+            ? RootRole.scanOrder
+            : [.desktop, .downloads]
+        let roots: [(RootRole, URL)] = roles.map {
             ($0, homeDirectory.appendingPathComponent($0.directoryName, isDirectory: true))
         }
+        let rootEvidence = roots.map { role, root in
+            CleanupScanRootEvidence(
+                name: role.displayName,
+                url: root,
+                homeDirectory: homeDirectory
+            )
+        }
         var records: [FileRecord] = []
+        var examinedFileCount = 0
         var skippedCloudItems = 0
+        var skippedSymbolicLinks = 0
+        var skippedPackages = 0
+        var skippedUnreadableItems = 0
+        var skippedDepthLimits = 0
+        var skippedUnsafeRoots = 0
         var reachedFileLimit = false
         let enumerationBatchSize = 256
 
-        for (role, root) in roots where fileManager.fileExists(atPath: root.path) {
+        for ((role, root), evidence) in zip(roots, rootEvidence) {
+            switch evidence.status {
+            case .checked:
+                break
+            case .unsafe:
+                skippedUnsafeRoots += 1
+                continue
+            case .unreadable:
+                skippedUnreadableItems += 1
+                continue
+            case .missing:
+                continue
+            }
             guard let enumerator = fileManager.enumerator(
                 at: root,
                 includingPropertiesForKeys: resourceKeys,
                 options: [.skipsHiddenFiles, .skipsPackageDescendants],
-                errorHandler: { _, _ in true }
-            ) else { continue }
+                errorHandler: { _, _ in
+                    skippedUnreadableItems += 1
+                    return true
+                }
+            ) else {
+                skippedUnreadableItems += 1
+                continue
+            }
 
             let rootDepth = root.pathComponents.count
             var exhausted = false
@@ -609,20 +773,32 @@ public struct DownloadMediaScanner: Sendable {
                             break
                         }
                         let depth = url.pathComponents.count - rootDepth
-                        guard let values = try? url.resourceValues(forKeys: Set(resourceKeys)) else { continue }
+                        guard let values = try? url.resourceValues(forKeys: Set(resourceKeys)) else {
+                            skippedUnreadableItems += 1
+                            continue
+                        }
 
                         if values.isSymbolicLink == true {
+                            skippedSymbolicLinks += 1
                             if values.isDirectory == true { enumerator.skipDescendants() }
                             continue
                         }
                         if values.isDirectory == true {
-                            if values.isPackage == true || depth >= configuration.maximumDepth {
+                            if values.isPackage == true {
+                                skippedPackages += 1
+                                enumerator.skipDescendants()
+                            } else if depth >= configuration.maximumDepth {
+                                skippedDepthLimits += 1
                                 enumerator.skipDescendants()
                             }
                             continue
                         }
-                        guard depth <= configuration.maximumDepth,
-                              values.isRegularFile == true else { continue }
+                        guard values.isRegularFile == true else { continue }
+                        examinedFileCount += 1
+                        guard depth <= configuration.maximumDepth else {
+                            skippedDepthLimits += 1
+                            continue
+                        }
 
                         if values.isUbiquitousItem == true,
                            values.ubiquitousItemDownloadingStatus != .current {
@@ -662,7 +838,14 @@ public struct DownloadMediaScanner: Sendable {
 
         return CollectionResult(
             records: records,
+            roots: rootEvidence,
+            examinedFileCount: examinedFileCount,
             skippedCloudItems: skippedCloudItems,
+            skippedSymbolicLinks: skippedSymbolicLinks,
+            skippedPackages: skippedPackages,
+            skippedUnreadableItems: skippedUnreadableItems,
+            skippedDepthLimits: skippedDepthLimits,
+            skippedUnsafeRoots: skippedUnsafeRoots,
             reachedFileLimit: reachedFileLimit
         )
     }

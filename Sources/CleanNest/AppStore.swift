@@ -158,6 +158,8 @@ enum AgentWorkspaceRecoveryPhase: Equatable {
 
 @MainActor
 final class AppStore: ObservableObject {
+    static let startupDiskRoot = URL(fileURLWithPath: "/", isDirectory: true).standardizedFileURL
+
     @Published var selection: SidebarItem? = .overview
     @Published var phase: OperationPhase = .idle
     @Published var engine: EngineInstallation?
@@ -199,6 +201,7 @@ final class AppStore: ObservableObject {
     @Published var includeApplicationCaches = false
     @Published var includeMediaAndDuplicates = true
     @Published private(set) var cleanupScanInsights = CleanupScanInsights.empty
+    @Published private(set) var cleanupScanSession: CleanupScanSession?
     @Published private(set) var cleanupScanIncludedMediaAndDuplicates = false
     @Published var developerMode = true
     @Published var cleanupHasScanned = false
@@ -245,7 +248,7 @@ final class AppStore: ObservableObject {
     @Published var applicationsHaveScanned = false
 
     @Published var diskReport: DiskReport?
-    @Published var diskRoot = FileManager.default.homeDirectoryForCurrentUser
+    @Published var diskRoot = AppStore.startupDiskRoot
     @Published var diskHasScanned = false
     @Published private(set) var diskScanProgress: DiskScanProgress?
     @Published private(set) var diskPartialReport: DiskReport?
@@ -495,6 +498,14 @@ final class AppStore: ObservableObject {
         cleanupCandidates.reduce(0) { $0 + (selectedCleanupIDs.contains($1.id) ? 1 : 0) }
     }
 
+    var cleanupBasketSummary: CleanupBasketSummary {
+        CleanupBasketSummary(
+            candidates: cleanupCandidates,
+            selectedIDs: selectedCleanupIDs,
+            currentFreeBytes: diskFreeBytes
+        )
+    }
+
     var selectedAgentWorkspaceCandidates: [AgentWorkspaceActionCandidate] {
         guard let snapshot = agentWorkspaceSnapshot else { return [] }
         return snapshot.actionCandidates.filter { selectedAgentWorkspaceCandidateIDs.contains($0.id) }
@@ -544,6 +555,12 @@ final class AppStore: ObservableObject {
 
     var currentDiskTraversalMayRequireFullDiskAccess: Bool {
         diskTraversalMayRequireFullDiskAccess(diskRoot)
+    }
+
+    var startupDiskDisplayName: String {
+        let name = FileManager.default.displayName(atPath: Self.startupDiskRoot.path)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "Macintosh HD" : name
     }
 
     var currentDiskTraversalIsBlocked: Bool {
@@ -2813,10 +2830,11 @@ final class AppStore: ObservableObject {
             }
             cleanupCandidates = response.candidates
             cleanupScanInsights = response.insights
+            cleanupScanSession = response.session
             cleanupScanIncludedMediaAndDuplicates = includeMediaAndDuplicates
             selectedCleanupIDs = Set(response.candidates.filter(\.isRecommended).map(\.id))
             cleanupHasScanned = true
-            cleanupScanCompletedAt = Date()
+            cleanupScanCompletedAt = response.session.completedAt
             await refreshMountedInstallerVolumes(reportFailure: true)
             persistCleanupPreview()
             lastTechnicalDetail = "独立扫描服务已完成 \(response.candidates.count) 项结果，耗时 \(String(format: "%.2f", response.elapsedSeconds)) 秒；高成本文件遍历未在 CleanNest 主进程内执行。"
@@ -2841,28 +2859,34 @@ final class AppStore: ObservableObject {
     }
 
     func toggleCleanup(_ candidate: CleanupCandidate) {
-        if selectedCleanupIDs.contains(candidate.id) {
-            selectedCleanupIDs.remove(candidate.id)
-        } else {
-            selectedCleanupIDs.insert(candidate.id)
-        }
+        applyCleanupSelection(.invert, candidates: [candidate])
     }
 
     func selectAllCleanup() {
-        selectedCleanupIDs = Set(cleanupCandidates.map(\.id))
+        applyCleanupSelection(.selectAll, candidates: cleanupCandidates)
     }
 
     func setCleanupSelection(_ candidates: [CleanupCandidate], selected: Bool) {
-        let ids = Set(candidates.map(\.id))
-        if selected {
-            selectedCleanupIDs.formUnion(ids)
-        } else {
-            selectedCleanupIDs.subtract(ids)
-        }
+        applyCleanupSelection(selected ? .selectAll : .clear, candidates: candidates)
+    }
+
+    func invertCleanupSelection(_ candidates: [CleanupCandidate]) {
+        applyCleanupSelection(.invert, candidates: candidates)
     }
 
     func clearCleanupSelection() {
-        selectedCleanupIDs.removeAll()
+        applyCleanupSelection(.clear, candidates: cleanupCandidates)
+    }
+
+    private func applyCleanupSelection(
+        _ action: CleanupBatchSelectionAction,
+        candidates: [CleanupCandidate]
+    ) {
+        selectedCleanupIDs = CleanupSelectionPolicy.applying(
+            action,
+            candidateIDs: Set(candidates.map(\.id)),
+            to: selectedCleanupIDs
+        )
     }
 
     func refreshMountedInstallerVolumes(reportFailure: Bool = false) async {
@@ -2968,17 +2992,25 @@ final class AppStore: ObservableObject {
         let effectiveIDs = selectedCleanupIDs.intersection(currentIDs)
         let selected = cleanupCandidates.filter { effectiveIDs.contains($0.id) }
         guard !selected.isEmpty else { return }
+        let candidateBytes = CleanupBasketSummary(
+            candidates: selected,
+            selectedIDs: effectiveIDs,
+            currentFreeBytes: 0
+        ).selectedBytes
+        let freeBytesBefore = currentDiskCapacity()?.free ?? diskFreeBytes
 
         phase = .executing("正在把所选内容移到废纸篓…")
         let outcomes = await trashService.trashCleanupCandidates(selected)
         let succeededPaths = Set(outcomes.filter(\.succeeded).map { $0.source.standardizedFileURL.path })
         let failed = outcomes.filter { !$0.succeeded }
-        let released = selected
-            .filter { succeededPaths.contains($0.url.standardizedFileURL.path) }
-            .reduce(0) { $0 + $1.allocatedBytes }
         let succeededCandidates = selected.filter {
             succeededPaths.contains($0.url.standardizedFileURL.path)
         }
+        let trashedBytes = CleanupBasketSummary(
+            candidates: succeededCandidates,
+            selectedIDs: Set(succeededCandidates.map(\.id)),
+            currentFreeBytes: 0
+        ).selectedBytes
 
         for candidate in succeededCandidates {
             evolutionMemory.recordCleanup(candidate, decision: .cleaned)
@@ -2990,6 +3022,15 @@ final class AppStore: ObservableObject {
         selectedCleanupIDs.subtract(selected.map(\.id))
         invalidateCleanupAI()
         refreshDiskCapacity()
+        let freeBytesAfter = diskFreeBytes
+        let apfsDelta = freeBytesAfter >= freeBytesBefore
+            ? freeBytesAfter - freeBytesBefore
+            : -(freeBytesBefore - freeBytesAfter)
+        let cleanupResult = CleanupActivityResult(
+            candidateBytes: candidateBytes,
+            trashedBytes: trashedBytes,
+            apfsFreeBytesDelta: apfsDelta
+        )
         persistCleanupPreview()
 
         if failed.isEmpty {
@@ -2999,8 +3040,9 @@ final class AppStore: ObservableObject {
                 detail: "所选内容已移到废纸篓，可在清空前恢复。",
                 outcome: .success,
                 affectedItems: succeededPaths.count,
-                bytes: released,
-                category: .cleanup
+                bytes: trashedBytes,
+                category: .cleanup,
+                cleanupResult: cleanupResult
             )
         } else {
             phase = .failed("已完成 \(succeededPaths.count) 项，\(failed.count) 项未成功")
@@ -3010,8 +3052,9 @@ final class AppStore: ObservableObject {
                 detail: "部分项目因权限或路径变化被安全跳过。",
                 outcome: .partial,
                 affectedItems: succeededPaths.count,
-                bytes: released,
-                category: .cleanup
+                bytes: trashedBytes,
+                category: .cleanup,
+                cleanupResult: cleanupResult
             )
         }
     }
@@ -4166,11 +4209,21 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func refreshDiskCapacity() {
+    private func currentDiskCapacity() -> (total: Int64, free: Int64)? {
         let path = FileManager.default.homeDirectoryForCurrentUser.path
-        guard let attributes = try? FileManager.default.attributesOfFileSystem(forPath: path) else { return }
-        diskTotalBytes = (attributes[.systemSize] as? NSNumber)?.int64Value ?? 0
-        diskFreeBytes = (attributes[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
+        guard let attributes = try? FileManager.default.attributesOfFileSystem(forPath: path) else {
+            return nil
+        }
+        return (
+            (attributes[.systemSize] as? NSNumber)?.int64Value ?? 0,
+            (attributes[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
+        )
+    }
+
+    private func refreshDiskCapacity() {
+        guard let capacity = currentDiskCapacity() else { return }
+        diskTotalBytes = capacity.total
+        diskFreeBytes = capacity.free
     }
 
     private func addActivity(
@@ -4179,7 +4232,8 @@ final class AppStore: ObservableObject {
         outcome: ActivityEntry.Outcome,
         affectedItems: Int = 0,
         bytes: Int64 = 0,
-        category: ActivityEntry.Category? = nil
+        category: ActivityEntry.Category? = nil,
+        cleanupResult: CleanupActivityResult? = nil
     ) {
         let entry = ActivityEntry(
             title: title,
@@ -4187,7 +4241,8 @@ final class AppStore: ObservableObject {
             outcome: outcome,
             affectedItems: affectedItems,
             bytes: bytes,
-            category: category
+            category: category,
+            cleanupResult: cleanupResult
         )
         activities.insert(entry, at: 0)
         activities = Array(activities.prefix(100))
@@ -4745,6 +4800,15 @@ final class AppStore: ObservableObject {
         diskFreeBytes = 148_000_000_000
         seedDemoAgentWorkspace(home: home)
 
+        let demoDuplicateModifiedAt = Date().addingTimeInterval(-3_900_000)
+        let demoRetainedModifiedAt = Date().addingTimeInterval(-4_200_000)
+        let demoRetainedURL = home.appendingPathComponent("Movies/访谈原片.mov")
+        let demoRetainedIdentity = CleanupFileIdentity(
+            deviceID: 1,
+            fileID: 8001,
+            logicalBytes: 2_640_000_000,
+            modifiedAt: demoRetainedModifiedAt
+        )
         cleanupCandidates = [
             CleanupCandidate(name: "DerivedData", url: home.appendingPathComponent("Library/Developer/Xcode/DerivedData/Demo"), kind: .developer, allocatedBytes: 4_820_000_000, modifiedAt: Date().addingTimeInterval(-1_900_000), isRecommended: true, detail: "Xcode 会在需要时重新生成"),
             CleanupCandidate(name: "Homebrew 下载缓存", url: home.appendingPathComponent("Library/Caches/Homebrew/downloads"), kind: .packageManager, allocatedBytes: 2_360_000_000, modifiedAt: Date().addingTimeInterval(-1_200_000), isRecommended: true, detail: "安装包可重新下载"),
@@ -4752,22 +4816,69 @@ final class AppStore: ObservableObject {
             CleanupCandidate(name: CleanupScanner.npmCacheDisplayName, url: home.appendingPathComponent(".npm/_cacache/content-v2"), kind: .packageManager, allocatedBytes: 890_000_000, modifiedAt: Date().addingTimeInterval(-3 * 86_400), isRecommended: false, detail: CleanupScanner.npmCacheDetail),
             CleanupCandidate(name: "旧诊断日志", url: home.appendingPathComponent("Library/Logs/DiagnosticReports"), kind: .logs, allocatedBytes: 124_000_000, modifiedAt: Date().addingTimeInterval(-7_800_000), isRecommended: false, detail: "排查问题时可能有用"),
             CleanupCandidate(name: "素材归档.zip", url: home.appendingPathComponent("Downloads/素材归档.zip"), kind: .archive, allocatedBytes: 760_000_000, modifiedAt: Date().addingTimeInterval(-1_600_000), isRecommended: false, detail: "普通 ZIP 资料归档；不能仅凭扩展名判断可删除"),
-            CleanupCandidate(name: "访谈原片.mov", url: home.appendingPathComponent("Movies/访谈原片.mov"), kind: .video, allocatedBytes: 2_640_000_000, modifiedAt: Date().addingTimeInterval(-4_200_000), isRecommended: false, detail: "较大的视频文件 · 来自影片 · 仅供手动复核"),
-            CleanupCandidate(name: "访谈原片 副本.mov", url: home.appendingPathComponent("Downloads/访谈原片 副本.mov"), kind: .duplicate, allocatedBytes: 2_640_000_000, modifiedAt: Date().addingTimeInterval(-3_900_000), isRecommended: false, detail: "与“访谈原片.mov”字节完全相同；保留该副本，执行前会重新核验 SHA-256")
+            CleanupCandidate(name: "ScreenShot_2026-08-24_191515.png", url: home.appendingPathComponent("Desktop/ScreenShot_2026-08-24_191515.png"), kind: .screenshot, allocatedBytes: 12_600_000, modifiedAt: Date().addingTimeInterval(-259_200), isRecommended: false, detail: "截图文件 · 个人文件，默认不勾选"),
+            CleanupCandidate(name: "截屏2026-08-20 10.18.42.png", url: home.appendingPathComponent("Pictures/截屏2026-08-20 10.18.42.png"), kind: .screenshot, allocatedBytes: 8_400_000, modifiedAt: Date().addingTimeInterval(-604_800), isRecommended: false, detail: "截图文件 · 个人文件，默认不勾选"),
+            CleanupCandidate(name: "访谈原片.mov", url: demoRetainedURL, kind: .video, allocatedBytes: 2_640_000_000, modifiedAt: demoRetainedModifiedAt, isRecommended: false, detail: "较大的视频文件 · 来自影片 · 仅供手动复核", fileIdentity: demoRetainedIdentity),
+            CleanupCandidate(
+                name: "访谈原片 副本.mov",
+                url: home.appendingPathComponent("Downloads/访谈原片 副本.mov"),
+                kind: .duplicate,
+                allocatedBytes: 2_640_000_000,
+                modifiedAt: demoDuplicateModifiedAt,
+                isRecommended: false,
+                detail: "与“访谈原片.mov”字节完全相同；执行前会重新核验 SHA-256",
+                fileIdentity: CleanupFileIdentity(
+                    deviceID: 1,
+                    fileID: 8002,
+                    logicalBytes: 2_640_000_000,
+                    modifiedAt: demoDuplicateModifiedAt
+                ),
+                duplicateEvidence: DuplicateFileEvidence(
+                    groupID: "demo-video-group",
+                    contentSHA256: String(repeating: "a", count: 64),
+                    retainedURL: demoRetainedURL,
+                    retainedIdentity: demoRetainedIdentity,
+                    groupFileCount: 2
+                )
+            )
         ]
         cleanupScanInsights = CleanupScanInsights(
             examinedFileCount: 1_284,
             installerCount: 1,
             archiveCount: 1,
+            imageCount: 2,
             videoCount: 1,
             duplicateGroupCount: 1,
             duplicateFileCount: 1,
-            duplicateBytes: 2_640_000_000
+            duplicateBytes: 2_640_000_000,
+            skippedCloudItemCount: 2,
+            skippedSymbolicLinkCount: 3,
+            skippedPackageCount: 7,
+            skippedDepthLimitCount: 4
         )
         cleanupScanIncludedMediaAndDuplicates = true
         selectedCleanupIDs = Set(cleanupCandidates.filter(\.isRecommended).map(\.id))
         cleanupHasScanned = true
-        cleanupScanCompletedAt = Date()
+        let demoScanCompletedAt = Date().addingTimeInterval(-45)
+        cleanupScanCompletedAt = demoScanCompletedAt
+        cleanupScanSession = CleanupScanSession(
+            requestID: "demo-cleanup-session",
+            startedAt: demoScanCompletedAt.addingTimeInterval(-2.4),
+            completedAt: demoScanCompletedAt,
+            elapsedSeconds: 2.4,
+            roots: [
+                CleanupScanRootEvidence(name: "桌面", pathHint: "~/Desktop", status: .checked),
+                CleanupScanRootEvidence(name: "下载", pathHint: "~/Downloads", status: .checked),
+                CleanupScanRootEvidence(name: "图片", pathHint: "~/Pictures", status: .checked),
+                CleanupScanRootEvidence(name: "影片", pathHint: "~/Movies", status: .checked),
+                CleanupScanRootEvidence(name: "音乐", pathHint: "~/Music", status: .checked),
+                CleanupScanRootEvidence(name: "文稿", pathHint: "~/Documents", status: .checked),
+                CleanupScanRootEvidence(name: "Xcode DerivedData", pathHint: "~/Library/Developer/Xcode/DerivedData", status: .checked),
+                CleanupScanRootEvidence(name: "Homebrew 缓存", pathHint: "~/Library/Caches/Homebrew", status: .checked)
+            ],
+            insights: cleanupScanInsights,
+            candidates: cleanupCandidates
+        )
         let demoModelID = "Qwen3.8-27B-Uncensored-8bit"
         let demoModelPath = home
             .appendingPathComponent("Models/MLX/Qwen3.8-27B-Uncensored-8bit", isDirectory: true)
@@ -4936,7 +5047,20 @@ final class AppStore: ObservableObject {
             diskAIPhase = .completed
         }
         activities = [
-            ActivityEntry(date: Date().addingTimeInterval(-7_200), title: "清理空间", detail: "14 项已移到废纸篓，可在清空前恢复。", outcome: .success, affectedItems: 14, bytes: 3_820_000_000, category: .cleanup),
+            ActivityEntry(
+                date: Date().addingTimeInterval(-7_200),
+                title: "清理空间",
+                detail: "14 项已移到废纸篓，可在清空前恢复。",
+                outcome: .success,
+                affectedItems: 14,
+                bytes: 3_820_000_000,
+                category: .cleanup,
+                cleanupResult: CleanupActivityResult(
+                    candidateBytes: 4_120_000_000,
+                    trashedBytes: 3_820_000_000,
+                    apfsFreeBytesDelta: 1_200_000
+                )
+            ),
             ActivityEntry(date: Date().addingTimeInterval(-86_400), title: "卸载 Sample App", detail: "App 与精确匹配的相关文件已移到废纸篓。", outcome: .success, affectedItems: 3, bytes: 430_000_000, category: .applicationUninstall),
             ActivityEntry(date: Date().addingTimeInterval(-172_800), title: "重建快速预览缓存", detail: "系统维护任务已完成。", outcome: .success, affectedItems: 1)
         ]

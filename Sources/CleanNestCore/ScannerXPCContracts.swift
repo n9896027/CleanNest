@@ -2,7 +2,7 @@ import Foundation
 
 public enum CleanNestScannerService {
     public static let bundleIdentifier = "com.zone.cleannest.scanner"
-    public static let protocolVersion = 3
+    public static let protocolVersion = 4
 }
 
 /// The XPC boundary intentionally transports only JSON `Data`. This keeps the
@@ -124,17 +124,20 @@ public struct CleanupScannerResponse: Codable, Equatable, Sendable {
     public let requestID: String
     public let candidates: [CleanupCandidate]
     public let insights: CleanupScanInsights
+    public let session: CleanupScanSession
     public let elapsedSeconds: Double
 
     public init(
         requestID: String,
         candidates: [CleanupCandidate],
         insights: CleanupScanInsights,
+        session: CleanupScanSession,
         elapsedSeconds: Double
     ) {
         self.requestID = requestID
         self.candidates = candidates
         self.insights = insights
+        self.session = session
         self.elapsedSeconds = elapsedSeconds
     }
 }

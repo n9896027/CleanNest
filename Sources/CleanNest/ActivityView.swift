@@ -441,8 +441,10 @@ private struct ActivityDetailView: View {
             }
 
             InlineBanner(
-                title: "这是一条本机结果记录",
-                detail: "它能说明当时发生了什么，但不会重新执行操作。需要恢复文件时，请先在废纸篓或对应功能页核对当前状态。",
+                title: entry.cleanupResult == nil ? "这是一条本机结果记录" : "三个数字代表不同事情",
+                detail: entry.cleanupResult == nil
+                    ? "它能说明当时发生了什么，但不会重新执行操作。需要恢复文件时，请先在废纸篓或对应功能页核对当前状态。"
+                    : "候选体积是你当时勾选的量；移入废纸篓体积是成功处理的量；APFS 变化是操作前后立即实测，可受其他系统活动影响。只移入废纸篓通常不会立即释放空间。",
                 kind: .info
             )
 
@@ -460,7 +462,13 @@ private struct ActivityDetailView: View {
     private var detailFacts: some View {
         detailFact("类型", categoryLabel, symbol: "tray.full")
         detailFact("项目", entry.affectedItems.formatted(), symbol: "number")
-        detailFact("记录体积", CleanNestFormatting.bytes(entry.bytes), symbol: "internaldrive")
+        if let result = entry.cleanupResult {
+            detailFact("候选体积", CleanNestFormatting.bytes(result.candidateBytes), symbol: "shippingbox")
+            detailFact("移入废纸篓", CleanNestFormatting.bytes(result.trashedBytes), symbol: "trash")
+            detailFact("APFS 实测变化", apfsDeltaLabel(result.apfsFreeBytesDelta), symbol: "internaldrive")
+        } else {
+            detailFact("记录体积", CleanNestFormatting.bytes(entry.bytes), symbol: "internaldrive")
+        }
         detailFact("记录 ID", String(entry.id.uuidString.prefix(8)), symbol: "number.square")
     }
 
@@ -483,6 +491,15 @@ private struct ActivityDetailView: View {
         case .applicationUninstall: return "App 卸载"
         case .other: return "维护与其他"
         }
+    }
+
+    private func apfsDeltaLabel(_ bytes: Int64) -> String {
+        if bytes > 0 { return "+" + CleanNestFormatting.bytes(bytes) }
+        if bytes < 0 {
+            let magnitude = bytes == Int64.min ? Int64.max : -bytes
+            return "−" + CleanNestFormatting.bytes(magnitude)
+        }
+        return "0 B"
     }
 }
 
@@ -515,9 +532,23 @@ private struct ActivityRow: View {
                 }
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.tertiary)
+                if let result = entry.cleanupResult {
+                    Text("候选 \(CleanNestFormatting.bytes(result.candidateBytes)) · 移入废纸篓 \(CleanNestFormatting.bytes(result.trashedBytes)) · APFS \(apfsDeltaLabel(result.apfsFreeBytesDelta))")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
             }
             Spacer()
         }
         .padding(.vertical, 12)
+    }
+
+    private func apfsDeltaLabel(_ bytes: Int64) -> String {
+        if bytes > 0 { return "+" + CleanNestFormatting.bytes(bytes) }
+        if bytes < 0 {
+            let magnitude = bytes == Int64.min ? Int64.max : -bytes
+            return "−" + CleanNestFormatting.bytes(magnitude)
+        }
+        return "0 B"
     }
 }

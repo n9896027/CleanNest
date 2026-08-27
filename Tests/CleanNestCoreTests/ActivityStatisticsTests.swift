@@ -64,8 +64,46 @@ final class ActivityStatisticsTests: XCTestCase {
         let statistics = ActivityStatistics(entries: [entry])
 
         XCTAssertNil(entry.category)
+        XCTAssertNil(entry.cleanupResult)
         XCTAssertEqual(statistics.processedBytes, 2_048)
         XCTAssertEqual(statistics.cleanedItems, 4)
+    }
+
+    func testCleanupResultKeepsCandidateTrashAndAPFSFactsSeparateAcrossRoundTrip() throws {
+        let entry = ActivityEntry(
+            title: "清理空间",
+            detail: "partial",
+            outcome: .partial,
+            affectedItems: 2,
+            bytes: 700,
+            category: .cleanup,
+            cleanupResult: CleanupActivityResult(
+                candidateBytes: 1_000,
+                trashedBytes: 700,
+                apfsFreeBytesDelta: -128
+            )
+        )
+
+        let decoded = try JSONDecoder().decode(
+            ActivityEntry.self,
+            from: JSONEncoder().encode(entry)
+        )
+
+        XCTAssertEqual(decoded, entry)
+        XCTAssertEqual(decoded.cleanupResult?.candidateBytes, 1_000)
+        XCTAssertEqual(decoded.cleanupResult?.trashedBytes, 700)
+        XCTAssertEqual(decoded.cleanupResult?.apfsFreeBytesDelta, -128)
+        XCTAssertEqual(ActivityStatistics(entries: [decoded]).processedBytes, 700)
+    }
+
+    func testCleanupResultClampsInvalidPersistedVolumes() throws {
+        let data = #"{"candidateBytes":-1,"trashedBytes":-2,"apfsFreeBytesDelta":-9223372036854775808}"#
+            .data(using: .utf8)!
+        let result = try JSONDecoder().decode(CleanupActivityResult.self, from: data)
+
+        XCTAssertEqual(result.candidateBytes, 0)
+        XCTAssertEqual(result.trashedBytes, 0)
+        XCTAssertEqual(result.apfsFreeBytesDelta, -Int64.max)
     }
 
     func testLifetimeTotalsSurviveDetailListResetAndRoundTrip() throws {

@@ -1,10 +1,27 @@
 import Foundation
 
+public struct CleanupRuleScanResult: Sendable {
+    public let candidates: [CleanupCandidate]
+    public let insights: CleanupScanInsights
+    public let roots: [CleanupScanRootEvidence]
+
+    public init(
+        candidates: [CleanupCandidate],
+        insights: CleanupScanInsights,
+        roots: [CleanupScanRootEvidence]
+    ) {
+        self.candidates = candidates
+        self.insights = insights
+        self.roots = roots
+    }
+}
+
 public struct CleanupScanner: Sendable {
     public static let npmCacheDisplayName = "npm 下载缓存"
     public static let npmCacheDetail = "用途：npm 在安装、更新依赖或 CLI 工具时下载并留存的包压缩包和注册表元数据；不是项目源码，也不是已安装包或程序本体。清理不会卸载现有内容，以后需要相同包时会重新下载。"
 
     private struct Rule: Sendable {
+        let name: String
         let root: URL
         let kind: CleanupKind
         let minimumAgeDays: Int
@@ -21,11 +38,19 @@ public struct CleanupScanner: Sendable {
     }
 
     public func scan(includeApplicationCaches: Bool = false) async -> [CleanupCandidate] {
+        await scanWithEvidence(includeApplicationCaches: includeApplicationCaches).candidates
+    }
+
+    public func scanWithEvidence(
+        includeApplicationCaches: Bool = false
+    ) async -> CleanupRuleScanResult {
+        let homeDirectory = self.homeDirectory
         let worker = Task.detached(priority: .userInitiated) {
             let now = Date()
             let day: TimeInterval = 86_400
             var rules = [
                 Rule(
+                    name: "Xcode DerivedData",
                     root: homeDirectory.appendingPathComponent("Library/Developer/Xcode/DerivedData", isDirectory: true),
                     kind: .developer,
                     minimumAgeDays: 7,
@@ -35,6 +60,7 @@ public struct CleanupScanner: Sendable {
                     maximumChildren: 250
                 ),
                 Rule(
+                    name: "Homebrew 缓存",
                     root: homeDirectory.appendingPathComponent("Library/Caches/Homebrew", isDirectory: true),
                     kind: .packageManager,
                     minimumAgeDays: 7,
@@ -44,6 +70,7 @@ public struct CleanupScanner: Sendable {
                     maximumChildren: 250
                 ),
                 Rule(
+                    name: "npm 缓存",
                     root: homeDirectory.appendingPathComponent(".npm/_cacache", isDirectory: true),
                     kind: .packageManager,
                     minimumAgeDays: 14,
@@ -53,6 +80,7 @@ public struct CleanupScanner: Sendable {
                     maximumChildren: 100
                 ),
                 Rule(
+                    name: "pip 缓存",
                     root: homeDirectory.appendingPathComponent(".cache/pip", isDirectory: true),
                     kind: .packageManager,
                     minimumAgeDays: 14,
@@ -62,6 +90,7 @@ public struct CleanupScanner: Sendable {
                     maximumChildren: 100
                 ),
                 Rule(
+                    name: "应用日志",
                     root: homeDirectory.appendingPathComponent("Library/Logs", isDirectory: true),
                     kind: .logs,
                     minimumAgeDays: 30,
@@ -75,6 +104,7 @@ public struct CleanupScanner: Sendable {
             if includeApplicationCaches {
                 rules.append(
                     Rule(
+                        name: "应用缓存",
                         root: homeDirectory.appendingPathComponent("Library/Caches", isDirectory: true),
                         kind: .appCache,
                         minimumAgeDays: 30,
@@ -87,15 +117,54 @@ public struct CleanupScanner: Sendable {
             }
 
             var candidates: [CleanupCandidate] = []
-            ruleLoop: for rule in rules where FileManager.default.fileExists(atPath: rule.root.path) {
+            let roots = rules.map {
+                CleanupScanRootEvidence(
+                    name: $0.name,
+                    url: $0.root,
+                    homeDirectory: homeDirectory
+                )
+            }
+            var examinedItemCount = 0
+            var skippedSymbolicLinks = 0
+            var skippedPackages = 0
+            var skippedUnreadableItems = 0
+            var skippedUnsafeRoots = 0
+            var reachedFileLimit = false
+
+            ruleLoop: for (rule, evidence) in zip(rules, roots) {
                 guard !Task.isCancelled else { break ruleLoop }
-                for child in FileTree.directChildren(of: rule.root).prefix(rule.maximumChildren) {
+                switch evidence.status {
+                case .checked:
+                    break
+                case .unsafe:
+                    skippedUnsafeRoots += 1
+                    continue
+                case .unreadable:
+                    skippedUnreadableItems += 1
+                    continue
+                case .missing:
+                    continue
+                }
+                let children = FileTree.directChildren(of: rule.root)
+                if children.count > rule.maximumChildren { reachedFileLimit = true }
+                for child in children.prefix(rule.maximumChildren) {
                     guard !Task.isCancelled else { break ruleLoop }
+                    examinedItemCount += 1
                     guard let values = try? child.resourceValues(forKeys: [
                         .isSymbolicLinkKey,
+                        .isPackageKey,
                         .contentModificationDateKey,
                         .isDirectoryKey
-                    ]), values.isSymbolicLink != true else {
+                    ]) else {
+                        skippedUnreadableItems += 1
+                        continue
+                    }
+                    if values.isSymbolicLink == true {
+                        skippedSymbolicLinks += 1
+                        continue
+                    }
+                    if values.isPackage == true {
+                        skippedPackages += 1
                         continue
                     }
                     if let extensions = rule.allowedExtensions,
@@ -136,10 +205,22 @@ public struct CleanupScanner: Sendable {
                 seenPaths.insert($0.url.standardizedFileURL.path).inserted
             }
 
-            return uniqueCandidates.sorted {
+            let sortedCandidates = uniqueCandidates.sorted {
                 if $0.kind != $1.kind { return $0.kind.rawValue < $1.kind.rawValue }
                 return $0.allocatedBytes > $1.allocatedBytes
             }
+            return CleanupRuleScanResult(
+                candidates: sortedCandidates,
+                insights: CleanupScanInsights(
+                    examinedFileCount: examinedItemCount,
+                    skippedSymbolicLinkCount: skippedSymbolicLinks,
+                    skippedPackageCount: skippedPackages,
+                    skippedUnreadableItemCount: skippedUnreadableItems,
+                    skippedUnsafeRootCount: skippedUnsafeRoots,
+                    reachedFileLimit: reachedFileLimit
+                ),
+                roots: roots
+            )
         }
         return await withTaskCancellationHandler {
             await worker.value

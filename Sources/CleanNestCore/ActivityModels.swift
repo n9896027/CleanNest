@@ -1,5 +1,32 @@
 import Foundation
 
+public struct CleanupActivityResult: Codable, Hashable, Sendable {
+    public let candidateBytes: Int64
+    public let trashedBytes: Int64
+    public let apfsFreeBytesDelta: Int64
+
+    private enum CodingKeys: String, CodingKey {
+        case candidateBytes
+        case trashedBytes
+        case apfsFreeBytesDelta
+    }
+
+    public init(candidateBytes: Int64, trashedBytes: Int64, apfsFreeBytesDelta: Int64) {
+        self.candidateBytes = max(0, candidateBytes)
+        self.trashedBytes = max(0, trashedBytes)
+        self.apfsFreeBytesDelta = max(-Int64.max, apfsFreeBytesDelta)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            candidateBytes: try values.decode(Int64.self, forKey: .candidateBytes),
+            trashedBytes: try values.decode(Int64.self, forKey: .trashedBytes),
+            apfsFreeBytesDelta: try values.decode(Int64.self, forKey: .apfsFreeBytesDelta)
+        )
+    }
+}
+
 public struct ActivityEntry: Identifiable, Codable, Hashable, Sendable {
     public enum Outcome: String, Codable, Hashable, Sendable {
         case success = "完成"
@@ -29,6 +56,7 @@ public struct ActivityEntry: Identifiable, Codable, Hashable, Sendable {
     public let affectedItems: Int
     public let bytes: Int64
     public let category: Category?
+    public let cleanupResult: CleanupActivityResult?
 
     public init(
         id: UUID = UUID(),
@@ -38,7 +66,8 @@ public struct ActivityEntry: Identifiable, Codable, Hashable, Sendable {
         outcome: Outcome,
         affectedItems: Int = 0,
         bytes: Int64 = 0,
-        category: Category? = nil
+        category: Category? = nil,
+        cleanupResult: CleanupActivityResult? = nil
     ) {
         self.id = id
         self.date = date
@@ -48,6 +77,7 @@ public struct ActivityEntry: Identifiable, Codable, Hashable, Sendable {
         self.affectedItems = affectedItems
         self.bytes = bytes
         self.category = category
+        self.cleanupResult = cleanupResult
     }
 
     public var effectiveCategory: Category {

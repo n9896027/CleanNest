@@ -22,6 +22,7 @@ public struct ScannerWorker: Sendable {
         _ request: CleanupScannerRequest,
         progress: (@Sendable (ScannerServiceProgress) -> Void)? = nil
     ) async throws -> CleanupScannerResponse {
+        let sessionStartedAt = Date()
         let startedAt = DispatchTime.now().uptimeNanoseconds
         try Task.checkCancellation()
         progress?(
@@ -33,7 +34,7 @@ public struct ScannerWorker: Sendable {
             )
         )
 
-        let standard = await CleanupScanner(homeDirectory: request.homeDirectory).scan(
+        let standard = await CleanupScanner(homeDirectory: request.homeDirectory).scanWithEvidence(
             includeApplicationCaches: request.includeApplicationCaches
         )
         try Task.checkCancellation()
@@ -52,8 +53,8 @@ public struct ScannerWorker: Sendable {
         try Task.checkCancellation()
 
         let visibleStandard = request.developerMode
-            ? standard
-            : standard.filter { $0.kind != .developer && $0.kind != .packageManager }
+            ? standard.candidates
+            : standard.candidates.filter { $0.kind != .developer && $0.kind != .packageManager }
         var candidatesByPath = Dictionary(
             uniqueKeysWithValues: visibleStandard.map { ($0.url.standardizedFileURL.path, $0) }
         )
@@ -66,11 +67,30 @@ public struct ScannerWorker: Sendable {
             return $0.url.path < $1.url.path
         }
         let endedAt = DispatchTime.now().uptimeNanoseconds
+        let elapsedSeconds = Double(endedAt - startedAt) / 1_000_000_000
+        let insights = standard.insights
+            .mergingTraversalEvidence(personal.insights)
+            .updatingCandidateCounts(from: candidates)
+        var seenRoots = Set<String>()
+        let roots = (standard.roots + personal.roots).filter {
+            seenRoots.insert($0.id).inserted
+        }
+        let completedAt = Date()
+        let session = CleanupScanSession(
+            requestID: request.requestID,
+            startedAt: sessionStartedAt,
+            completedAt: completedAt,
+            elapsedSeconds: elapsedSeconds,
+            roots: roots,
+            insights: insights,
+            candidates: candidates
+        )
         let response = CleanupScannerResponse(
             requestID: request.requestID,
             candidates: candidates,
-            insights: personal.insights.updatingCandidateCounts(from: candidates),
-            elapsedSeconds: Double(endedAt - startedAt) / 1_000_000_000
+            insights: insights,
+            session: session,
+            elapsedSeconds: elapsedSeconds
         )
         progress?(
             ScannerServiceProgress(

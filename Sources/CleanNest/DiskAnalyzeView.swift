@@ -77,7 +77,7 @@ struct DiskAnalyzeView: View {
                         kind: .warning,
                         actionTitle: "前往设置页"
                     ) {
-                        store.selection = .settings
+                        store.openSettings(.scanAndPrivacy)
                     }
                 }
 
@@ -85,10 +85,10 @@ struct DiskAnalyzeView: View {
                     EmptyPanel(
                         symbol: "chart.pie",
                         title: "选择一个位置开始",
-                        detail: "默认从你的主目录分析。你也可以选择项目文件夹或外接磁盘。",
-                        actionTitle: "分析主目录"
+                        detail: "默认分析启动卷 \(store.startupDiskDisplayName)。如果只想快速查看个人文件，可切换到主目录；也可选择项目文件夹或外接磁盘。",
+                        actionTitle: "分析 \(store.startupDiskDisplayName)"
                     ) {
-                        Task { await store.analyze() }
+                        Task { await store.analyze(AppStore.startupDiskRoot) }
                     }
                 } else if let report = store.diskPartialReport ?? store.diskReport {
                     HStack(spacing: 12) {
@@ -178,6 +178,13 @@ struct DiskAnalyzeView: View {
                 }
                 .buttonStyle(.borderless)
                 .help(CNL10n.string("在 Finder 中显示"))
+                if store.diskRoot != AppStore.startupDiskRoot {
+                    Button(store.startupDiskDisplayName) {
+                        Task { await store.analyze(AppStore.startupDiskRoot) }
+                    }
+                    .controlSize(.small)
+                    .help("切换到整个启动卷")
+                }
                 if store.diskRoot != FileManager.default.homeDirectoryForCurrentUser {
                     Button("主目录") {
                         Task { await store.analyze(FileManager.default.homeDirectoryForCurrentUser) }
@@ -253,7 +260,7 @@ struct DiskAnalyzeView: View {
         if index == 0, url.standardizedFileURL == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL {
             return CNL10n.string("主目录")
         }
-        if url.path == "/" { return "Mac" }
+        if url.path == "/" { return store.startupDiskDisplayName }
         return url.lastPathComponent
     }
 
