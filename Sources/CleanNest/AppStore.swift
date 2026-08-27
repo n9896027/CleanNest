@@ -5599,9 +5599,7 @@ final class AppStore: ObservableObject {
             candidates: cleanupCandidates
         )
         let demoModelID = "DemoCoder-14B-4bit"
-        let demoModelPath = home
-            .appendingPathComponent("Models/MLX/DemoCoder-14B-4bit", isDirectory: true)
-            .path
+        let demoModelPath = "/Users/demo/Models/MLX/DemoCoder-14B-4bit"
         localAIEndpoint = "http://127.0.0.1:8080/v1"
         localAIModelPath = demoModelPath
         localAIExecutablePath = home.appendingPathComponent(".mlx-env/bin/mlx_lm.server").path
@@ -5636,7 +5634,7 @@ final class AppStore: ObservableObject {
             label: "com.cleannest.demo.omlx",
             domain: "gui/\(getuid())",
             kind: .userLaunchAgent,
-            sourcePath: home.appendingPathComponent("Library/LaunchAgents/com.cleannest.demo.omlx.plist").path,
+            sourcePath: "/Users/demo/Library/LaunchAgents/com.cleannest.demo.omlx.plist",
             sourceDeviceID: 1,
             sourceFileID: 9_001,
             programName: "omlx",
