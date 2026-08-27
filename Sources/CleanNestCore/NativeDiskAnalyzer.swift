@@ -42,19 +42,25 @@ public struct DiskScanOutcome: Codable, Equatable, Sendable {
     public let cacheHitCount: Int
     public let scannedCount: Int
     public let elapsedSeconds: Double
+    public let volumeSnapshot: DiskVolumeSnapshot?
+    public let coverage: DiskScanCoverage
 
     public init(
         report: DiskReport,
         updatedCache: DiskScanCacheStore,
         cacheHitCount: Int,
         scannedCount: Int,
-        elapsedSeconds: Double
+        elapsedSeconds: Double,
+        volumeSnapshot: DiskVolumeSnapshot?,
+        coverage: DiskScanCoverage
     ) {
         self.report = report
         self.updatedCache = updatedCache
         self.cacheHitCount = cacheHitCount
         self.scannedCount = scannedCount
         self.elapsedSeconds = elapsedSeconds
+        self.volumeSnapshot = volumeSnapshot
+        self.coverage = coverage
     }
 
     public var usedCache: Bool { cacheHitCount > 0 }
@@ -63,13 +69,16 @@ public struct DiskScanOutcome: Codable, Equatable, Sendable {
 public struct NativeDiskAnalyzer: Sendable {
     public let cacheMaximumAge: TimeInterval
     public let maximumSignatureChildren: Int
+    public let maximumTraversalEntriesPerItem: Int
 
     public init(
         cacheMaximumAge: TimeInterval = 15 * 60,
-        maximumSignatureChildren: Int = 4_096
+        maximumSignatureChildren: Int = 4_096,
+        maximumTraversalEntriesPerItem: Int = 500_000
     ) {
         self.cacheMaximumAge = max(0, cacheMaximumAge)
         self.maximumSignatureChildren = min(max(maximumSignatureChildren, 32), 20_000)
+        self.maximumTraversalEntriesPerItem = max(1, maximumTraversalEntriesPerItem)
     }
 
     public func analyze(root: URL) async -> DiskReport {
@@ -104,10 +113,22 @@ public struct NativeDiskAnalyzer: Sendable {
         try Task.checkCancellation()
         let cacheMaximumAge = self.cacheMaximumAge
         let maximumSignatureChildren = self.maximumSignatureChildren
+        let maximumTraversalEntriesPerItem = self.maximumTraversalEntriesPerItem
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let worker = Task.detached(priority: .userInitiated) {
             let normalizedRoot = root.standardizedFileURL
-            let children = FileTree.directChildren(of: normalizedRoot)
+            let childResult = FileTree.directChildrenResult(
+                of: normalizedRoot,
+                includingHidden: true
+            )
+            let children = childResult.children
+            let hiddenTopLevelEntryCount = children.filter {
+                $0.lastPathComponent.hasPrefix(".")
+            }.count
+            let volumeSnapshot = DiskVolumeSnapshot.capture(for: normalizedRoot)
+            let traversalLimit: Int? = mode == .bypassCache
+                ? nil
+                : maximumTraversalEntriesPerItem
             let previousByID = Dictionary(uniqueKeysWithValues:
                 (cache.root(for: normalizedRoot)?.entries ?? []).map { ($0.id, $0) }
             )
@@ -153,15 +174,22 @@ public struct NativeDiskAnalyzer: Sendable {
 
                 let bytes: Int64
                 let sampledAt: Date
+                let traversal: FileTreeTraversalEvidence?
                 if mayReuse, let cached {
                     bytes = max(0, cached.allocatedBytes)
                     sampledAt = cached.sampledAt
+                    traversal = cached.traversal
                     cacheHitCount += 1
                 } else {
-                    bytes = isSymbolicLink
-                        ? 0
-                        : max(0, FileTree.allocatedSize(of: child, skipPackages: false))
+                    let metrics = FileTree.metrics(
+                        of: child,
+                        skipPackages: false,
+                        maximumEntries: traversalLimit,
+                        stayOnFileSystem: true
+                    )
+                    bytes = max(0, metrics.allocatedBytes)
                     sampledAt = now
+                    traversal = metrics.traversal
                     scannedCount += 1
                 }
                 try Task.checkCancellation()
@@ -171,7 +199,8 @@ public struct NativeDiskAnalyzer: Sendable {
                         name: child.lastPathComponent,
                         url: child,
                         bytes: bytes,
-                        isDirectory: isDirectory
+                        isDirectory: isDirectory,
+                        traversal: traversal
                     )
                 )
                 nextCacheEntries.append(
@@ -181,7 +210,8 @@ public struct NativeDiskAnalyzer: Sendable {
                         metadataSignature: signature,
                         allocatedBytes: bytes,
                         isDirectory: isDirectory,
-                        sampledAt: sampledAt
+                        sampledAt: sampledAt,
+                        traversal: traversal
                     )
                 )
 
@@ -199,6 +229,12 @@ public struct NativeDiskAnalyzer: Sendable {
             }
 
             let report = Self.makeReport(root: normalizedRoot, entries: entries)
+            let coverage = DiskScanCoverage.summarize(
+                entries: report.entries,
+                rootEnumerationErrorCount: childResult.readErrorCount,
+                hiddenTopLevelEntryCount: hiddenTopLevelEntryCount,
+                unboundedTraversal: traversalLimit == nil
+            )
             var updatedCache = cache
             updatedCache.replaceRoot(
                 DiskScanCacheRoot(
@@ -214,7 +250,9 @@ public struct NativeDiskAnalyzer: Sendable {
                 updatedCache: updatedCache,
                 cacheHitCount: cacheHitCount,
                 scannedCount: scannedCount,
-                elapsedSeconds: elapsed
+                elapsedSeconds: elapsed,
+                volumeSnapshot: volumeSnapshot,
+                coverage: coverage
             )
         }
         return try await withTaskCancellationHandler {
@@ -234,7 +272,9 @@ public struct NativeDiskAnalyzer: Sendable {
             entries: sorted,
             largeFiles: sorted.filter { !$0.isDirectory }.prefix(20).map { $0 },
             totalBytes: sorted.reduce(0) { $0 + $1.bytes },
-            totalFiles: sorted.filter { !$0.isDirectory }.count
+            totalFiles: sorted.reduce(0) { partial, entry in
+                partial + (entry.traversal?.regularFileCount ?? (entry.isDirectory ? 0 : 1))
+            }
         )
     }
 
@@ -262,7 +302,7 @@ public struct NativeDiskAnalyzer: Sendable {
                     .totalFileAllocatedSizeKey,
                     .contentModificationDateKey
                 ],
-                options: [.skipsHiddenFiles]
+                options: []
             )) ?? []
             parts.append("children:\(children.count)")
             for child in children.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }).prefix(maximumChildren) {

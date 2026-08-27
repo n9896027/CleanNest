@@ -185,13 +185,21 @@ public struct DiskEntry: Codable, Identifiable, Hashable, Sendable {
     public let url: URL
     public let bytes: Int64
     public let isDirectory: Bool
+    public let traversal: FileTreeTraversalEvidence?
 
-    public init(name: String, url: URL, bytes: Int64, isDirectory: Bool) {
+    public init(
+        name: String,
+        url: URL,
+        bytes: Int64,
+        isDirectory: Bool,
+        traversal: FileTreeTraversalEvidence? = nil
+    ) {
         self.id = url.standardizedFileURL.path
         self.name = name
         self.url = url
         self.bytes = bytes
         self.isDirectory = isDirectory
+        self.traversal = traversal
     }
 }
 

@@ -2,7 +2,7 @@ import Foundation
 
 public enum CleanNestScannerService {
     public static let bundleIdentifier = "com.zone.cleannest.scanner"
-    public static let protocolVersion = 4
+    public static let protocolVersion = 5
 }
 
 /// The XPC boundary intentionally transports only JSON `Data`. This keeps the

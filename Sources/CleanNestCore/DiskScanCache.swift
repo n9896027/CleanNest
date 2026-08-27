@@ -7,6 +7,7 @@ public struct DiskScanCacheEntry: Codable, Equatable, Sendable {
     public let allocatedBytes: Int64
     public let isDirectory: Bool
     public let sampledAt: Date
+    public let traversal: FileTreeTraversalEvidence?
 
     public init(
         id: String,
@@ -14,7 +15,8 @@ public struct DiskScanCacheEntry: Codable, Equatable, Sendable {
         metadataSignature: String,
         allocatedBytes: Int64,
         isDirectory: Bool,
-        sampledAt: Date
+        sampledAt: Date,
+        traversal: FileTreeTraversalEvidence? = nil
     ) {
         self.id = id
         self.name = name
@@ -22,6 +24,7 @@ public struct DiskScanCacheEntry: Codable, Equatable, Sendable {
         self.allocatedBytes = allocatedBytes
         self.isDirectory = isDirectory
         self.sampledAt = sampledAt
+        self.traversal = traversal
     }
 }
 
@@ -40,7 +43,7 @@ public struct DiskScanCacheRoot: Codable, Equatable, Sendable {
 /// A bounded, local-only index used to avoid recomputing unchanged top-level
 /// subtrees. It stores no file contents and no absolute paths.
 public struct DiskScanCacheStore: Codable, Equatable, Sendable {
-    public static let schemaVersion = 1
+    public static let schemaVersion = 2
     public static let maximumRoots = 12
 
     public var schemaVersion: Int

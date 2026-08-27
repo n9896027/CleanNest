@@ -299,17 +299,20 @@ public struct DiskEvidenceReport: Codable, Equatable, Sendable {
     public let generatedAt: Date
     public let rootHint: String
     public let entries: [DiskEvidenceEntry]
+    public let comparisonGeneratedAt: Date?
 
     public init(
         schemaVersion: Int = Self.schemaVersion,
         generatedAt: Date = Date(),
         rootHint: String,
-        entries: [DiskEvidenceEntry]
+        entries: [DiskEvidenceEntry],
+        comparisonGeneratedAt: Date? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.generatedAt = generatedAt
         self.rootHint = rootHint
         self.entries = entries
+        self.comparisonGeneratedAt = comparisonGeneratedAt
     }
 }
 
@@ -397,7 +400,8 @@ public struct DiskEvidenceIndexer: Sendable {
             )
             return DiskEvidenceReport(
                 rootHint: Self.redactedHint(for: report.root, relativeTo: report.root, homeDirectory: homeDirectory),
-                entries: evidence
+                entries: evidence,
+                comparisonGeneratedAt: previous?.generatedAt
             )
         }
         return try await withTaskCancellationHandler {
@@ -717,5 +721,100 @@ public enum DiskEvidencePersistence {
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(report)
         try data.write(to: url, options: .atomic)
+    }
+}
+
+public struct DiskEvidenceHistorySnapshot: Codable, Equatable, Sendable {
+    public let evidence: DiskEvidenceReport
+    public let coverage: DiskScanCoverage
+    public let classifiedBytes: Int64
+
+    public init(
+        evidence: DiskEvidenceReport,
+        coverage: DiskScanCoverage,
+        classifiedBytes: Int64
+    ) {
+        self.evidence = evidence
+        self.coverage = coverage
+        self.classifiedBytes = max(0, classifiedBytes)
+    }
+
+    public var generatedAt: Date { evidence.generatedAt }
+    public var isReliableForGrowth: Bool { !coverage.hasKnownLimitOrReadGap }
+}
+
+public struct DiskEvidenceHistoryRoot: Codable, Equatable, Sendable {
+    public let id: String
+    public let snapshots: [DiskEvidenceHistorySnapshot]
+
+    public init(id: String, snapshots: [DiskEvidenceHistorySnapshot]) {
+        self.id = id
+        self.snapshots = Array(snapshots.sorted { $0.generatedAt < $1.generatedAt }.suffix(2))
+    }
+}
+
+/// Keeps exactly the last two completed, bounded aggregate reports per root.
+/// Root identities are SHA-256 fingerprints; no absolute path is persisted.
+public struct DiskEvidenceHistoryStore: Codable, Equatable, Sendable {
+    public static let schemaVersion = 1
+    public static let maximumRoots = 12
+
+    public var schemaVersion: Int
+    public private(set) var roots: [String: DiskEvidenceHistoryRoot]
+
+    public init(
+        schemaVersion: Int = Self.schemaVersion,
+        roots: [String: DiskEvidenceHistoryRoot] = [:]
+    ) {
+        self.schemaVersion = schemaVersion
+        self.roots = roots
+    }
+
+    public func latestReliable(for root: URL) -> DiskEvidenceHistorySnapshot? {
+        roots[DiskEvidenceIndexer.fingerprint(for: root)]?.snapshots.reversed()
+            .first(where: \.isReliableForGrowth)
+    }
+
+    public func snapshots(for root: URL) -> [DiskEvidenceHistorySnapshot] {
+        roots[DiskEvidenceIndexer.fingerprint(for: root)]?.snapshots ?? []
+    }
+
+    public mutating func append(_ snapshot: DiskEvidenceHistorySnapshot, for root: URL) {
+        let id = DiskEvidenceIndexer.fingerprint(for: root)
+        var values = roots[id]?.snapshots ?? []
+        values.removeAll { $0.generatedAt == snapshot.generatedAt }
+        values.append(snapshot)
+        roots[id] = DiskEvidenceHistoryRoot(id: id, snapshots: values)
+
+        guard roots.count > Self.maximumRoots else { return }
+        let retained = roots.values.sorted {
+            ($0.snapshots.last?.generatedAt ?? .distantPast)
+                > ($1.snapshots.last?.generatedAt ?? .distantPast)
+        }.prefix(Self.maximumRoots)
+        roots = Dictionary(uniqueKeysWithValues: retained.map { ($0.id, $0) })
+    }
+}
+
+public enum DiskEvidenceHistoryPersistence {
+    public static func load(from url: URL) throws -> DiskEvidenceHistoryStore {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return DiskEvidenceHistoryStore()
+        }
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        let store = try JSONDecoder().decode(DiskEvidenceHistoryStore.self, from: data)
+        guard store.schemaVersion == DiskEvidenceHistoryStore.schemaVersion else {
+            return DiskEvidenceHistoryStore()
+        }
+        return store
+    }
+
+    public static func save(_ store: DiskEvidenceHistoryStore, to url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try encoder.encode(store).write(to: url, options: .atomic)
     }
 }

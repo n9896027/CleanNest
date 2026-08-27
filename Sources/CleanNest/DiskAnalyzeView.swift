@@ -33,7 +33,7 @@ struct DiskAnalyzeView: View {
                             Button {
                                 Task { await store.analyze(deepRefresh: true) }
                             } label: {
-                                Label("深度刷新（忽略缓存）", systemImage: "arrow.triangle.2.circlepath")
+                                Label("深度刷新（忽略缓存与条目上限）", systemImage: "arrow.triangle.2.circlepath")
                             }
                             .disabled(store.isWorking)
                             Button {
@@ -56,7 +56,7 @@ struct DiskAnalyzeView: View {
 
                 InlineBanner(
                     title: "原生增量索引",
-                    detail: "扫描会持续显示已完成的部分结果；15 分钟内只复用元数据签名未变化的项目。需要实时重算时可选择“深度刷新”。",
+                    detail: "普通扫描每个顶层项目最多遍历 50 万项，并会明确标出触顶目录；15 分钟内只复用签名未变化且完整度已知的项目。深度刷新会忽略缓存和条目上限，可随时取消。",
                     kind: .info
                 )
 
@@ -91,13 +91,11 @@ struct DiskAnalyzeView: View {
                         Task { await store.analyze(AppStore.startupDiskRoot) }
                     }
                 } else if let report = store.diskPartialReport ?? store.diskReport {
-                    HStack(spacing: 12) {
-                        MetricCard(label: store.diskPartialReport == nil ? "已分析" : "已发现", value: CleanNestFormatting.bytes(report.totalBytes), detail: store.diskPartialReport == nil ? report.root.path : "扫描进行中，数值仍会变化", symbol: "folder", tint: CNTheme.accent)
-                        MetricCard(label: "当前层级", value: CNL10n.format("%d 项", report.entries.count), detail: store.diskPartialReport == nil ? "按占用从大到小排列" : "实时部分结果", symbol: "list.bullet.rectangle", tint: CNTheme.success)
-                        MetricCard(label: "索引状态", value: scanModeValue, detail: scanModeDetail, symbol: "bolt.horizontal.circle", tint: CNTheme.warning)
-                    }
+                    capacityMetricCards(report)
 
                     if store.diskPartialReport == nil {
+                        DiskCapacityTruthCard(report: report)
+                        DiskGrowthComparisonCard(report: report)
                         DiskDecisionCenter(report: report)
                     }
                     DiskTreemapView(report: report)
@@ -136,13 +134,24 @@ struct DiskAnalyzeView: View {
 
     private var scanModeValue: String {
         if store.diskPartialReport != nil { return "实时更新" }
+        if let coverage = store.diskScanCoverage { return coverage.statusLabel }
         if store.diskScanCacheHitCount > 0 {
             return "复用 \(store.diskScanCacheHitCount) 项"
         }
-        return store.diskScanScannedCount > 0 ? "实扫 \(store.diskScanScannedCount) 项" : "完整结果"
+        return store.diskScanScannedCount > 0 ? "实扫 \(store.diskScanScannedCount) 项" : "完整度待核验"
     }
 
     private var scanModeDetail: String {
+        if let coverage = store.diskScanCoverage {
+            var parts = ["遍历 \(coverage.visitedEntryCount) 项"]
+            if coverage.limitedSubtreeCount > 0 {
+                parts.append("\(coverage.limitedSubtreeCount) 个目录触顶")
+            }
+            if coverage.unreadableEntryCount + coverage.rootEnumerationErrorCount > 0 {
+                parts.append("\(coverage.unreadableEntryCount + coverage.rootEnumerationErrorCount) 项不可读")
+            }
+            return parts.joined(separator: " · ")
+        }
         if let elapsed = store.diskScanElapsedSeconds {
             let mode = store.diskScanCacheHitCount > 0
                 ? "另实扫 \(store.diskScanScannedCount) 项"
@@ -150,6 +159,56 @@ struct DiskAnalyzeView: View {
             return "\(String(format: "%.2f", elapsed)) 秒 · \(mode)"
         }
         return "缓存命中会明确标注"
+    }
+
+    @ViewBuilder
+    private func capacityMetricCards(_ report: DiskReport) -> some View {
+        let classified = MetricCard(
+            label: store.diskPartialReport == nil ? "已归类文件" : "已发现文件",
+            value: CleanNestFormatting.bytes(report.totalBytes),
+            detail: store.diskPartialReport == nil ? "来自文件遍历，不是 APFS 已用" : "扫描进行中，数值仍会变化",
+            symbol: "folder",
+            tint: CNTheme.accent
+        )
+        let layer = MetricCard(
+            label: "当前层级",
+            value: CNL10n.format("%d 项", report.entries.count),
+            detail: store.diskPartialReport == nil ? "按占用从大到小排列" : "实时部分结果",
+            symbol: "list.bullet.rectangle",
+            tint: CNTheme.success
+        )
+        let status = MetricCard(
+            label: "扫描完整度",
+            value: scanModeValue,
+            detail: scanModeDetail,
+            symbol: "checklist.checked",
+            tint: store.diskScanCoverage?.hasKnownLimitOrReadGap == true ? CNTheme.warning : CNTheme.cyan
+        )
+
+        if let volume = store.diskVolumeSnapshot {
+            let used = MetricCard(
+                label: "APFS 实际已用",
+                value: CleanNestFormatting.bytes(volume.usedBytes),
+                detail: "卷总容量 \(CleanNestFormatting.bytes(volume.totalBytes))",
+                symbol: "internaldrive.fill",
+                tint: CNTheme.violet
+            )
+            let available = MetricCard(
+                label: "APFS 实际可用",
+                value: CleanNestFormatting.bytes(volume.availableBytes),
+                detail: "由 macOS 卷总账直接读取",
+                symbol: "internaldrive",
+                tint: CNTheme.success
+            )
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { used; available; classified; status }
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    used; available; classified; status
+                }
+            }
+        } else {
+            HStack(spacing: 12) { classified; layer; status }
+        }
     }
 
     private var pathBar: some View {
@@ -274,6 +333,315 @@ struct DiskAnalyzeView: View {
         panel.directoryURL = store.diskRoot
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await store.analyze(url) }
+    }
+}
+
+private struct DiskCapacityTruthCard: View {
+    @EnvironmentObject private var store: AppStore
+    let report: DiskReport
+
+    private var reconciliation: DiskCapacityReconciliation? {
+        store.diskCapacityReconciliation
+    }
+
+    var body: some View {
+        SurfaceCard(
+            title: "磁盘总账与文件归类",
+            symbol: "equal.circle",
+            prominence: .prominent,
+            tint: CNTheme.violet
+        ) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 12) {
+                    CNIconTile(symbol: "internaldrive.fill", tint: CNTheme.violet, size: 42)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(accountingHeadline)
+                            .font(.title3.weight(.semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(accountingExplanation)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 12)
+                    StatusPill(
+                        text: coveragePillText,
+                        symbol: coverageHasGap ? "exclamationmark.triangle" : "checkmark.circle",
+                        style: coverageHasGap ? .warning : .success
+                    )
+                }
+
+                if let reconciliation,
+                   let difference = reconciliation.accountingDifferenceBytes {
+                    VStack(alignment: .leading, spacing: 8) {
+                        accountingBar(reconciliation)
+                        HStack {
+                            Label(
+                                "APFS 已用 \(CleanNestFormatting.bytes(reconciliation.volume.usedBytes))",
+                                systemImage: "internaldrive.fill"
+                            )
+                            Spacer()
+                            Label(
+                                "文件已归类 \(CleanNestFormatting.bytes(reconciliation.classifiedBytes))",
+                                systemImage: "folder.fill"
+                            )
+                        }
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+
+                        if difference > 0 {
+                            InlineBanner(
+                                title: "还有 \(CleanNestFormatting.bytes(difference)) 未被文件遍历解释",
+                                detail: "这不是“可清理空间”。它可能包含 APFS 快照、Preboot/Recovery/VM 等同容器卷、受保护目录、触及条目上限的目录、系统保留，以及克隆或硬链接造成的账本差异。",
+                                kind: .warning
+                            )
+                        } else if difference < 0 {
+                            InlineBanner(
+                                title: "文件分配块合计比 APFS 物理已用多 \(CleanNestFormatting.bytes(abs(difference)))",
+                                detail: "APFS 克隆、硬链接或 firmlink 可能让多个路径引用同一批物理块。文件求和不能替代卷总账。",
+                                kind: .info
+                            )
+                        }
+                    }
+                } else {
+                    InlineBanner(
+                        title: "当前只分析所选文件夹",
+                        detail: "\(report.root.path) 不是卷根目录，因此只显示这里已归类的文件；不会拿它与整块磁盘已用空间制造虚假的“缺口”。",
+                        kind: .info
+                    )
+                }
+
+                if let coverage = store.diskScanCoverage {
+                    coverageFacts(coverage)
+                    HStack(spacing: 8) {
+                        if coverage.limitedSubtreeCount > 0 || coverage.unknownCachedSubtreeCount > 0 {
+                            Button {
+                                Task { await store.analyze(deepRefresh: true) }
+                            } label: {
+                                Label("深度重扫，不设条目上限", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(store.isWorking)
+                        }
+                        if coverage.unreadableEntryCount + coverage.rootEnumerationErrorCount > 0 {
+                            Button("检查文件访问") {
+                                store.openSettings(.scanAndPrivacy)
+                            }
+                        }
+                        Spacer()
+                        Text("仍保持只读，不会把差额当成垃圾")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("磁盘总账与文件归类。\(accountingHeadline)。\(accountingExplanation)")
+    }
+
+    private var coverageHasGap: Bool {
+        store.diskScanCoverage?.hasKnownLimitOrReadGap ?? true
+    }
+
+    private var coveragePillText: String {
+        store.diskScanCoverage?.statusLabel ?? "完整度未知"
+    }
+
+    private var accountingHeadline: String {
+        guard let reconciliation,
+              let difference = reconciliation.accountingDifferenceBytes else {
+            return "文件夹归类与整卷空间是两套数字"
+        }
+        if difference >= 0 {
+            return "\(CleanNestFormatting.bytes(report.totalBytes)) 已归类；不是磁盘总占用"
+        }
+        return "文件路径求和与 APFS 物理账本存在重叠"
+    }
+
+    private var accountingExplanation: String {
+        guard let volume = store.diskVolumeSnapshot else {
+            return "CleanNest 目前只有文件遍历结果，无法读取这个位置所在卷的容量总账。"
+        }
+        if volume.selectedRootIsVolumeRoot {
+            return "macOS 报告 \(volume.volumeName) 实际已用 \(CleanNestFormatting.bytes(volume.usedBytes))、实际可用 \(CleanNestFormatting.bytes(volume.availableBytes))；CleanNest 另行解释能遍历到的文件。"
+        }
+        return "所在卷实际已用 \(CleanNestFormatting.bytes(volume.usedBytes))、可用 \(CleanNestFormatting.bytes(volume.availableBytes))；当前所选文件夹只占其中一部分。"
+    }
+
+    private func accountingBar(_ value: DiskCapacityReconciliation) -> some View {
+        GeometryReader { proxy in
+            let usedWidth = proxy.size.width
+            let classifiedShare = min(1, max(0, value.classifiedShareOfUsed ?? 0))
+            ZStack(alignment: .leading) {
+                Capsule().fill(CNTheme.violet.opacity(0.18))
+                Capsule()
+                    .fill(CNTheme.accent.opacity(0.82))
+                    .frame(width: usedWidth * classifiedShare)
+            }
+        }
+        .frame(height: 10)
+        .accessibilityLabel("APFS 已用空间中，文件遍历已归类约 \(Int(min(1, max(0, value.classifiedShareOfUsed ?? 0)) * 100)) 百分比")
+    }
+
+    private func coverageFacts(_ coverage: DiskScanCoverage) -> some View {
+        let readErrors = coverage.rootEnumerationErrorCount + coverage.unreadableEntryCount
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                StatusPill(text: "遍历 \(coverage.visitedEntryCount) 项", symbol: "doc.text.magnifyingglass", style: .neutral)
+                StatusPill(text: "文件 \(coverage.regularFileCount) 个", symbol: "doc", style: .neutral)
+                StatusPill(text: "隐藏顶层 \(coverage.hiddenTopLevelEntryCount) 项", symbol: "eye.slash", style: .neutral)
+                if coverage.limitedSubtreeCount > 0 {
+                    StatusPill(text: "\(coverage.limitedSubtreeCount) 个目录触顶", symbol: "exclamationmark.triangle", style: .warning)
+                }
+                if readErrors > 0 {
+                    StatusPill(text: "\(readErrors) 项不可读", symbol: "lock", style: .warning)
+                }
+                if coverage.crossVolumeEntryCount > 0 {
+                    StatusPill(text: "跳过 \(coverage.crossVolumeEntryCount) 个其他卷入口", symbol: "externaldrive", style: .neutral)
+                }
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    StatusPill(text: "遍历 \(coverage.visitedEntryCount) 项", symbol: "doc.text.magnifyingglass", style: .neutral)
+                    StatusPill(text: "文件 \(coverage.regularFileCount) 个", symbol: "doc", style: .neutral)
+                }
+                HStack(spacing: 8) {
+                    if coverage.limitedSubtreeCount > 0 {
+                        StatusPill(text: "\(coverage.limitedSubtreeCount) 个目录触顶", symbol: "exclamationmark.triangle", style: .warning)
+                    }
+                    if readErrors > 0 {
+                        StatusPill(text: "\(readErrors) 项不可读", symbol: "lock", style: .warning)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct DiskGrowthComparisonCard: View {
+    @EnvironmentObject private var store: AppStore
+    let report: DiskReport
+
+    private struct Change: Identifiable {
+        enum Kind { case grown, shrunk, added, removed }
+        let id: String
+        let name: String
+        let bytes: Int64
+        let kind: Kind
+    }
+
+    private var comparisonIsReliable: Bool {
+        guard let coverage = store.diskScanCoverage else { return false }
+        return !coverage.hasKnownLimitOrReadGap
+    }
+
+    private var changes: [Change] {
+        guard comparisonIsReliable,
+              let current = store.diskEvidenceReport,
+              let previous = store.diskPreviousEvidenceReport else { return [] }
+        let previousByID = Dictionary(uniqueKeysWithValues: previous.entries.map { ($0.id, $0) })
+        let currentIDs = Set(current.entries.map(\.id))
+        var values = current.entries.compactMap { entry -> Change? in
+            guard let old = previousByID[entry.id] else {
+                return Change(id: entry.id, name: entry.name, bytes: entry.allocatedBytes, kind: .added)
+            }
+            let delta = entry.allocatedBytes - old.allocatedBytes
+            guard delta != 0 else { return nil }
+            return Change(
+                id: entry.id,
+                name: entry.name,
+                bytes: abs(delta),
+                kind: delta > 0 ? .grown : .shrunk
+            )
+        }
+        values += previous.entries.compactMap { entry in
+            guard !currentIDs.contains(entry.id) else { return nil }
+            return Change(id: entry.id, name: entry.name, bytes: entry.allocatedBytes, kind: .removed)
+        }
+        return values.sorted {
+            if $0.bytes == $1.bytes { return $0.name < $1.name }
+            return $0.bytes > $1.bytes
+        }
+    }
+
+    var body: some View {
+        SurfaceCard(title: "与上次完整扫描相比", symbol: "clock.arrow.2.circlepath") {
+            if store.diskScanCoverage?.hasKnownLimitOrReadGap == true {
+                InlineBanner(
+                    title: "本次不生成增长结论",
+                    detail: "本次扫描触及条目上限、存在不可读项目或复用了完整度未知的旧索引。CleanNest 保留上次可靠基线，不用不完整数字制造“突然增长”。",
+                    kind: .warning
+                )
+            } else if let previous = store.diskPreviousEvidenceReport,
+                      let previousBytes = store.diskPreviousClassifiedBytes {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(netChangeText(previousBytes: previousBytes))
+                                .font(.title3.weight(.semibold))
+                            Text("基线：\(previous.generatedAt.formatted(date: .abbreviated, time: .shortened)) · 只比较同一根目录的两次可靠结果")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        StatusPill(text: "不完整扫描不入账", symbol: "checkmark.shield", style: .success)
+                    }
+
+                    if changes.isEmpty {
+                        Text("前 16 个证据目录没有可见变化。")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 10)], spacing: 10) {
+                            ForEach(changes.prefix(8)) { change in
+                                changeTile(change)
+                            }
+                        }
+                    }
+                }
+            } else {
+                InlineBanner(
+                    title: "这次先建立可靠基线",
+                    detail: "完成下一次同一根目录的可靠扫描后，这里会显示新出现、增长、缩小和消失的目录。只保留最近两次本机聚合快照，不保存文件内容。",
+                    kind: .info
+                )
+            }
+        }
+    }
+
+    private func netChangeText(previousBytes: Int64) -> String {
+        let delta = report.totalBytes - previousBytes
+        if delta > 0 { return "已归类文件净增加 \(CleanNestFormatting.bytes(delta))" }
+        if delta < 0 { return "已归类文件净减少 \(CleanNestFormatting.bytes(abs(delta)))" }
+        return "已归类文件总量没有变化"
+    }
+
+    private func changeTile(_ change: Change) -> some View {
+        let presentation = changePresentation(change.kind)
+        return HStack(spacing: 10) {
+            CNIconTile(symbol: presentation.symbol, tint: presentation.tint, size: 34)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(change.name)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Text("\(presentation.label) \(CleanNestFormatting.bytes(change.bytes))")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(presentation.tint)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(presentation.tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func changePresentation(_ kind: Change.Kind) -> (label: String, symbol: String, tint: Color) {
+        switch kind {
+        case .grown: return ("增长", "arrow.up.right", CNTheme.warning)
+        case .shrunk: return ("缩小", "arrow.down.right", CNTheme.success)
+        case .added: return ("新出现", "plus.circle", CNTheme.accent)
+        case .removed: return ("已消失", "minus.circle", CNTheme.violet)
+        }
     }
 }
 
@@ -567,6 +935,13 @@ private struct DiskDecisionCenter: View {
                     store.revealInFinder(item.entry.url)
                 } label: {
                     Label("在 Finder 中确认", systemImage: "folder")
+                }
+                if store.diskOwnerApplicationURL(for: item.evidence) != nil {
+                    Button {
+                        store.openDiskOwnerApplication(for: item.evidence)
+                    } label: {
+                        Label("在所属 App 管理", systemImage: "app.badge")
+                    }
                 }
                 if store.manualDiskDecision(for: item.evidence) == .reviewForCleanup {
                     Button {
@@ -989,6 +1364,22 @@ private struct DiskEntryRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if let traversal = entry.traversal,
+                   !traversal.isCompleteWithinFileSystem {
+                    HStack(spacing: 7) {
+                        StatusPill(
+                            text: traversal.reachedEntryLimit ? "容量为部分结果" : "存在不可读项目",
+                            symbol: "exclamationmark.triangle",
+                            style: .warning
+                        )
+                        Text(traversalDetail(traversal))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else if entry.traversal == nil {
+                    StatusPill(text: "旧索引完整度未知", symbol: "questionmark.circle", style: .warning)
+                }
                 if let childContext, !childContext.entries.isEmpty {
                     Text(childSummary(childContext))
                         .font(.caption2)
@@ -1081,6 +1472,20 @@ private struct DiskEntryRow: View {
                     .disabled(store.diskAIPhase.isBusy || store.isWorking)
             }
         }
+    }
+
+    private func traversalDetail(_ traversal: FileTreeTraversalEvidence) -> String {
+        var parts: [String] = []
+        if traversal.reachedEntryLimit, let limit = traversal.entryLimit {
+            parts.append("到达 \(limit) 项上限")
+        }
+        if traversal.unreadableEntryCount > 0 {
+            parts.append("\(traversal.unreadableEntryCount) 项不可读")
+        }
+        if traversal.crossVolumeEntryCount > 0 {
+            parts.append("\(traversal.crossVolumeEntryCount) 个其他卷入口已跳过")
+        }
+        return parts.isEmpty ? "本次文件遍历没有形成完整证据" : parts.joined(separator: " · ")
     }
 
     private func evidenceCategoryLabel(_ category: DiskAIContentCategory) -> String {

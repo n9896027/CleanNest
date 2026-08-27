@@ -98,6 +98,41 @@ final class NativeDiskAnalyzerTests: XCTestCase {
             // Expected.
         }
     }
+
+    func testBoundedScanDisclosesPartialSubtreeAndDeepRefreshRemovesLimit() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CleanNestCoverageTests-\(UUID().uuidString)", isDirectory: true)
+        let crowded = root.appendingPathComponent("crowded", isDirectory: true)
+        try FileManager.default.createDirectory(at: crowded, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for index in 0..<20 {
+            try Data(repeating: UInt8(index), count: 128)
+                .write(to: crowded.appendingPathComponent("item-\(index).bin"))
+        }
+
+        let analyzer = NativeDiskAnalyzer(
+            cacheMaximumAge: 600,
+            maximumTraversalEntriesPerItem: 5
+        )
+        let bounded = try await analyzer.analyze(
+            root: root,
+            cache: DiskScanCacheStore(),
+            mode: .reuseFreshCache
+        )
+        XCTAssertEqual(bounded.coverage.limitedSubtreeCount, 1)
+        XCTAssertTrue(bounded.coverage.hasKnownLimitOrReadGap)
+        XCTAssertEqual(bounded.report.entries.first?.traversal?.entryLimit, 5)
+
+        let exhaustive = try await analyzer.analyze(
+            root: root,
+            cache: bounded.updatedCache,
+            mode: .bypassCache
+        )
+        XCTAssertTrue(exhaustive.coverage.unboundedTraversal)
+        XCTAssertEqual(exhaustive.coverage.limitedSubtreeCount, 0)
+        XCTAssertEqual(exhaustive.coverage.regularFileCount, 20)
+        XCTAssertGreaterThan(exhaustive.report.totalBytes, bounded.report.totalBytes)
+    }
 }
 
 private final class DiskProgressRecorder: @unchecked Sendable {

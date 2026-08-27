@@ -189,6 +189,73 @@ final class DiskEvidenceTests: XCTestCase {
         XCTAssertNil(store.decision(for: protected))
     }
 
+    func testHistoryKeepsTwoSnapshotsPerRootAndSkipsPartialGrowthBaseline() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let root = directory.appendingPathComponent("root", isDirectory: true)
+        let other = directory.appendingPathComponent("other", isDirectory: true)
+        var store = DiskEvidenceHistoryStore()
+        let complete = DiskScanCoverage(
+            rootEnumerationErrorCount: 0,
+            topLevelEntryCount: 1,
+            hiddenTopLevelEntryCount: 0,
+            visitedEntryCount: 10,
+            regularFileCount: 9,
+            unreadableEntryCount: 0,
+            crossVolumeEntryCount: 0,
+            symbolicLinkCount: 0,
+            limitedSubtreeCount: 0,
+            unknownCachedSubtreeCount: 0,
+            unboundedTraversal: false
+        )
+        let partial = DiskScanCoverage(
+            rootEnumerationErrorCount: 0,
+            topLevelEntryCount: 1,
+            hiddenTopLevelEntryCount: 0,
+            visitedEntryCount: 5,
+            regularFileCount: 4,
+            unreadableEntryCount: 0,
+            crossVolumeEntryCount: 0,
+            symbolicLinkCount: 0,
+            limitedSubtreeCount: 1,
+            unknownCachedSubtreeCount: 0,
+            unboundedTraversal: false
+        )
+        for index in 0..<3 {
+            let evidence = DiskEvidenceReport(
+                generatedAt: Date(timeIntervalSince1970: TimeInterval(index + 1)),
+                rootHint: "root",
+                entries: []
+            )
+            store.append(
+                DiskEvidenceHistorySnapshot(
+                    evidence: evidence,
+                    coverage: index == 2 ? partial : complete,
+                    classifiedBytes: Int64(index + 1) * 100
+                ),
+                for: root
+            )
+        }
+        store.append(
+            DiskEvidenceHistorySnapshot(
+                evidence: DiskEvidenceReport(rootHint: "other", entries: []),
+                coverage: complete,
+                classifiedBytes: 50
+            ),
+            for: other
+        )
+
+        XCTAssertEqual(store.snapshots(for: root).count, 2)
+        XCTAssertEqual(store.latestReliable(for: root)?.classifiedBytes, 200)
+        XCTAssertEqual(store.snapshots(for: other).count, 1)
+
+        let url = directory.appendingPathComponent("history.json")
+        try DiskEvidenceHistoryPersistence.save(store, to: url)
+        let restored = try DiskEvidenceHistoryPersistence.load(from: url)
+        XCTAssertEqual(restored, store)
+        XCTAssertFalse(try String(contentsOf: url).contains(directory.path))
+    }
+
     private func makeEvidenceEntry(
         id: String,
         category: DiskAIContentCategory,

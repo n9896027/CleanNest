@@ -260,8 +260,12 @@ final class AppStore: ObservableObject {
     @Published private(set) var diskScanScannedCount = 0
     @Published private(set) var diskScanElapsedSeconds: Double?
     @Published private(set) var diskScanCompletedAt: Date?
+    @Published private(set) var diskVolumeSnapshot: DiskVolumeSnapshot?
+    @Published private(set) var diskScanCoverage: DiskScanCoverage?
     @Published private(set) var diskEvidenceProgress: DiskEvidenceProgress?
     @Published private(set) var diskEvidenceReport: DiskEvidenceReport?
+    @Published private(set) var diskPreviousEvidenceReport: DiskEvidenceReport?
+    @Published private(set) var diskPreviousClassifiedBytes: Int64?
     @Published private(set) var diskManualDecisions = DiskManualDecisionStore()
     @Published private(set) var diskAIPhase: DiskAIPhase = .idle
     @Published private(set) var diskAIAnalysis: DiskAIAnalysis?
@@ -566,6 +570,15 @@ final class AppStore: ObservableObject {
         let name = FileManager.default.displayName(atPath: Self.startupDiskRoot.path)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty ? "Macintosh HD" : name
+    }
+
+    var diskCapacityReconciliation: DiskCapacityReconciliation? {
+        guard let diskVolumeSnapshot,
+              let report = diskPartialReport ?? diskReport else { return nil }
+        return DiskCapacityReconciliation(
+            volume: diskVolumeSnapshot,
+            classifiedBytes: report.totalBytes
+        )
     }
 
     var currentDiskTraversalIsBlocked: Bool {
@@ -3493,6 +3506,34 @@ final class AppStore: ObservableObject {
         DiskManualDecisionPolicy.canReviewForCleanup(entry)
     }
 
+    func diskOwnerApplicationURL(for entry: DiskEvidenceEntry) -> URL? {
+        guard let identifier = entry.likelyOwner?.trimmingCharacters(in: .whitespacesAndNewlines),
+              identifier.count <= 255,
+              identifier.contains("."),
+              !identifier.contains("/"),
+              identifier.unicodeScalars.allSatisfy({
+                  CharacterSet.alphanumerics.contains($0)
+                      || $0 == "." || $0 == "-" || $0 == "_"
+              }) else { return nil }
+        return NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier)
+    }
+
+    func openDiskOwnerApplication(for entry: DiskEvidenceEntry) {
+        guard let url = diskOwnerApplicationURL(for: entry) else {
+            lastTechnicalDetail = "没有找到可由 Launch Services 精确确认的所属 App；当前项目继续保持只读。"
+            return
+        }
+        NSWorkspace.shared.openApplication(
+            at: url,
+            configuration: NSWorkspace.OpenConfiguration()
+        ) { _, error in
+            guard let error else { return }
+            Task { @MainActor [weak self] in
+                self?.lastTechnicalDetail = "所属 App 未能打开：\(error.localizedDescription)"
+            }
+        }
+    }
+
     func setManualDiskDecision(
         _ decision: DiskManualDecision?,
         for entry: DiskEvidenceEntry
@@ -3527,6 +3568,10 @@ final class AppStore: ObservableObject {
         let previousScannedCount = diskScanScannedCount
         let previousElapsedSeconds = diskScanElapsedSeconds
         let previousCompletedAt = diskScanCompletedAt
+        let previousVolumeSnapshot = diskVolumeSnapshot
+        let previousCoverage = diskScanCoverage
+        let previousComparisonReport = diskPreviousEvidenceReport
+        let previousComparisonBytes = diskPreviousClassifiedBytes
         diskRoot = target
         if previousRoot != nil, previousRoot != target.path {
             diskHasScanned = false
@@ -3535,10 +3580,22 @@ final class AppStore: ObservableObject {
         diskScanCacheHitCount = 0
         diskScanScannedCount = 0
         diskScanElapsedSeconds = nil
+        diskVolumeSnapshot = DiskVolumeSnapshot.capture(for: target)
+        diskScanCoverage = nil
 
         guard !diskTraversalMayRequireFullDiskAccess(target) || fullDiskAccessProbePassed else {
             diskPrivacyBlockMessage = "CleanNest 已在扫描前停止：\(target.path) 会遍历受 macOS 保护的应用数据。请到设置页由你手动打开系统设置；访问测试通过前不会启动 Mole 或原生扫描。"
             lastTechnicalDetail = diskPrivacyBlockMessage ?? ""
+            if let previousReport { diskRoot = previousReport.root }
+            diskHasScanned = previousHasScanned
+            diskScanCacheHitCount = previousCacheHitCount
+            diskScanScannedCount = previousScannedCount
+            diskScanElapsedSeconds = previousElapsedSeconds
+            diskScanCompletedAt = previousCompletedAt
+            diskVolumeSnapshot = previousVolumeSnapshot
+            diskScanCoverage = previousCoverage
+            diskPreviousEvidenceReport = previousComparisonReport
+            diskPreviousClassifiedBytes = previousComparisonBytes
             phase = .idle
             if let cancelledCollectionTask {
                 _ = await cancelledCollectionTask.value
@@ -3568,9 +3625,11 @@ final class AppStore: ObservableObject {
                 cache = DiskScanCacheStore()
                 lastTechnicalDetail = "磁盘增量索引无法读取，本次改为完整扫描：\(error.localizedDescription)"
             }
-            let previousEvidence = try? DiskEvidencePersistence.load(
-                from: CleanNestDataPaths.diskEvidenceSnapshot()
-            )
+            let historyURL = CleanNestDataPaths.diskEvidenceHistory()
+            var evidenceHistory = (try? DiskEvidenceHistoryPersistence.load(from: historyURL))
+                ?? DiskEvidenceHistoryStore()
+            let previousHistorySnapshot = evidenceHistory.latestReliable(for: target)
+            let previousEvidence = previousHistorySnapshot?.evidence
             let request = DiskScannerRequest(
                 root: target,
                 homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
@@ -3593,8 +3652,19 @@ final class AppStore: ObservableObject {
                 response.evidence,
                 to: CleanNestDataPaths.diskEvidenceSnapshot()
             )
+            evidenceHistory.append(
+                DiskEvidenceHistorySnapshot(
+                    evidence: response.evidence,
+                    coverage: outcome.coverage,
+                    classifiedBytes: outcome.report.totalBytes
+                ),
+                for: target
+            )
+            try DiskEvidenceHistoryPersistence.save(evidenceHistory, to: historyURL)
             diskReport = outcome.report
             diskEvidenceReport = response.evidence
+            diskPreviousEvidenceReport = previousEvidence
+            diskPreviousClassifiedBytes = previousHistorySnapshot?.classifiedBytes
             diskHasScanned = true
             diskPartialReport = nil
             diskEvidenceProgress = nil
@@ -3603,6 +3673,8 @@ final class AppStore: ObservableObject {
             diskScanScannedCount = outcome.scannedCount
             diskScanElapsedSeconds = outcome.elapsedSeconds
             diskScanCompletedAt = Date()
+            diskVolumeSnapshot = outcome.volumeSnapshot
+            diskScanCoverage = outcome.coverage
             let returnedBytes = await relieveAllocatorPressure()
             let scanDetail = outcome.usedCache
                 ? "独立磁盘扫描完成：复用 \(outcome.cacheHitCount) 项，实扫 \(outcome.scannedCount) 项，耗时 \(String(format: "%.2f", outcome.elapsedSeconds)) 秒。缓存只在元数据签名匹配且 15 分钟内复用。"
@@ -3619,6 +3691,10 @@ final class AppStore: ObservableObject {
             diskScanScannedCount = previousScannedCount
             diskScanElapsedSeconds = previousElapsedSeconds
             diskScanCompletedAt = previousCompletedAt
+            diskVolumeSnapshot = previousVolumeSnapshot
+            diskScanCoverage = previousCoverage
+            diskPreviousEvidenceReport = previousComparisonReport
+            diskPreviousClassifiedBytes = previousComparisonBytes
             diskPartialReport = nil
             phase = .idle
         } catch {
@@ -3628,6 +3704,10 @@ final class AppStore: ObservableObject {
             diskScanScannedCount = previousScannedCount
             diskScanElapsedSeconds = previousElapsedSeconds
             diskScanCompletedAt = previousCompletedAt
+            diskVolumeSnapshot = previousVolumeSnapshot
+            diskScanCoverage = previousCoverage
+            diskPreviousEvidenceReport = previousComparisonReport
+            diskPreviousClassifiedBytes = previousComparisonBytes
             diskPartialReport = nil
             phase = .failed("磁盘分析没有完成")
             lastTechnicalDetail = error.localizedDescription
@@ -3678,6 +3758,7 @@ final class AppStore: ObservableObject {
             diskScanCacheHitCount = 0
             diskScanScannedCount = 0
             diskScanElapsedSeconds = nil
+            diskScanCoverage = nil
             lastTechnicalDetail = "演示模式：只重置了当前合成界面的索引状态。"
             return
         }
@@ -3689,6 +3770,7 @@ final class AppStore: ObservableObject {
             diskScanCacheHitCount = 0
             diskScanScannedCount = 0
             diskScanElapsedSeconds = nil
+            diskScanCoverage = nil
             lastTechnicalDetail = "磁盘增量索引已清空；下次分析会重新读取大小。"
         } catch {
             lastTechnicalDetail = "磁盘增量索引未能清空：\(error.localizedDescription)"
@@ -4896,7 +4978,7 @@ final class AppStore: ObservableObject {
         let demoShowsCriticalHealth = demoHealthState == "critical"
         let demoShowsWarningHealth = demoHealthState == "warning"
         let home = URL(fileURLWithPath: "/Users/demo", isDirectory: true)
-        diskRoot = home
+        diskRoot = Self.startupDiskRoot
         fullDiskAccessProbeResult = .accessible
         fullDiskAccessProbeCompletedAt = Date()
         localAIEnabled = true
@@ -5313,27 +5395,61 @@ final class AppStore: ObservableObject {
         )
         applicationsHaveScanned = true
 
+        let completeTraversal = FileTreeTraversalEvidence(
+            rootWasReadable: true,
+            visitedEntryCount: 180_000,
+            regularFileCount: 154_000,
+            unreadableEntryCount: 0,
+            crossVolumeEntryCount: 0,
+            symbolicLinkCount: 120,
+            reachedEntryLimit: false,
+            entryLimit: 500_000
+        )
+        let limitedTraversal = FileTreeTraversalEvidence(
+            rootWasReadable: true,
+            visitedEntryCount: 500_000,
+            regularFileCount: 436_000,
+            unreadableEntryCount: 7,
+            crossVolumeEntryCount: 0,
+            symbolicLinkCount: 310,
+            reachedEntryLimit: true,
+            entryLimit: 500_000
+        )
         diskReport = DiskReport(
-            root: home,
+            root: Self.startupDiskRoot,
             entries: [
-                DiskEntry(name: "Library", url: home.appendingPathComponent("Library"), bytes: 78_400_000_000, isDirectory: true),
-                DiskEntry(name: "Documents", url: home.appendingPathComponent("Documents"), bytes: 42_700_000_000, isDirectory: true),
-                DiskEntry(name: "Movies", url: home.appendingPathComponent("Movies"), bytes: 31_200_000_000, isDirectory: true),
-                DiskEntry(name: "Downloads", url: home.appendingPathComponent("Downloads"), bytes: 18_600_000_000, isDirectory: true),
-                DiskEntry(name: "Pictures", url: home.appendingPathComponent("Pictures"), bytes: 12_900_000_000, isDirectory: true)
+                DiskEntry(name: "Users", url: URL(fileURLWithPath: "/Users"), bytes: 247_800_000_000, isDirectory: true, traversal: limitedTraversal),
+                DiskEntry(name: "Applications", url: URL(fileURLWithPath: "/Applications"), bytes: 44_000_000_000, isDirectory: true, traversal: completeTraversal),
+                DiskEntry(name: "System", url: URL(fileURLWithPath: "/System"), bytes: 19_600_000_000, isDirectory: true, traversal: completeTraversal),
+                DiskEntry(name: "Library", url: URL(fileURLWithPath: "/Library"), bytes: 3_040_000_000, isDirectory: true, traversal: completeTraversal)
             ],
             largeFiles: [],
-            totalBytes: 183_800_000_000,
-            totalFiles: 148_220
+            totalBytes: 314_440_000_000,
+            totalFiles: 898_000
         )
         diskHasScanned = true
         diskScanCacheHitCount = 3
         diskScanScannedCount = 2
         diskScanElapsedSeconds = 0.42
         diskScanCompletedAt = Date()
+        diskVolumeSnapshot = DiskVolumeSnapshot(
+            selectedRoot: Self.startupDiskRoot,
+            volumeRoot: Self.startupDiskRoot,
+            volumeName: "Macintosh HD",
+            totalBytes: 994_662_584_320,
+            availableBytes: 126_067_089_408,
+            availableForImportantUsageBytes: 153_501_903_568,
+            selectedRootIsVolumeRoot: true
+        )
+        diskScanCoverage = DiskScanCoverage.summarize(
+            entries: diskReport?.entries ?? [],
+            rootEnumerationErrorCount: 0,
+            hiddenTopLevelEntryCount: 5,
+            unboundedTraversal: false
+        )
         if let diskReport {
             diskEvidenceReport = DiskEvidenceReport(
-                rootHint: "~",
+                rootHint: "/",
                 entries: diskReport.entries.map { entry in
                     let policy = DiskAISafetyPolicy.policy(for: entry.url, homeDirectory: home)
                     let purpose: String
@@ -5360,7 +5476,7 @@ final class AppStore: ObservableObject {
                     return DiskEvidenceEntry(
                         id: DiskEvidenceIndexer.fingerprint(for: entry.url),
                         name: entry.name,
-                        relativeHint: "~/\(entry.name)",
+                        relativeHint: "/\(entry.name)",
                         allocatedBytes: entry.bytes,
                         isDirectory: entry.isDirectory,
                         observedFileCount: 0,
@@ -5386,11 +5502,10 @@ final class AppStore: ObservableObject {
                 modelID: demoModelID,
                 summary: "基于目录名称、层级和体积推断，主要空间来自个人文件与应用数据；这些顶层目录都不适合直接整体清理，应继续进入查看。",
                 advice: [
-                    DiskAIAdvice(entryID: entries[0].id, category: .systemData, confidence: .high, verdict: .keep, risk: .high, priority: 1, suggestion: .inspectFurther, explanation: "通常包含应用沙盒、支持数据与缓存等混合内容。应继续进入，优先检查具体缓存目录，不要整体处理。"),
-                    DiskAIAdvice(entryID: entries[1].id, category: .userContent, confidence: .high, verdict: .keep, risk: .high, priority: 3, suggestion: .keep, explanation: "通常是用户创建或保存的文档。内容具有唯一性，建议保留并由你逐项确认。"),
-                    DiskAIAdvice(entryID: entries[2].id, category: .userContent, confidence: .high, verdict: .keep, risk: .high, priority: 3, suggestion: .keep, explanation: "通常是视频和剪辑素材，可能体积很大但不可自动重建，应由你逐项确认。"),
-                    DiskAIAdvice(entryID: entries[3].id, category: .userContent, confidence: .medium, verdict: .review, risk: .medium, priority: 2, suggestion: .inspectFurther, explanation: "通常包含安装包、归档和临时下载，也可能有仍需保留的文件。适合进入后按文件逐项检查。"),
-                    DiskAIAdvice(entryID: entries[4].id, category: .userContent, confidence: .high, verdict: .keep, risk: .high, priority: 3, suggestion: .keep, explanation: "通常是照片、截图及图库数据，属于用户内容，不应仅凭体积判断为可清理。")
+                    DiskAIAdvice(entryID: entries[0].id, category: .userContent, confidence: .high, verdict: .keep, risk: .high, priority: 1, suggestion: .inspectFurther, explanation: "Users 包含多个用户主目录；应继续进入，不要把总量当成可清理空间。"),
+                    DiskAIAdvice(entryID: entries[1].id, category: .appSupportData, confidence: .high, verdict: .review, risk: .medium, priority: 2, suggestion: .inspectFurther, explanation: "Applications 主要是 App 本体；应通过应用卸载页管理，不应从磁盘浏览整体处理。"),
+                    DiskAIAdvice(entryID: entries[2].id, category: .systemData, confidence: .high, verdict: .keep, risk: .high, priority: 3, suggestion: .keep, explanation: "System 由 macOS 管理，保持只读。"),
+                    DiskAIAdvice(entryID: entries[3].id, category: .systemData, confidence: .medium, verdict: .keep, risk: .high, priority: 3, suggestion: .inspectFurther, explanation: "Library 混合系统与全局应用数据，应继续下钻确认来源。")
                 ],
                 cautions: ["演示结果只依据元数据，不代表读取过文件内容，也不会产生任何清理动作。"],
                 requestedCount: entries.count,
