@@ -5598,9 +5598,9 @@ final class AppStore: ObservableObject {
             insights: cleanupScanInsights,
             candidates: cleanupCandidates
         )
-        let demoModelID = "Qwen3.8-27B-Uncensored-8bit"
+        let demoModelID = "DemoCoder-14B-4bit"
         let demoModelPath = home
-            .appendingPathComponent("Models/MLX/Qwen3.8-27B-Uncensored-8bit", isDirectory: true)
+            .appendingPathComponent("Models/MLX/DemoCoder-14B-4bit", isDirectory: true)
             .path
         localAIEndpoint = "http://127.0.0.1:8080/v1"
         localAIModelPath = demoModelPath
@@ -5610,10 +5610,10 @@ final class AppStore: ObservableObject {
                 path: demoModelPath,
                 canonicalPath: demoModelPath,
                 displayName: demoModelID,
-                architecture: "Qwen3_5ForConditionalGeneration",
-                modelType: "qwen3_5",
-                quantization: "8-bit",
-                weightBytes: 29_500_000_000,
+                architecture: "DemoForCausalLM",
+                modelType: "demo-coder",
+                quantization: "4-bit",
+                weightBytes: 14_600_000_000,
                 serviceAliases: [demoModelID]
             )
         ]
@@ -5633,10 +5633,10 @@ final class AppStore: ObservableObject {
         localAIBenchmarkPhase = .completed
         localAIDiagnostic = "演示模式：本机模型已连接"
         let demoSupervisor = LocalModelSupervisorSnapshot(
-            label: "homebrew.mxcl.omlx",
+            label: "com.cleannest.demo.omlx",
             domain: "gui/\(getuid())",
             kind: .userLaunchAgent,
-            sourcePath: home.appendingPathComponent("Library/LaunchAgents/homebrew.mxcl.omlx.plist").path,
+            sourcePath: home.appendingPathComponent("Library/LaunchAgents/com.cleannest.demo.omlx.plist").path,
             sourceDeviceID: 1,
             sourceFileID: 9_001,
             programName: "omlx",
@@ -5644,21 +5644,21 @@ final class AppStore: ObservableObject {
             runAtLoad: true,
             isLoaded: true,
             isDisabled: false,
-            processID: 46_159,
+            processID: 4_242,
             isOwnedByCurrentUser: true,
             platform: .omlx
         )
         let demoRuntime = LocalModelRuntimeInstance(
-            id: "omlx:46159:8080",
+            id: "omlx:4242:8080",
             platform: .omlx,
             phase: .runningHealthy,
-            modelIDs: [demoModelID, "Qwen3.8-4B-4bit"],
+            modelIDs: [demoModelID, "DemoChat-3B-4bit"],
             defaultModelID: demoModelID,
             process: LocalModelProcessSnapshot(
-                pid: 46_159,
-                commandName: "omlx-server",
+                pid: 4_242,
+                commandName: "omlx-demo-server",
                 executablePath: "/opt/homebrew/bin/omlx",
-                residentMemoryBytes: 31_400_000_000,
+                residentMemoryBytes: 15_400_000_000,
                 startedAt: now.addingTimeInterval(-4_200),
                 ownerUserID: UInt32(getuid())
             ),
@@ -5668,11 +5668,11 @@ final class AppStore: ObservableObject {
             localNetworkAddresses: [],
             evidence: [.process, .supervisor, .listener, .platformAPI, .userConfiguration],
             diagnostic: "模型 API 已确认，并发现会自动拉起的用户守护。",
-            engineMemoryBytes: 29_500_000_000,
+            engineMemoryBytes: 14_600_000_000,
             clients: [
                 LocalModelClientConnection(
-                    processID: 8_812,
-                    commandName: "Codex",
+                    processID: 5_080,
+                    commandName: "Local Agent",
                     endpoint: LocalModelListener(host: "127.0.0.1", port: 53_456)
                 )
             ],
@@ -5680,13 +5680,13 @@ final class AppStore: ObservableObject {
                 LocalModelRuntimeIssue(
                     kind: .automaticRestart,
                     title: "关闭 PID 后可能自动重启",
-                    detail: "homebrew.mxcl.omlx 使用 KeepAlive 和登录时启动。",
+                    detail: "演示 LaunchAgent 使用 KeepAlive 和登录时启动。",
                     isWarning: true
                 ),
                 LocalModelRuntimeIssue(
                     kind: .activeClients,
                     title: "有客户端正在连接",
-                    detail: "当前观察到 Codex 的已建立 TCP 连接；关闭服务会中断请求。",
+                    detail: "当前观察到本机 Agent 的已建立 TCP 连接；关闭服务会中断请求。",
                     isWarning: true
                 )
             ]
@@ -5704,7 +5704,7 @@ final class AppStore: ObservableObject {
                 kind: .processReplaced,
                 runtimeID: demoRuntime.id,
                 title: "模型服务出现新进程",
-                detail: "oMLX 由用户 LaunchAgent 重新拉起；当前 PID 46159。"
+                detail: "oMLX 由演示 LaunchAgent 重新拉起；当前 PID 4242。"
             )
         ]
         cleanupAIAnalysis = CleanupAIAnalysis(

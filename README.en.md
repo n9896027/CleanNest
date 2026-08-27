@@ -2,9 +2,9 @@
 
 # CleanNest
 
-**See where your Mac storage went, then reclaim only what is genuinely safe to remove.**
+**Local Mac management and safe cleanup for AI development workflows.**
 
-A native macOS app that brings together Mole and a replaceable on-device MLX model. Core scans and model analysis stay on your Mac, and files go to the Trash by default.
+CleanNest brings Agent workspaces, local model services, system alerts, and storage evidence into one on-device control surface. See first, understand second, decide last. Files go to the Trash by default, and AI can never authorize deletion.
 
 [简体中文](README.md) · **English** · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md)
 
@@ -18,26 +18,61 @@ A native macOS app that brings together Mole and a replaceable on-device MLX mod
 
 </div>
 
-![CleanNest overview showing local disk usage, cleanup suggestions, system status, and recent activity](docs/images/overview.png)
+![CleanNest overview organized around the next reviewable task, read-only status, and safe entry points](docs/images/readme/overview.png)
 
-CleanNest turns Mac cleanup from a black-box button into an understandable, reversible workflow. It shows where storage is being used and what a directory is generally for, then leaves the decision to you. It is not a “one-click booster,” and a model suggestion can never delete a file on its own.
+<p align="center"><sub>Synthetic demo data · Real local app UI · No user files, real processes, or private model details</sub></p>
 
-| See | Understand | Act safely |
-| --- | --- | --- |
-| Browse directories, caches, apps, and system status | Use deterministic rules, with optional local AI for extra context | Preview and confirm each action; files go to the Trash by default |
+CleanNest is not a conventional cleaner with AI copy added on top. It is designed for Macs running Codex, Claude, Pi Agent, local models, and developer tooling: identify who is growing, what is still active, why a service restarts, which signals are abnormal, and what can be handled recoverably.
+
+| Agent Workspace | Local Model Runtime Center | Status and alerts | Safe cleanup |
+| --- | --- | --- | --- |
+| Usage, change, active protection, anomalies | Platform, short ID, listeners, clients, launchd | CPU, memory, network, GPU, temperature, fans, battery | Preview, identity checks, Trash, recovery records |
 
 > [!IMPORTANT]
 > CleanNest is currently distributed as source code only. There is no official Developer ID-signed and Apple-notarized download yet. CI builds verify the project; they are not trusted public release binaries.
 
-## Why CleanNest
+## More than a disk cleaner
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/images/readme/agent-workspace.png" alt="Agent Workspace demo showing usage, active protection, and anomaly evidence">
+      <br><strong>Agent Workspace</strong><br>
+      <sub>Bounded ledgers for Codex, Claude, Pi Agent, Kimi, WorkBuddy, Hermes, OpenClaw, Trae, and MiniMax Hub. The overview does not build file-level evidence; details are loaded only after you open one Agent.</sub>
+    </td>
+    <td width="50%">
+      <img src="docs/images/readme/local-model-runtime.png" alt="Local Model Runtime Center demo showing service, model short ID, client, and supervisor topology">
+      <br><strong>Local Model Runtime Center</strong><br>
+      <sub>Discover oMLX, MLX-LM, Ollama, LM Studio, and llama.cpp/OpenAI-compatible services, then explain ports, model short IDs, established TCP clients, and automatic restart sources.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/images/readme/system-alerts.png" alt="System Status demo showing highlighted temperature and fan warnings plus the local alert timeline">
+      <br><strong>On-device status and alerts</strong><br>
+      <sub>One threshold policy drives the menu bar, status page, and alert timeline. Warnings use text, symbols, and color without treating an ordinary busy workload as a hardware fault.</sub>
+    </td>
+    <td width="50%">
+      <img src="docs/images/readme/cleanup-review.png" alt="Cleanup demo showing scan evidence, categories, review basket, and recovery information">
+      <br><strong>Evidence-led safe cleanup</strong><br>
+      <sub>Separate rebuildable caches, installers, screenshots, personal media, and full-SHA-256 duplicates. Personal files are not preselected, and identity is revalidated before execution.</sub>
+    </td>
+  </tr>
+</table>
+
+> These screenshots come from the local `CLEANNEST_DEMO=1` runtime. They demonstrate the current UI structure and states; every value, file, process, and model shown is synthetic rather than a user measurement.
+
+## From a problem to reviewable evidence
 
 | The problem | How CleanNest approaches it |
 | --- | --- |
-| Your disk is suddenly full, but the cause is unclear | Browse storage by folder and file size, with explanations for common macOS directories |
+| Several coding Agents keep growing, but ownership is unclear | Show per-Agent usage, change, active-file protection, and anomalies; build file evidence only inside one Agent detail view |
+| A local model restarts after being stopped | Correlate process, listener, platform API, established clients, and launchd supervisor before offering a control appropriate to the ownership tier |
+| Temperature or fan behavior becomes abnormal | Share thresholds across the menu bar, status page, and a bounded local timeline with peak, duration, and recovery evidence |
+| Your disk is suddenly full, but the cause is unclear | Reconcile directory, owning-app, and functional views while keeping APFS capacity, classified files, and cleanup candidates separate |
 | Rebuildable caches are mixed with downloads and personal data | Separate low-risk generated data from items that require review or should be kept |
-| Activity Monitor is too technical | Explain memory pressure, swap usage, and high-memory processes before you decide whether to quit anything |
 | App uninstallers leave files behind | Preview the app and related files matched by its exact Bundle ID |
-| You do not want a file inventory sent to a cloud model | Optionally use your chosen MLX model on the Mac with a deliberately limited, redacted metadata snapshot |
+| You do not want a file inventory sent to a cloud model | Deterministic scans need no AI; optional analysis accepts only an explicit `127.0.0.1` endpoint and a bounded metadata snapshot |
 
 ## Core capabilities
 
