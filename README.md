@@ -45,7 +45,8 @@ CleanNest 希望把“清理 Mac”从一个黑盒按钮变成可理解、可撤
 - **桌面与挂载安装介质**：桌面和下载目录中的 DMG、PKG、XIP、ISO 及安装器 ZIP 会进入人工复核；已挂载的安装镜像单独显示来源与安全推出入口，`/Volumes` 内容绝不会进入删除清单。
 - **下载、截图、媒体与重复文件**：`ScreenShot`、`Screenshot`、`Screen Shot`、`ScreenCapture`、`截屏` 和 `截图` 等常见截图命名会直接进入独立分组，可一键全选/取消全选；其他媒体按体积、时间与类型筛选，重复内容用完整 SHA-256 确认。个人文件永不自动勾选，执行前还会复核文件身份与计划保留的副本。
 - **独立扫描隔离**：清理、磁盘体积与证据构建由内嵌、独立签名的 XPC 服务执行。取消、服务中断或崩溃不会拖垮主界面，且不用半成品覆盖上一次完整结果。
-- **Agent 工作区**：为 Codex 与 Claude 的会话、缓存、备份、运行时、虚拟机与状态索引建立只读占用账本；识别打开文件、近期写入、超大文件与基线增长。活跃会话强制保护，0.6.2 只生成 0.6.3 回收计划预览，不执行移动或删除。
+- **Agent 工作区**：为 Codex 与 Claude 建立只读占用账本并识别打开文件、近期写入、超大文件与基线增长。0.6.3 允许用户逐项选择已静置的缓存、临时文件和日志：执行前两次复核身份/打开状态，先创建并校验本机 ZIP，再处理原文件；恢复遇到 Agent 新建的同名文件会拒绝覆盖。会话、索引、记忆、凭据和运行时继续只读。
+- **开发工具原生账本**：使用 Git `worktree prune --dry-run`、Docker `system df`、Hugging Face `cache prune --dry-run`、npm 缓存配置和 pip `cache info`。只有 Git 与 Hugging Face 在重新 dry-run 后开放确认执行；没有官方预演的 Docker、npm 与 pip 广域清理保持禁用。
 - **增量磁盘浏览**：持续显示部分结果；15 分钟内只复用元数据签名未变化的项目，并明确展示缓存命中、实扫数量和深度刷新入口。
 - **清理决策中心**：Treemap 与面包屑之外，还逐项解释用途、变大原因、处理影响、可恢复性、证据强度和安全下一步；你可以手动标记待复核、保留或稍后处理，且不能覆盖安全边界。
 - **菜单栏实时监测**：不依赖 Mole，可以 1/2/5/10 秒在本机读取 CPU、内存、网络、磁盘、GPU、温度、风扇和电池；默认以 State 式双层短标签紧凑显示，也可切换展开文字/曲线、调整顺序或单独隐藏。异常时以橙/红色和 `!` / `!!` 同步标记，并结合 macOS 热状态与真实压力信号，避免把普通高负载误报为故障。
@@ -127,9 +128,10 @@ CleanNest 可以连接本机 `mlx_lm.server`，为清理候选和磁盘目录补
 | [威胁模型](docs/THREAT_MODEL.md) | 保护目标、攻击面、控制与不保证事项 |
 | [故障排查](docs/TROUBLESHOOTING.md) | Mole、权限、AI、构建和电池状态常见问题 |
 | [架构](docs/ARCHITECTURE.md) | 模块、数据流与高风险操作边界 |
-| [Agent 工作区](docs/AGENT_WORKSPACE.md) | Codex/Claude 占用账本、活跃保护、增长检测与 0.6.2 只读边界 |
+| [Agent 工作区](docs/AGENT_WORKSPACE.md) | Codex/Claude 占用账本、备份优先处置、恢复与原生工具边界 |
 | [隐私](PRIVACY.md) | 本机保存的数据、网络访问及清除方式 |
 | [路线图](ROADMAP.md) | 已完成、近期计划与暂不承诺事项 |
+| [0.6.3 验证报告](docs/VERIFICATION-0.6.3.md) | Agent 手动决策、备份校验、冲突安全恢复、原生工具边界与本机构建证据 |
 | [0.6.2 验证报告](docs/VERIFICATION-0.6.2.md) | Agent 占用账本、活跃保护、XPC 内存、失败关闭与真机扫描证据 |
 | [0.6.0 验证报告](docs/VERIFICATION-0.6.0.md) | XPC 扫描隔离、取消回滚、崩溃注入与冷启动内存证据 |
 | [0.5.5 验证报告](docs/VERIFICATION-0.5.5.md) | 扫描峰值内存、后台降频、三级重复检测与取消语义 |
@@ -169,6 +171,6 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-项目当前开发版本为 **0.6.2（Build 23）**。CI 会在 Apple Silicon 与 Intel runner 上编译并运行测试。欢迎通过 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可复现的问题或功能建议；安全问题请使用私密漏洞报告渠道。
+项目当前开发版本为 **0.6.3（Build 24）**。CI 会在 Apple Silicon 与 Intel runner 上编译并运行测试。欢迎通过 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可复现的问题或功能建议；安全问题请使用私密漏洞报告渠道。
 
 App 的核心导航、总览、磁盘、系统状态与设置关键界面已提供 English、简体中文和繁體中文资源；涉及运行时路径或深度诊断的动态文案可能仍回退为源语言。日本語和한국어 README 用于说明项目范围，完整 UI 本地化仍会继续扩充。

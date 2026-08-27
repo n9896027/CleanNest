@@ -4,6 +4,7 @@ import Darwin
 import Foundation
 import ServiceManagement
 import CleanNestCore
+import CleanNestMutation
 
 enum SidebarItem: String, CaseIterable, Identifiable {
     case overview = "总览"
@@ -125,6 +126,20 @@ enum AgentWorkspaceScanPhase: Equatable {
     var isScanning: Bool { self == .scanning }
 }
 
+enum AgentWorkspaceRecoveryPhase: Equatable {
+    case idle
+    case creatingBackup
+    case restoring(UUID)
+    case failed(String)
+
+    var isBusy: Bool {
+        switch self {
+        case .creatingBackup, .restoring: return true
+        case .idle, .failed: return false
+        }
+    }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published var selection: SidebarItem? = .overview
@@ -237,6 +252,17 @@ final class AppStore: ObservableObject {
     @Published private(set) var agentWorkspaceSnapshot: AgentWorkspaceSnapshot?
     @Published private(set) var agentWorkspacePhase: AgentWorkspaceScanPhase = .idle
     @Published private(set) var agentWorkspaceDiagnostic = "尚未扫描 Agent 工作痕迹"
+    @Published var selectedAgentWorkspaceCandidateIDs = Set<String>()
+    @Published private(set) var agentWorkspaceRecoveryRecords: [AgentWorkspaceRecoveryRecord] = []
+    @Published private(set) var agentWorkspaceRecoveryPhase: AgentWorkspaceRecoveryPhase = .idle
+    @Published private(set) var agentWorkspaceRecoveryMessage: String?
+    @Published private(set) var agentWorkspaceRecoveryMessageIsWarning = false
+    @Published private(set) var nativeDeveloperStorageSnapshot: NativeDeveloperStorageSnapshot?
+    @Published private(set) var nativeDeveloperStorageIsRefreshing = false
+    @Published private(set) var nativeDeveloperStorageActionTool: NativeDeveloperStorageTool?
+    @Published private(set) var nativeDeveloperStorageMessage: String?
+    @Published private(set) var nativeDeveloperStorageMessageIsWarning = false
+    @Published private(set) var nativeGitRepository: URL?
     @Published var customEnginePath = ""
     @Published var lastTechnicalDetail = ""
     @Published var showingTechnicalDetail = false
@@ -249,6 +275,8 @@ final class AppStore: ObservableObject {
     private let applicationScanner = ApplicationScanner()
     private let scannerServiceClient = ScannerServiceClient()
     private let agentWorkspaceScannerServiceClient = ScannerServiceClient()
+    private let agentWorkspaceRecoveryService = AgentWorkspaceRecoveryService()
+    private let nativeDeveloperStorageInspector = NativeDeveloperStorageInspector()
     private let processMemoryInspector = ProcessMemoryInspector()
     private let metricsStore = MetricsStore()
     private let nativeSystemMonitor = NativeSystemMonitor()
@@ -345,6 +373,7 @@ final class AppStore: ObservableObject {
             loadActivities()
             loadEvolutionMemory()
             loadDiskManualDecisions()
+            loadAgentWorkspaceRecoveryRecords()
             refreshDiskCapacity()
         }
         Task { await bootstrap() }
@@ -358,6 +387,18 @@ final class AppStore: ObservableObject {
 
     var selectedCleanupCount: Int {
         cleanupCandidates.reduce(0) { $0 + (selectedCleanupIDs.contains($1.id) ? 1 : 0) }
+    }
+
+    var selectedAgentWorkspaceCandidates: [AgentWorkspaceActionCandidate] {
+        guard let snapshot = agentWorkspaceSnapshot else { return [] }
+        return snapshot.actionCandidates.filter { selectedAgentWorkspaceCandidateIDs.contains($0.id) }
+    }
+
+    var selectedAgentWorkspaceBytes: Int64 {
+        selectedAgentWorkspaceCandidates.reduce(0) { partial, candidate in
+            let bytes = max(0, candidate.identity.allocatedBytes)
+            return partial > Int64.max - bytes ? Int64.max : partial + bytes
+        }
     }
 
     var cleanupScreenshotCount: Int {
@@ -529,6 +570,9 @@ final class AppStore: ObservableObject {
             guard response.requestID == scanID.uuidString,
                   agentWorkspaceScanID == scanID else { return }
             agentWorkspaceSnapshot = result.snapshot
+            selectedAgentWorkspaceCandidateIDs.formIntersection(
+                Set(result.snapshot.actionCandidates.map(\.id))
+            )
             agentWorkspaceDiagnostic = "\(result.snapshot.diagnostic) 耗时 \(String(format: "%.1f", response.elapsedSeconds)) 秒。"
             agentWorkspacePhase = .ready
             if result.snapshot.isComplete, !result.snapshot.detectedAgents.isEmpty {
@@ -544,6 +588,244 @@ final class AppStore: ObservableObject {
             agentWorkspacePhase = .failed(message)
             agentWorkspaceDiagnostic = message
         }
+    }
+
+    func setAgentWorkspaceCandidate(_ id: String, selected: Bool) {
+        guard agentWorkspaceSnapshot?.actionCandidates.contains(where: { $0.id == id }) == true else {
+            selectedAgentWorkspaceCandidateIDs.remove(id)
+            return
+        }
+        if selected {
+            selectedAgentWorkspaceCandidateIDs.insert(id)
+        } else {
+            selectedAgentWorkspaceCandidateIDs.remove(id)
+        }
+    }
+
+    func setAgentWorkspaceCandidates(
+        _ candidates: [AgentWorkspaceActionCandidate],
+        selected: Bool
+    ) {
+        let ids = Set(candidates.map(\.id))
+        if selected {
+            selectedAgentWorkspaceCandidateIDs.formUnion(ids)
+        } else {
+            selectedAgentWorkspaceCandidateIDs.subtract(ids)
+        }
+    }
+
+    func createAgentWorkspaceRecovery() async {
+        guard !demoMode, !agentWorkspaceRecoveryPhase.isBusy else { return }
+        guard agentWorkspaceSnapshot?.isComplete == true else {
+            agentWorkspaceRecoveryMessage = "本次扫描或活跃文件确认不完整，不能执行安全处置。"
+            agentWorkspaceRecoveryMessageIsWarning = true
+            return
+        }
+        let candidates = selectedAgentWorkspaceCandidates
+        guard !candidates.isEmpty else {
+            agentWorkspaceRecoveryMessage = "请先选择至少一个静置缓存、临时文件或日志。"
+            agentWorkspaceRecoveryMessageIsWarning = true
+            return
+        }
+        agentWorkspaceRecoveryPhase = .creatingBackup
+        agentWorkspaceRecoveryMessage = "正在创建并校验本机压缩备份；完成前不会移动原文件。"
+        agentWorkspaceRecoveryMessageIsWarning = false
+        do {
+            let result = try await agentWorkspaceRecoveryService.createRecovery(candidates: candidates)
+            selectedAgentWorkspaceCandidateIDs.subtract(candidates.map(\.id))
+            loadAgentWorkspaceRecoveryRecords()
+            let delta = result.record.apfsDeltaBytes ?? 0
+            let deltaText: String
+            if delta > 0 {
+                deltaText = "APFS 可用空间实测增加 \(CleanNestFormatting.bytes(delta))。"
+            } else if delta < 0 {
+                deltaText = "APFS 可用空间实测减少 \(CleanNestFormatting.bytes(-delta))；压缩备份当前大于释放收益。"
+            } else {
+                deltaText = "APFS 可用空间实测没有可确认变化。"
+            }
+            agentWorkspaceRecoveryMessage = "已处理 \(result.record.items.count) 个文件，Agent 目录减少 \(CleanNestFormatting.bytes(result.record.originalAllocatedBytes))；\(deltaText) 可随时从本页恢复。"
+            agentWorkspaceRecoveryMessageIsWarning = delta <= 0
+            addActivity(
+                title: "Agent 安全处置",
+                detail: "压缩备份已校验并保存在本机恢复区；\(deltaText)",
+                outcome: result.record.pendingOriginalBytes == 0 ? .success : .partial,
+                affectedItems: result.record.items.count,
+                bytes: max(0, delta),
+                category: .cleanup
+            )
+            agentWorkspaceRecoveryPhase = .idle
+            await refreshAgentWorkspace()
+            refreshDiskCapacity()
+        } catch {
+            let message = error.localizedDescription
+            agentWorkspaceRecoveryPhase = .failed(message)
+            agentWorkspaceRecoveryMessage = message
+            agentWorkspaceRecoveryMessageIsWarning = true
+            addActivity(
+                title: "Agent 安全处置",
+                detail: "没有完成：\(message)",
+                outcome: .failed,
+                affectedItems: candidates.count,
+                category: .cleanup
+            )
+        }
+    }
+
+    func restoreAgentWorkspaceRecovery(_ record: AgentWorkspaceRecoveryRecord) async {
+        guard !demoMode, !agentWorkspaceRecoveryPhase.isBusy, record.status != .restored else { return }
+        agentWorkspaceRecoveryPhase = .restoring(record.id)
+        agentWorkspaceRecoveryMessage = "正在核对原位置；如果 Agent 已新建同名文件，恢复会停止而不会覆盖。"
+        agentWorkspaceRecoveryMessageIsWarning = false
+        do {
+            let result = try await agentWorkspaceRecoveryService.restore(operationID: record.id)
+            loadAgentWorkspaceRecoveryRecords()
+            agentWorkspaceRecoveryMessage = "已恢复 \(result.record.items.count) 个文件；压缩备份仍保留在本机恢复区。"
+            agentWorkspaceRecoveryMessageIsWarning = false
+            addActivity(
+                title: "恢复 Agent 文件",
+                detail: "已从校验过的本机备份恢复；未覆盖 Agent 后来生成的文件。",
+                outcome: .success,
+                affectedItems: result.record.items.count,
+                category: .other
+            )
+            agentWorkspaceRecoveryPhase = .idle
+            await refreshAgentWorkspace()
+            refreshDiskCapacity()
+        } catch {
+            let message = error.localizedDescription
+            agentWorkspaceRecoveryPhase = .failed(message)
+            agentWorkspaceRecoveryMessage = message
+            agentWorkspaceRecoveryMessageIsWarning = true
+            addActivity(
+                title: "恢复 Agent 文件",
+                detail: "没有完成：\(message)",
+                outcome: .failed,
+                affectedItems: record.items.count,
+                category: .other
+            )
+        }
+    }
+
+    func openAgentWorkspaceRecoveryFolder() {
+        let url = CleanNestDataPaths.agentWorkspaceRecoveryDirectory()
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    private func loadAgentWorkspaceRecoveryRecords() {
+        guard !demoMode else {
+            agentWorkspaceRecoveryRecords = []
+            return
+        }
+        do {
+            agentWorkspaceRecoveryRecords = try agentWorkspaceRecoveryService.listRecords()
+        } catch {
+            agentWorkspaceRecoveryRecords = []
+            lastTechnicalDetail = "Agent 恢复记录无法读取：\(error.localizedDescription)"
+        }
+    }
+
+    func setNativeGitRepository(_ url: URL?) async {
+        nativeGitRepository = url?.standardizedFileURL
+        await refreshNativeDeveloperStorage()
+    }
+
+    func refreshNativeDeveloperStorage() async {
+        guard !demoMode, !nativeDeveloperStorageIsRefreshing else { return }
+        nativeDeveloperStorageIsRefreshing = true
+        let repository = nativeGitRepository
+        nativeDeveloperStorageSnapshot = await nativeDeveloperStorageInspector.inspect(
+            gitRepository: repository
+        )
+        nativeDeveloperStorageIsRefreshing = false
+    }
+
+    func runNativeDeveloperStorageCleanup(_ requestedTool: NativeDeveloperStorageTool) async {
+        guard !demoMode,
+              nativeDeveloperStorageActionTool == nil,
+              [.gitWorktree, .huggingFace].contains(requestedTool) else { return }
+        nativeDeveloperStorageActionTool = requestedTool
+        nativeDeveloperStorageMessage = "正在重新生成原生 dry-run，执行范围不会沿用过期预览。"
+        nativeDeveloperStorageMessageIsWarning = false
+
+        let refreshed = await nativeDeveloperStorageInspector.inspect(gitRepository: nativeGitRepository)
+        nativeDeveloperStorageSnapshot = refreshed
+        guard let entry = refreshed.entries.first(where: { $0.tool == requestedTool }),
+              entry.state == .ready,
+              entry.supportsNativeCleanup,
+              let executablePath = entry.executablePath else {
+            nativeDeveloperStorageActionTool = nil
+            nativeDeveloperStorageMessage = "原生预演已变化或不再可用，没有执行清理。"
+            nativeDeveloperStorageMessageIsWarning = true
+            return
+        }
+
+        let arguments: [String]
+        switch requestedTool {
+        case .gitWorktree:
+            guard let scope = entry.scopePath else {
+                nativeDeveloperStorageActionTool = nil
+                nativeDeveloperStorageMessage = "Git 仓库范围已经丢失，没有执行 prune。"
+                nativeDeveloperStorageMessageIsWarning = true
+                return
+            }
+            arguments = ["-C", scope, "worktree", "prune", "--verbose"]
+        case .huggingFace:
+            arguments = ["cache", "prune", "--yes"]
+        case .docker, .npm, .pip:
+            nativeDeveloperStorageActionTool = nil
+            return
+        }
+
+        let before = diskFreeSpaceBytes()
+        do {
+            let result = try await commandRunner.run(
+                executable: URL(fileURLWithPath: executablePath),
+                arguments: arguments,
+                environment: requestedTool == .huggingFace ? [
+                    "HF_HUB_OFFLINE": "1",
+                    "HF_HUB_DISABLE_TELEMETRY": "1",
+                    "DO_NOT_TRACK": "1"
+                ] : [:],
+                timeout: requestedTool == .huggingFace ? 120 : 20
+            )
+            guard result.exitCode == 0 else {
+                throw CommandRunnerError.nonZeroExit(result)
+            }
+            let after = diskFreeSpaceBytes()
+            let delta = max(0, after - before)
+            nativeDeveloperStorageMessage = "\(requestedTool.displayName) 原生清理已完成；APFS 可用空间实测增加 \(CleanNestFormatting.bytes(delta))。"
+            nativeDeveloperStorageMessageIsWarning = false
+            addActivity(
+                title: "\(requestedTool.displayName) 原生清理",
+                detail: "执行前重新通过官方 dry-run；APFS 前后实测增加 \(CleanNestFormatting.bytes(delta))。",
+                outcome: .success,
+                affectedItems: 1,
+                bytes: delta,
+                category: .cleanup
+            )
+            nativeDeveloperStorageSnapshot = await nativeDeveloperStorageInspector.inspect(
+                gitRepository: nativeGitRepository
+            )
+            refreshDiskCapacity()
+        } catch {
+            let message = error.localizedDescription
+            nativeDeveloperStorageMessage = "\(requestedTool.displayName) 没有完成：\(message)"
+            nativeDeveloperStorageMessageIsWarning = true
+            addActivity(
+                title: "\(requestedTool.displayName) 原生清理",
+                detail: "没有完成：\(message)",
+                outcome: .failed,
+                category: .cleanup
+            )
+        }
+        nativeDeveloperStorageActionTool = nil
+    }
+
+    private func diskFreeSpaceBytes() -> Int64 {
+        let path = FileManager.default.homeDirectoryForCurrentUser.path
+        let attributes = try? FileManager.default.attributesOfFileSystem(forPath: path)
+        return max(0, (attributes?[.systemFreeSize] as? NSNumber)?.int64Value ?? 0)
     }
 
     private func startAgentWorkspaceMonitoring() {
@@ -3526,6 +3808,30 @@ final class AppStore: ObservableObject {
 
     private func seedDemoAgentWorkspace(home: URL) {
         let now = Date()
+        func candidate(
+            provider: AgentWorkspaceProvider,
+            kind: AgentArtifactKind,
+            relativePath: String,
+            bytes: Int64,
+            fileID: UInt64
+        ) -> AgentWorkspaceActionCandidate {
+            AgentWorkspaceActionCandidate(
+                id: "demo:\(provider.rawValue):\(kind.rawValue):\(fileID)",
+                provider: provider,
+                kind: kind,
+                path: home.appendingPathComponent(relativePath).path,
+                identity: AgentWorkspaceFileIdentity(
+                    deviceID: 1,
+                    fileID: fileID,
+                    ownerUserID: UInt32(getuid()),
+                    logicalBytes: bytes,
+                    allocatedBytes: bytes,
+                    modificationSeconds: Int64(now.addingTimeInterval(-7_200).timeIntervalSince1970),
+                    modificationNanoseconds: 0
+                ),
+                scannedAt: now
+            )
+        }
         func artifact(
             provider: AgentWorkspaceProvider,
             kind: AgentArtifactKind,
@@ -3538,7 +3844,8 @@ final class AppStore: ObservableObject {
             preview: Int64 = 0,
             largest: Int64,
             disposition: AgentArtifactDisposition,
-            protections: [String] = []
+            protections: [String] = [],
+            candidates: [AgentWorkspaceActionCandidate] = []
         ) -> AgentWorkspaceArtifact {
             AgentWorkspaceArtifact(
                 id: "\(provider.rawValue):\(kind.rawValue)",
@@ -3559,7 +3866,8 @@ final class AppStore: ObservableObject {
                 disposition: disposition,
                 protectionReasons: protections,
                 isComplete: true,
-                diagnostic: nil
+                diagnostic: nil,
+                actionCandidates: candidates
             )
         }
 
@@ -3567,6 +3875,21 @@ final class AppStore: ObservableObject {
             provider: .codex,
             detected: true,
             artifacts: [
+                artifact(
+                    provider: .codex,
+                    kind: .logs,
+                    path: ".codex/logs",
+                    bytes: 184_000_000,
+                    files: 312,
+                    old: 210,
+                    preview: 172_000_000,
+                    largest: 72_000_000,
+                    disposition: .regenerable,
+                    candidates: [
+                        candidate(provider: .codex, kind: .logs, relativePath: ".codex/logs/agent-2026-07.log", bytes: 72_000_000, fileID: 11),
+                        candidate(provider: .codex, kind: .logs, relativePath: ".codex/logs/tool-output.log", bytes: 46_000_000, fileID: 12)
+                    ]
+                ),
                 artifact(
                     provider: .codex,
                     kind: .activeSessions,
@@ -3651,7 +3974,12 @@ final class AppStore: ObservableObject {
                     old: 2_410,
                     preview: 504_000_000,
                     largest: 58_000_000,
-                    disposition: .regenerable
+                    disposition: .regenerable,
+                    candidates: [
+                        candidate(provider: .claude, kind: .caches, relativePath: "Library/Application Support/Claude/Cache/data_0", bytes: 58_000_000, fileID: 21),
+                        candidate(provider: .claude, kind: .caches, relativePath: "Library/Application Support/Claude/Cache/data_1", bytes: 41_000_000, fileID: 22),
+                        candidate(provider: .claude, kind: .caches, relativePath: "Library/Application Support/Claude/Cache/data_2", bytes: 29_000_000, fileID: 23)
+                    ]
                 ),
                 artifact(
                     provider: .claude,
@@ -3694,6 +4022,81 @@ final class AppStore: ObservableObject {
         )
         agentWorkspacePhase = .ready
         agentWorkspaceDiagnostic = agentWorkspaceSnapshot?.diagnostic ?? "演示 Agent 工作区已就绪"
+        let demoRecoveryID = UUID(uuidString: "77F8C956-52D0-41E0-A5EF-A41E5FB33D01")!
+        let demoRecoveryItems = Array(claude.artifacts.flatMap(\.actionCandidates).prefix(2)).enumerated().map {
+            AgentWorkspaceRecoveryItem(
+                candidate: $0.element,
+                archiveRelativePath: "staging/00000\($0.offset)",
+                pendingFileName: "00000\($0.offset)"
+            )
+        }
+        agentWorkspaceRecoveryRecords = [AgentWorkspaceRecoveryRecord(
+            id: demoRecoveryID,
+            createdAt: now.addingTimeInterval(-2_800),
+            completedAt: now.addingTimeInterval(-2_760),
+            status: .available,
+            items: demoRecoveryItems,
+            originalAllocatedBytes: 99_000_000,
+            originalLogicalBytes: 99_000_000,
+            archiveAllocatedBytes: 18_000_000,
+            removedOriginalBytes: 99_000_000,
+            apfsFreeBefore: 147_900_000_000,
+            apfsFreeAfter: 147_978_000_000,
+            diagnostic: "演示记录：备份已校验，可恢复。"
+        )]
+        nativeDeveloperStorageSnapshot = NativeDeveloperStorageSnapshot(
+            capturedAt: now,
+            entries: [
+                NativeDeveloperStorageEntry(
+                    tool: .gitWorktree,
+                    state: .needsSelection,
+                    executablePath: "/usr/bin/git",
+                    summary: "选择一个 Git 仓库后再预演",
+                    detail: "不会遍历整台 Mac 猜测仓库。",
+                    supportsNativeCleanup: true,
+                    cleanupRisk: "只清理 Git 判定失效的管理记录。"
+                ),
+                NativeDeveloperStorageEntry(
+                    tool: .docker,
+                    state: .ready,
+                    executablePath: "/usr/local/bin/docker",
+                    summary: "Docker 磁盘账本已读取",
+                    detail: "4.8 GB 可回收；官方没有 system prune dry-run，保持只读。",
+                    preview: "Images 12.4 GB · Reclaimable 3.1 GB\nBuild cache 2.2 GB · Reclaimable 1.7 GB",
+                    supportsNativeCleanup: false,
+                    cleanupRisk: "不会删除停止容器、网络或镜像。"
+                ),
+                NativeDeveloperStorageEntry(
+                    tool: .huggingFace,
+                    state: .ready,
+                    executablePath: "/Users/demo/.local/bin/hf",
+                    summary: "hf cache prune dry-run 已完成",
+                    detail: "2 个未引用修订，预计 1.26 GB。",
+                    preview: "Dry run: 2 revisions · 1.26 GB",
+                    supportsNativeCleanup: true,
+                    cleanupRisk: "移除后可能需要重新下载。"
+                ),
+                NativeDeveloperStorageEntry(
+                    tool: .npm,
+                    state: .ready,
+                    executablePath: "/opt/homebrew/bin/npm",
+                    scopePath: "/Users/demo/.npm",
+                    summary: "npm 已返回当前缓存位置",
+                    detail: "没有内容级只读预演，使用备份优先通道。",
+                    supportsNativeCleanup: false,
+                    cleanupRisk: "不调用 cache clean --force。"
+                ),
+                NativeDeveloperStorageEntry(
+                    tool: .pip,
+                    state: .ready,
+                    executablePath: "/opt/homebrew/bin/python3",
+                    summary: "pip 缓存账本已读取",
+                    detail: "734 MB · 128 个文件；purge 没有 dry-run。",
+                    supportsNativeCleanup: false,
+                    cleanupRisk: "保持只读。"
+                )
+            ]
+        )
     }
 
     private func seedDemoData() {

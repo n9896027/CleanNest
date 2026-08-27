@@ -54,4 +54,9 @@ public enum CleanNestDataPaths {
         applicationSupportDirectory(fileManager: fileManager)
             .appendingPathComponent("agent-workspace-observation.json", isDirectory: false)
     }
+
+    public static func agentWorkspaceRecoveryDirectory(fileManager: FileManager = .default) -> URL {
+        applicationSupportDirectory(fileManager: fileManager)
+            .appendingPathComponent("AgentRecovery", isDirectory: true)
+    }
 }

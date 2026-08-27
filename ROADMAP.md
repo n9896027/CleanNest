@@ -29,11 +29,11 @@
 - 0.6.0 内嵌独立签名 XPC 扫描服务，清理/磁盘/证据构建故障隔离，取消与崩溃保留上次完整结果，不回退主进程扫描
 - 0.6.1 桌面安装包、已挂载安装介质安全推出，以及菜单栏/系统仪表的语义化异常高亮
 - 0.6.2 Agent 工作区 P0：Codex/Claude 占用账本、打开文件保护、近期写入保护、超大文件/基线增长检测，以及不执行文件操作的 0.6.3 回收计划预览
+- 0.6.3 Agent 工作区 P1：可再生文件的手动决策、双重身份/活跃复核、ZIP 校验备份、事务回滚、冲突安全恢复、活动审计与 APFS 前后实测；Git/Hugging Face 使用官方 dry-run 后可确认执行，Docker/npm/pip 缺少等价预演时保持只读
 
 ## 近期优先级
 
-- 0.6.3 Agent 工作区 P1：备份/压缩/恢复与审计记录，同步维护会话索引；用 Git worktree、Docker、Hugging Face、npm 和 pip 的原生预览/清理接口，并对比处理前后 APFS 实际余量
-- 0.6.4 Agent 工作区 P2：逐个验证 Kimi、WorkBuddy、Hermes、OpenClaw、Trae、MiniMax Hub 与小云雀适配器，增加 Agent/模型/端口/进程/守护依赖图与签名可更新规则库；未经验证的 Agent 只识别不清理
+- 0.6.4 Agent 工作区 P2：逐个验证 Kimi、WorkBuddy、Hermes、OpenClaw、Trae、MiniMax Hub 与小云雀适配器，增加 Agent/模型/端口/进程/守护依赖图与签名可更新规则库；为 Codex/Claude 调研公开且可验证的会话归档/索引事务接口，在此之前会话与私有索引只读；未经验证的 Agent 只识别不清理
 - 完成 0.5.3 的 Ollama、LM Studio 与 llama.cpp 真实运行样本回归，以及睡眠/唤醒和 48 小时耐久测试；当前代码支持只读发现，但不能用静态测试冒充全部平台实测
 - 完成 0.5.2 菜单栏常驻的 48 小时真机耐久测试，并记录内存、CPU、休眠/唤醒和菜单栏可见性
 - 完成 Developer ID 签名、Apple 公证和可信下载校验说明

@@ -89,6 +89,110 @@ public struct AgentWorkspaceOpenFile: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+public enum AgentWorkspaceFileIdentityError: LocalizedError, Equatable {
+    case missing
+    case notRegularFile
+    case metadataUnavailable
+
+    public var errorDescription: String? {
+        switch self {
+        case .missing: return "候选文件已经不存在。"
+        case .notRegularFile: return "只允许处理普通文件；目录和符号链接不会进入 Agent 安全处置。"
+        case .metadataUnavailable: return "无法读取候选文件的完整身份，操作已停止。"
+        }
+    }
+}
+
+/// Exact scan-time identity used by the GUI-only mutation layer.
+/// Paths alone are never sufficient authorization: the mutation service
+/// recaptures all values immediately before backup and again before mutation.
+public struct AgentWorkspaceFileIdentity: Codable, Equatable, Hashable, Sendable {
+    public let deviceID: UInt64
+    public let fileID: UInt64
+    public let ownerUserID: UInt32
+    public let logicalBytes: Int64
+    public let allocatedBytes: Int64
+    public let modificationSeconds: Int64
+    public let modificationNanoseconds: Int64
+
+    public init(
+        deviceID: UInt64,
+        fileID: UInt64,
+        ownerUserID: UInt32,
+        logicalBytes: Int64,
+        allocatedBytes: Int64,
+        modificationSeconds: Int64,
+        modificationNanoseconds: Int64
+    ) {
+        self.deviceID = deviceID
+        self.fileID = fileID
+        self.ownerUserID = ownerUserID
+        self.logicalBytes = logicalBytes
+        self.allocatedBytes = allocatedBytes
+        self.modificationSeconds = modificationSeconds
+        self.modificationNanoseconds = modificationNanoseconds
+    }
+
+    public static func capture(at url: URL) throws -> Self {
+        var value = stat()
+        let path = url.standardizedFileURL.path
+        guard path.withCString({ lstat($0, &value) }) == 0 else {
+            if errno == ENOENT { throw AgentWorkspaceFileIdentityError.missing }
+            throw AgentWorkspaceFileIdentityError.metadataUnavailable
+        }
+        guard value.st_mode & S_IFMT == S_IFREG else {
+            throw AgentWorkspaceFileIdentityError.notRegularFile
+        }
+        return Self(fileStat: value)
+    }
+
+    fileprivate init(fileStat: stat) {
+        deviceID = UInt64(fileStat.st_dev)
+        fileID = UInt64(fileStat.st_ino)
+        ownerUserID = fileStat.st_uid
+        logicalBytes = max(0, Int64(fileStat.st_size))
+        allocatedBytes = max(0, Int64(fileStat.st_blocks) * 512)
+        modificationSeconds = Int64(fileStat.st_mtimespec.tv_sec)
+        modificationNanoseconds = Int64(fileStat.st_mtimespec.tv_nsec)
+    }
+
+    public var modificationDate: Date {
+        Date(
+            timeIntervalSince1970: TimeInterval(modificationSeconds)
+                + TimeInterval(modificationNanoseconds) / 1_000_000_000
+        )
+    }
+}
+
+/// A bounded, file-level action token emitted by the read-only scanner.
+/// Only settled cache, temporary and log files can become candidates in P1.
+public struct AgentWorkspaceActionCandidate: Identifiable, Codable, Equatable, Hashable, Sendable {
+    public let id: String
+    public let provider: AgentWorkspaceProvider
+    public let kind: AgentArtifactKind
+    public let path: String
+    public let identity: AgentWorkspaceFileIdentity
+    public let scannedAt: Date
+
+    public init(
+        id: String,
+        provider: AgentWorkspaceProvider,
+        kind: AgentArtifactKind,
+        path: String,
+        identity: AgentWorkspaceFileIdentity,
+        scannedAt: Date
+    ) {
+        self.id = id
+        self.provider = provider
+        self.kind = kind
+        self.path = URL(fileURLWithPath: path).standardizedFileURL.path
+        self.identity = identity
+        self.scannedAt = scannedAt
+    }
+
+    public var name: String { URL(fileURLWithPath: path).lastPathComponent }
+}
+
 public struct AgentWorkspaceArtifact: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public let provider: AgentWorkspaceProvider
@@ -109,6 +213,12 @@ public struct AgentWorkspaceArtifact: Identifiable, Codable, Equatable, Sendable
     public let protectionReasons: [String]
     public let isComplete: Bool
     public let diagnostic: String?
+    public let actionCandidates: [AgentWorkspaceActionCandidate]
+    public let actionCandidateLimitReached: Bool
+
+    public var actionableBytes: Int64 {
+        actionCandidates.saturatingSum(of: \AgentWorkspaceActionCandidate.identity.allocatedBytes)
+    }
 
     public init(
         id: String,
@@ -129,7 +239,9 @@ public struct AgentWorkspaceArtifact: Identifiable, Codable, Equatable, Sendable
         disposition: AgentArtifactDisposition,
         protectionReasons: [String],
         isComplete: Bool,
-        diagnostic: String?
+        diagnostic: String?,
+        actionCandidates: [AgentWorkspaceActionCandidate] = [],
+        actionCandidateLimitReached: Bool = false
     ) {
         self.id = id
         self.provider = provider
@@ -150,6 +262,8 @@ public struct AgentWorkspaceArtifact: Identifiable, Codable, Equatable, Sendable
         self.protectionReasons = protectionReasons
         self.isComplete = isComplete
         self.diagnostic = diagnostic
+        self.actionCandidates = actionCandidates
+        self.actionCandidateLimitReached = actionCandidateLimitReached
     }
 }
 
@@ -215,6 +329,12 @@ public struct AgentWorkspaceSnapshot: Codable, Equatable, Sendable {
     public var logicalBytes: Int64 { detectedAgents.saturatingSum(of: \.logicalBytes) }
     public var previewBytes: Int64 { detectedAgents.saturatingSum(of: \.previewBytes) }
     public var activeFileCount: Int { detectedAgents.reduce(0) { $0 + $1.activeFileCount } }
+    public var actionCandidates: [AgentWorkspaceActionCandidate] {
+        detectedAgents.flatMap(\.artifacts).flatMap(\.actionCandidates)
+    }
+    public var actionableBytes: Int64 {
+        actionCandidates.saturatingSum(of: \AgentWorkspaceActionCandidate.identity.allocatedBytes)
+    }
     public var isComplete: Bool {
         openFileProbeSucceeded && detectedAgents.allSatisfy(\.isComplete)
     }
@@ -273,6 +393,7 @@ public struct AgentWorkspaceScanner: Sendable {
         public var growthWarningBytes: Int64
         public var growthCriticalBytes: Int64
         public var maximumEntriesPerAgent: Int
+        public var maximumActionCandidatesPerAgent: Int
 
         public init(
             recentInterval: TimeInterval = 15 * 60,
@@ -283,7 +404,8 @@ public struct AgentWorkspaceScanner: Sendable {
             agentSizeCriticalBytes: Int64 = 50 * 1_024 * 1_024 * 1_024,
             growthWarningBytes: Int64 = 512 * 1_024 * 1_024,
             growthCriticalBytes: Int64 = 4 * 1_024 * 1_024 * 1_024,
-            maximumEntriesPerAgent: Int = 600_000
+            maximumEntriesPerAgent: Int = 600_000,
+            maximumActionCandidatesPerAgent: Int = 5_000
         ) {
             self.recentInterval = max(60, recentInterval)
             self.oldInterval = max(recentInterval, oldInterval)
@@ -294,6 +416,7 @@ public struct AgentWorkspaceScanner: Sendable {
             self.growthWarningBytes = max(1, growthWarningBytes)
             self.growthCriticalBytes = max(growthWarningBytes, growthCriticalBytes)
             self.maximumEntriesPerAgent = max(1_000, maximumEntriesPerAgent)
+            self.maximumActionCandidatesPerAgent = max(100, maximumActionCandidatesPerAgent)
         }
 
         public static let defaults = Configuration()
@@ -320,6 +443,8 @@ public struct AgentWorkspaceScanner: Sendable {
         var latestModificationDate: Date?
         var isComplete = true
         var diagnostics: [String] = []
+        var actionCandidates: [AgentWorkspaceActionCandidate] = []
+        var actionCandidateLimitReached = false
 
         mutating func merge(_ other: Self) {
             allocatedBytes = Self.add(allocatedBytes, other.allocatedBytes)
@@ -340,6 +465,8 @@ public struct AgentWorkspaceScanner: Sendable {
             }
             isComplete = isComplete && other.isComplete
             diagnostics.append(contentsOf: other.diagnostics)
+            actionCandidates.append(contentsOf: other.actionCandidates)
+            actionCandidateLimitReached = actionCandidateLimitReached || other.actionCandidateLimitReached
         }
 
         private static func add(_ lhs: Int64, _ rhs: Int64) -> Int64 {
@@ -506,6 +633,7 @@ public struct AgentWorkspaceScanner: Sendable {
         }
 
         var remainingEntries = configuration.maximumEntriesPerAgent
+        var remainingActionCandidates = configuration.maximumActionCandidatesPerAgent
         var seenFiles = Set<FileIdentity>()
         let artifacts = AgentArtifactKind.allCases.compactMap { kind -> AgentWorkspaceArtifact? in
             guard let urls = groupedURLs[kind], !urls.isEmpty else { return nil }
@@ -518,10 +646,13 @@ public struct AgentWorkspaceScanner: Sendable {
                 }
                 let value = walk(
                     url: url,
+                    provider: provider,
+                    kind: kind,
                     openPaths: openPaths,
                     now: now,
                     configuration: configuration,
                     remainingEntries: &remainingEntries,
+                    remainingActionCandidates: &remainingActionCandidates,
                     seenFiles: &seenFiles
                 )
                 combined.merge(value)
@@ -566,6 +697,9 @@ public struct AgentWorkspaceScanner: Sendable {
             if !combined.isComplete {
                 protectionReasons.append("扫描不完整，默认禁止进入回收预览")
             }
+            let actionCandidates = combined.isComplete && activityProbeSucceeded
+                ? combined.actionCandidates
+                : []
             return AgentWorkspaceArtifact(
                 id: "\(provider.rawValue):\(kind.rawValue)",
                 provider: provider,
@@ -587,7 +721,9 @@ public struct AgentWorkspaceScanner: Sendable {
                 isComplete: combined.isComplete,
                 diagnostic: combined.diagnostics.isEmpty
                     ? nil
-                    : Array(Set(combined.diagnostics)).sorted().joined(separator: " ")
+                    : Array(Set(combined.diagnostics)).sorted().joined(separator: " "),
+                actionCandidates: actionCandidates,
+                actionCandidateLimitReached: combined.actionCandidateLimitReached
             )
         }
         return AgentWorkspaceAgentSnapshot(
@@ -603,10 +739,13 @@ public struct AgentWorkspaceScanner: Sendable {
 
     private static func walk(
         url: URL,
+        provider: AgentWorkspaceProvider,
+        kind: AgentArtifactKind,
         openPaths: Set<String>,
         now: Date,
         configuration: Configuration,
         remainingEntries: inout Int,
+        remainingActionCandidates: inout Int,
         seenFiles: inout Set<FileIdentity>
     ) -> WalkMetrics {
         let path = url.standardizedFileURL.path
@@ -622,7 +761,16 @@ public struct AgentWorkspaceScanner: Sendable {
             remainingEntries -= 1
             let identity = FileIdentity(device: UInt64(rootStat.st_dev), inode: UInt64(rootStat.st_ino))
             guard seenFiles.insert(identity).inserted else { return WalkMetrics() }
-            return metrics(for: rootStat, path: path, openPaths: openPaths, now: now, configuration: configuration)
+            return metrics(
+                for: rootStat,
+                path: path,
+                provider: provider,
+                kind: kind,
+                openPaths: openPaths,
+                now: now,
+                configuration: configuration,
+                remainingActionCandidates: &remainingActionCandidates
+            )
         }
         guard type == S_IFDIR else { return WalkMetrics() }
 
@@ -662,9 +810,12 @@ public struct AgentWorkspaceScanner: Sendable {
                 result.merge(metrics(
                     for: fileStat,
                     path: filePath,
+                    provider: provider,
+                    kind: kind,
                     openPaths: openPaths,
                     now: now,
-                    configuration: configuration
+                    configuration: configuration,
+                    remainingActionCandidates: &remainingActionCandidates
                 ))
             case FTS_DNR, FTS_ERR, FTS_NS:
                 result.isComplete = false
@@ -687,9 +838,12 @@ public struct AgentWorkspaceScanner: Sendable {
     private static func metrics(
         for fileStat: stat,
         path: String,
+        provider: AgentWorkspaceProvider,
+        kind: AgentArtifactKind,
         openPaths: Set<String>,
         now: Date,
-        configuration: Configuration
+        configuration: Configuration,
+        remainingActionCandidates: inout Int
     ) -> WalkMetrics {
         let allocated = max(0, Int64(fileStat.st_blocks) * 512)
         let logical = max(0, Int64(fileStat.st_size))
@@ -712,6 +866,24 @@ public struct AgentWorkspaceScanner: Sendable {
         result.largestFileBytes = logical
         result.largestFilePath = normalizedPath
         result.latestModificationDate = modified
+        if !isActive,
+           age > configuration.recentInterval,
+           [.caches, .temporaryFiles, .logs].contains(kind) {
+            if remainingActionCandidates > 0 {
+                let identity = AgentWorkspaceFileIdentity(fileStat: fileStat)
+                result.actionCandidates = [AgentWorkspaceActionCandidate(
+                    id: "\(provider.rawValue):\(kind.rawValue):\(identity.deviceID):\(identity.fileID)",
+                    provider: provider,
+                    kind: kind,
+                    path: normalizedPath,
+                    identity: identity,
+                    scannedAt: now
+                )]
+                remainingActionCandidates -= 1
+            } else {
+                result.actionCandidateLimitReached = true
+            }
+        }
         return result
     }
 

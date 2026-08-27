@@ -1,5 +1,6 @@
 import XCTest
 @testable import CleanNestCore
+import CleanNestMutation
 
 final class AgentWorkspaceTests: XCTestCase {
     private var temporaryDirectories: [URL] = []
@@ -90,6 +91,8 @@ final class AgentWorkspaceTests: XCTestCase {
 
         XCTAssertEqual(cacheArtifact.disposition, .regenerable)
         XCTAssertGreaterThan(cacheArtifact.previewBytes, 0)
+        XCTAssertEqual(cacheArtifact.actionCandidates.count, 1)
+        XCTAssertEqual(cacheArtifact.actionCandidates.first?.path, cache.standardizedFileURL.path)
         XCTAssertEqual(credentialArtifact.disposition, .keep)
         XCTAssertEqual(credentialArtifact.previewBytes, 0)
         XCTAssertTrue(credentialArtifact.protectionReasons.contains { $0.contains("令牌") })
@@ -181,6 +184,111 @@ final class AgentWorkspaceTests: XCTestCase {
         XCTAssertEqual(codex.fileCount, 1)
         XCTAssertGreaterThan(codex.allocatedBytes, 0)
         XCTAssertLessThanOrEqual(codex.allocatedBytes, 32_768)
+    }
+
+    func testBackupFirstRecoveryRemovesAndRestoresSettledCacheFile() async throws {
+        let home = try makeHome()
+        let cache = home.appendingPathComponent(".codex/cache/recoverable.log")
+        let payload = Data("recover me".utf8)
+        try FileManager.default.createDirectory(
+            at: cache.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try payload.write(to: cache)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-3_600)],
+            ofItemAtPath: cache.path
+        )
+        let result = try await AgentWorkspaceScanner(configuration: testConfiguration()).scan(
+            homeDirectory: home,
+            openFiles: []
+        )
+        let candidate = try XCTUnwrap(result.snapshot.actionCandidates.first)
+        let recoveryRoot = home.appendingPathComponent("Library/Application Support/CleanNest/AgentRecovery")
+        let service = AgentWorkspaceRecoveryService(
+            homeDirectory: home,
+            recoveryRoot: recoveryRoot,
+            recentInterval: 15 * 60
+        )
+
+        let recovered = try await service.createRecovery(candidates: [candidate])
+
+        XCTAssertEqual(recovered.record.status, .available)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: recovered.operationDirectory.appendingPathComponent("backup.zip").path
+        ))
+        XCTAssertEqual(try service.listRecords().map(\.id), [recovered.record.id])
+
+        let restored = try await service.restore(operationID: recovered.record.id)
+
+        XCTAssertEqual(restored.record.status, .restored)
+        XCTAssertEqual(try Data(contentsOf: cache), payload)
+    }
+
+    func testRestoreRefusesToOverwriteAgentRecreatedFile() async throws {
+        let home = try makeHome()
+        let cache = home.appendingPathComponent(".codex/cache/recreated.bin")
+        try writeFile(cache, bytes: 4_096, modifiedAt: Date().addingTimeInterval(-3_600))
+        let scan = try await AgentWorkspaceScanner(configuration: testConfiguration()).scan(
+            homeDirectory: home,
+            openFiles: []
+        )
+        let candidate = try XCTUnwrap(scan.snapshot.actionCandidates.first)
+        let service = AgentWorkspaceRecoveryService(
+            homeDirectory: home,
+            recoveryRoot: home.appendingPathComponent("Library/Application Support/CleanNest/AgentRecovery")
+        )
+        let operation = try await service.createRecovery(candidates: [candidate])
+        try Data("new agent data".utf8).write(to: cache)
+
+        do {
+            _ = try await service.restore(operationID: operation.record.id)
+            XCTFail("Expected restore conflict")
+        } catch let error as AgentWorkspaceRecoveryError {
+            guard case .restoreConflict = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        XCTAssertEqual(try Data(contentsOf: cache), Data("new agent data".utf8))
+    }
+
+    func testRestoreRejectsArchiveChangedAfterVerifiedBackup() async throws {
+        let home = try makeHome()
+        let cache = home.appendingPathComponent(".codex/cache/archive-tamper.bin")
+        let payload = Data("verified payload".utf8)
+        try FileManager.default.createDirectory(
+            at: cache.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try payload.write(to: cache)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-3_600)],
+            ofItemAtPath: cache.path
+        )
+        let scan = try await AgentWorkspaceScanner(configuration: testConfiguration()).scan(
+            homeDirectory: home,
+            openFiles: []
+        )
+        let candidate = try XCTUnwrap(scan.snapshot.actionCandidates.first)
+        let service = AgentWorkspaceRecoveryService(
+            homeDirectory: home,
+            recoveryRoot: home.appendingPathComponent("Library/Application Support/CleanNest/AgentRecovery")
+        )
+        let operation = try await service.createRecovery(candidates: [candidate])
+        let archive = operation.operationDirectory.appendingPathComponent("backup.zip")
+        let handle = try FileHandle(forWritingTo: archive)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("tampered".utf8))
+        try handle.close()
+
+        do {
+            _ = try await service.restore(operationID: operation.record.id)
+            XCTFail("Expected archive verification failure")
+        } catch let error as AgentWorkspaceRecoveryError {
+            XCTAssertEqual(error, .backupVerificationFailed)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path))
     }
 
     private func makeHome() throws -> URL {
