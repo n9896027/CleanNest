@@ -12,6 +12,8 @@ struct SettingsView: View {
     @State private var showsResetPreferencesConfirmation = false
     @State private var engineAdvancedExpanded = false
     @State private var localAIAdvancedExpanded = false
+    @State private var alertThresholdsExpanded = false
+    @State private var nativeMonitorSample: NativeMonitorSample? = nil
 
     var body: some View {
         ScrollView {
@@ -43,6 +45,7 @@ struct SettingsView: View {
         .onChange(of: localAIServiceModelIDDraft) { store.clearLocalAIConfigurationError() }
         .onChange(of: localAIModelPathDraft) { store.clearLocalAIConfigurationError() }
         .onChange(of: localAIExecutablePathDraft) { store.clearLocalAIConfigurationError() }
+        .onReceive(store.nativeMonitorSamplePublisher) { nativeMonitorSample = $0 }
         .confirmationDialog(
             "清空所有本机历史指标？",
             isPresented: $showsClearMetricsConfirmation,
@@ -374,15 +377,15 @@ struct SettingsView: View {
                         Picker("", selection: Binding(
                             get: {
                                 store.menuBarConfiguration.selectedNetworkInterface
-                                    ?? store.nativeMonitorSample?.availableNetworkInterfaces.first
+                                    ?? nativeMonitorSample?.availableNetworkInterfaces.first
                                     ?? ""
                             },
                             set: { store.setMenuBarNetworkInterface($0.isEmpty ? nil : $0) }
                         )) {
-                            if store.nativeMonitorSample?.availableNetworkInterfaces.isEmpty != false {
+                            if nativeMonitorSample?.availableNetworkInterfaces.isEmpty != false {
                                 Text("未找到活动接口").tag("")
                             }
-                            ForEach(store.nativeMonitorSample?.availableNetworkInterfaces ?? [], id: \.self) {
+                            ForEach(nativeMonitorSample?.availableNetworkInterfaces ?? [], id: \.self) {
                                 Text($0).tag($0)
                             }
                         }
@@ -396,7 +399,10 @@ struct SettingsView: View {
                 InlineBanner(
                     title: "菜单栏空间检查",
                     detail: store.menuBarVisibilityDiagnostic,
-                    kind: store.menuBarVisibilityDiagnostic.contains("隐藏") ? .warning : .success
+                    kind: store.menuBarVisibilityDiagnostic.contains("隐藏")
+                        || store.menuBarVisibilityDiagnostic.contains("收进")
+                        ? .warning
+                        : .success
                 )
 
                 InlineBanner(
@@ -404,6 +410,8 @@ struct SettingsView: View {
                     detail: "橙色与 ! 表示需要留意，红色与 !! 表示严重。判定结合 macOS 热状态、CPU/电池温度、内存压力、磁盘容量、低电量和风扇相对转速；CPU、GPU 或网络繁忙本身不会被当成故障。",
                     kind: .info
                 )
+
+                alertThresholdSettings
 
                 LazyVGrid(
                     columns: [GridItem(.adaptive(minimum: 230), spacing: 10, alignment: .top)],
@@ -490,6 +498,169 @@ struct SettingsView: View {
         .background(CNTheme.surfaceSubtle, in: RoundedRectangle(cornerRadius: 13))
     }
 
+    private var alertThresholdSettings: some View {
+        DisclosureGroup(isExpanded: $alertThresholdsExpanded) {
+            VStack(alignment: .leading, spacing: 12) {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 260), spacing: 10, alignment: .top)],
+                    spacing: 10
+                ) {
+                    thresholdPair(
+                        title: "CPU 温度",
+                        detail: "传感器值；macOS 热状态仍可独立触发。",
+                        warning: alertThresholdBinding(\.cpuTemperatureWarningCelsius),
+                        critical: alertThresholdBinding(\.cpuTemperatureCriticalCelsius),
+                        range: 60...110,
+                        suffix: "°C"
+                    )
+                    thresholdPair(
+                        title: "电池温度",
+                        detail: "只在硬件返回电池传感器时生效。",
+                        warning: alertThresholdBinding(\.batteryTemperatureWarningCelsius),
+                        critical: alertThresholdBinding(\.batteryTemperatureCriticalCelsius),
+                        range: 30...60,
+                        suffix: "°C"
+                    )
+                    thresholdPair(
+                        title: "磁盘剩余",
+                        detail: "剩余比例低于阈值时提醒。",
+                        warning: alertThresholdBinding(\.diskFreeWarningPercent),
+                        critical: alertThresholdBinding(\.diskFreeCriticalPercent),
+                        range: 1...30,
+                        suffix: "%"
+                    )
+                    thresholdPair(
+                        title: "电池余量",
+                        detail: "连接电源或充电时不告警。",
+                        warning: alertThresholdBinding(\.batteryLowWarningPercent),
+                        critical: alertThresholdBinding(\.batteryLowCriticalPercent),
+                        range: 2...40,
+                        suffix: "%"
+                    )
+                    singleThreshold(
+                        title: "风扇相对负载",
+                        detail: "按该机型报告的最大转速比例，不使用通用 RPM。",
+                        value: alertThresholdBinding(\.fanLoadWarningPercent),
+                        range: 60...100,
+                        suffix: "%"
+                    )
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("内存压力")
+                            .font(.caption.weight(.semibold))
+                        Text("macOS 只提供正常、警告、严重等级，不伪造百分比阈值。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Toggle("警告等级就提醒", isOn: Binding(
+                            get: { store.menuBarConfiguration.alertThresholds.memoryPressureWarningEnabled },
+                            set: { value in
+                                store.updateNativeAlertThresholds {
+                                    $0.memoryPressureWarningEnabled = value
+                                }
+                            }
+                        ))
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(11)
+                    .background(CNTheme.surfaceSubtle, in: RoundedRectangle(cornerRadius: 12))
+                }
+
+                HStack {
+                    Text("菜单栏、弹出面板、系统状态页和告警时间线共用这一份设置。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("恢复保守预设") { store.resetNativeAlertThresholds() }
+                        .controlSize(.small)
+                }
+            }
+            .padding(.top, 12)
+        } label: {
+            HStack(spacing: 10) {
+                CNIconTile(symbol: "gauge.with.dots.needle.67percent", tint: CNTheme.warning, size: 34)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("异常阈值")
+                        .font(.subheadline.weight(.semibold))
+                    Text("保守预设可调整；每次变色都能回到同一条规则。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .stroke(CNTheme.warning.opacity(0.18), lineWidth: 0.7)
+        )
+    }
+
+    private func alertThresholdBinding(
+        _ keyPath: WritableKeyPath<NativeAlertThresholds, Double>
+    ) -> Binding<Double> {
+        Binding(
+            get: { store.menuBarConfiguration.alertThresholds[keyPath: keyPath] },
+            set: { value in
+                store.updateNativeAlertThresholds { $0[keyPath: keyPath] = value }
+            }
+        )
+    }
+
+    private func thresholdPair(
+        title: String,
+        detail: String,
+        warning: Binding<Double>,
+        critical: Binding<Double>,
+        range: ClosedRange<Double>,
+        suffix: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.caption.weight(.semibold))
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Stepper(value: warning, in: range, step: 1) {
+                    Text("提醒 \(Int(warning.wrappedValue.rounded()))\(suffix)")
+                        .font(.caption.monospacedDigit())
+                }
+                Stepper(value: critical, in: range, step: 1) {
+                    Text("严重 \(Int(critical.wrappedValue.rounded()))\(suffix)")
+                        .font(.caption.monospacedDigit())
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(CNTheme.surfaceSubtle, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func singleThreshold(
+        title: String,
+        detail: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        suffix: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.caption.weight(.semibold))
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Stepper(value: value, in: range, step: 1) {
+                Text("提醒 \(Int(value.wrappedValue.rounded()))\(suffix)")
+                    .font(.caption.monospacedDigit())
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(CNTheme.surfaceSubtle, in: RoundedRectangle(cornerRadius: 12))
+    }
+
     private var networkModeDetail: String {
         switch store.menuBarConfiguration.networkMode {
         case .physicalAggregate:
@@ -561,11 +732,11 @@ struct SettingsView: View {
     }
 
     private func menuBarMetricIsAvailable(_ metric: MenuBarMetric) -> Bool {
-        store.nativeMonitorSample?.isAvailable(metric) == true
+        nativeMonitorSample?.isAvailable(metric) == true
     }
 
     private func menuBarMetricAvailability(_ metric: MenuBarMetric) -> String {
-        guard let sample = store.nativeMonitorSample else { return "等待首个样本" }
+        guard let sample = nativeMonitorSample else { return "等待首个样本" }
         if metric == .fan, sample.fanCount == 0 { return "本机为无风扇设计" }
         guard sample.isAvailable(metric) else { return "当前硬件未返回有效值" }
         return sample.detailedValue(metric)

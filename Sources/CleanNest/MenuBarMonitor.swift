@@ -122,8 +122,11 @@ struct NativeMetricReading: Equatable {
 }
 
 extension NativeMonitorSample {
-    func healthSummary(_ metric: MenuBarMetric) -> String? {
-        switch (metric, healthLevel(for: metric)) {
+    func healthSummary(
+        _ metric: MenuBarMetric,
+        thresholds: NativeAlertThresholds = .defaults
+    ) -> String? {
+        switch (metric, healthLevel(for: metric, thresholds: thresholds)) {
         case (_, .normal): return nil
         case (.memory, .warning): return "内存压力警告"
         case (.memory, .critical): return "内存压力严重"
@@ -470,7 +473,7 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
 
         Publishers.CombineLatest(
             store.$menuBarConfiguration,
-            store.$nativeMonitorSample
+            store.nativeMonitorSamplePublisher
         )
         .receive(on: RunLoop.main)
         .sink { [weak self, weak store] configuration, sample in
@@ -481,6 +484,18 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
             )
         }
         .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self, weak store] _ in
+                guard let store else { return }
+                self?.updateStatusItems(
+                    configuration: store.menuBarConfiguration,
+                    sample: store.nativeMonitorSample,
+                    history: store.nativeMonitorHistory
+                )
+            }
+            .store(in: &cancellables)
     }
 
     private func updateStatusItems(
@@ -505,10 +520,40 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
             return
         }
 
-        let desiredOrder = configuration.metrics.compactMap { preference -> MenuBarMetric? in
+        let availableOrder = configuration.metrics.compactMap { preference -> MenuBarMetric? in
             guard preference.isEnabled, sample?.isAvailable(preference.metric) == true else { return nil }
             return preference.metric
         }
+        let widthSelection: MenuBarWidthSelection
+        if let sample {
+            let candidates = availableOrder.map { metric in
+                MenuBarWidthCandidate(
+                    metric: metric,
+                    width: estimatedStatusItemWidth(
+                        metric: metric,
+                        sample: sample,
+                        configuration: configuration
+                    ),
+                    healthLevel: sample.healthLevel(
+                        for: metric,
+                        thresholds: configuration.alertThresholds
+                    )
+                )
+            }
+            widthSelection = MenuBarWidthPolicy.select(
+                candidates: candidates,
+                budget: automaticWidthBudget(),
+                preferredMetric: configuration.compactMetric
+            )
+        } else {
+            widthSelection = MenuBarWidthSelection(
+                visible: [],
+                collapsed: availableOrder,
+                usedWidth: 0,
+                budget: automaticWidthBudget()
+            )
+        }
+        let desiredOrder = widthSelection.visible
         let desired = Set(desiredOrder)
         if desiredOrder != lastMetricOrder {
             removeAllStatusItems()
@@ -524,8 +569,18 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
             let item = statusItems[metric] ?? makeStatusItem(metric)
             guard let button = item.button, let sample else { continue }
             let preference = configuration.preference(for: metric)
-            let healthLevel = sample.healthLevel(for: metric)
-            let healthSummary = sample.healthSummary(metric).map(CNL10n.string)
+            let healthLevel = sample.healthLevel(
+                for: metric,
+                thresholds: configuration.alertThresholds
+            )
+            let healthSummary = sample.healthSummary(
+                metric,
+                thresholds: configuration.alertThresholds
+            ).map(CNL10n.string)
+            let healthReason = sample.healthAssessment(
+                for: metric,
+                thresholds: configuration.alertThresholds
+            ).flatMap { $0.level == .normal ? nil : $0.reason }
             button.target = self
             button.action = #selector(statusItemPressed(_:))
             button.sendAction(on: [.leftMouseUp])
@@ -534,6 +589,7 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
                 temperatureUnit: configuration.temperatureUnit
             )
                 + (healthSummary.map { "\n" + $0 } ?? "")
+                + (healthReason.map { "\n" + $0 } ?? "")
                 + "\n" + sample.sourceDescription(metric)
             button.setAccessibilityLabel(
                 metric.displayName + " " + sample.detailedValue(
@@ -541,6 +597,7 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
                     temperatureUnit: configuration.temperatureUnit
                 )
                     + (healthSummary.map { "，" + $0 } ?? "")
+                    + (healthReason.map { "，" + $0 } ?? "")
             )
 
             switch preference.style {
@@ -591,7 +648,56 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
         }
 
         DispatchQueue.main.async { [weak self] in
-            self?.publishVisibilityDiagnostic(configuration: configuration, order: desiredOrder)
+            self?.publishVisibilityDiagnostic(
+                configuration: configuration,
+                order: desiredOrder,
+                collapsed: widthSelection.collapsed,
+                usedWidth: widthSelection.usedWidth,
+                budget: widthSelection.budget
+            )
+        }
+    }
+
+    private func automaticWidthBudget() -> Double {
+        let screenWidth = (NSApp.keyWindow?.screen ?? NSScreen.main)?.visibleFrame.width ?? 1_440
+        return min(460, max(210, Double(screenWidth) * 0.24))
+    }
+
+    private func estimatedStatusItemWidth(
+        metric: MenuBarMetric,
+        sample: NativeMonitorSample,
+        configuration: MenuBarMonitorConfiguration
+    ) -> Double {
+        let preference = configuration.preference(for: metric)
+        switch preference.style {
+        case .graph:
+            return configuration.presentationMode == .compact ? 44 : 42
+        case .text:
+            switch configuration.presentationMode {
+            case .compact:
+                let health = sample.healthLevel(
+                    for: metric,
+                    thresholds: configuration.alertThresholds
+                )
+                return Double(compactMetricWidth(
+                    topValue: sample.compactTopValue(
+                        metric,
+                        temperatureUnit: configuration.temperatureUnit
+                    ),
+                    bottomLabel: metric.compactLabel + health.menuBarMarker
+                ) + 4)
+            case .separate:
+                let title = sample.menuBarValue(
+                    metric,
+                    temperatureUnit: configuration.temperatureUnit
+                )
+                let width = (title as NSString).size(
+                    withAttributes: [
+                        .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+                    ]
+                ).width
+                return Double(ceil(width) + 16)
+            }
         }
     }
 
@@ -652,7 +758,10 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
 
     private func publishVisibilityDiagnostic(
         configuration: MenuBarMonitorConfiguration,
-        order: [MenuBarMetric]
+        order: [MenuBarMetric],
+        collapsed: [MenuBarMetric],
+        usedWidth: Double,
+        budget: Double
     ) {
         guard let store else { return }
         let hidden = order.filter { statusItems[$0]?.isVisible == false }
@@ -661,9 +770,15 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
                 "macOS 已隐藏 " + hidden.map(\.displayName).joined(separator: "、")
                     + "；可关闭部分项目，或保持“双层紧凑”。"
             )
+        } else if !collapsed.isEmpty {
+            store.setMenuBarVisibilityDiagnostic(
+                "自动宽度预算约 \(Int(budget.rounded())) pt；已保留异常项和首选项，将 "
+                    + collapsed.map(\.displayName).joined(separator: "、")
+                    + " 收进点开后的面板。数值没有被截断。"
+            )
         } else if configuration.presentationMode == .compact {
             store.setMenuBarVisibilityDiagnostic(
-                "\(order.count) 项已以双层短标签显示，比展开文字更节省宽度。"
+                "\(order.count) 项占用约 \(Int(usedWidth.rounded())) pt，均以完整双层数值显示。"
             )
         } else {
             store.setMenuBarVisibilityDiagnostic("\(order.count) 项已以展开文字显示。")
@@ -676,7 +791,7 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
         healthLevel: NativeMetricHealthLevel
     ) -> NSImage {
         let displayedLabel = bottomLabel + healthLevel.menuBarMarker
-        let width = max(30, min(70, CGFloat(max(topValue.count, displayedLabel.count)) * 7 + 8))
+        let width = compactMetricWidth(topValue: topValue, bottomLabel: displayedLabel)
         let size = NSSize(width: width, height: 22)
         let image = NSImage(size: size, flipped: false) { rect in
             let paragraph = NSMutableParagraphStyle()
@@ -714,6 +829,21 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
         }
         image.isTemplate = healthLevel == .normal
         return image
+    }
+
+    private func compactMetricWidth(topValue: String, bottomLabel: String) -> CGFloat {
+        let topWidth = (topValue as NSString).size(
+            withAttributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 10.2, weight: .semibold)
+            ]
+        ).width
+        let labelWidth = (bottomLabel as NSString).size(
+            withAttributes: [
+                .font: NSFont.systemFont(ofSize: 6.8, weight: .bold),
+                .kern: 0.25
+            ]
+        ).width
+        return max(30, ceil(max(topWidth, labelWidth)) + 8)
     }
 
     private func sparklineImage(
@@ -790,6 +920,7 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
 
 private struct MenuBarMonitorPopover: View {
     @EnvironmentObject private var store: AppStore
+    @State private var liveSample: NativeMonitorSample? = nil
     let focusedMetric: MenuBarMetric
 
     private var enabledMetrics: [MenuBarMetric] {
@@ -829,7 +960,7 @@ private struct MenuBarMonitorPopover: View {
 
                 Divider()
 
-                if let sample = store.nativeMonitorSample {
+                if let sample = liveSample ?? store.nativeMonitorSample {
                     ScrollView {
                         VStack(spacing: 2) {
                             ForEach(enabledMetrics, id: \.self) { metric in
@@ -870,10 +1001,18 @@ private struct MenuBarMonitorPopover: View {
             }
         }
         .frame(width: 390, height: 500)
+        .onReceive(store.nativeMonitorSamplePublisher) { liveSample = $0 }
     }
 
     private func metricRow(_ metric: MenuBarMetric, sample: NativeMonitorSample) -> some View {
-        let healthLevel = sample.healthLevel(for: metric)
+        let healthLevel = sample.healthLevel(
+            for: metric,
+            thresholds: store.menuBarConfiguration.alertThresholds
+        )
+        let assessment = sample.healthAssessment(
+            for: metric,
+            thresholds: store.menuBarConfiguration.alertThresholds
+        )
         let tint = healthLevel.highlightColor ?? metric.tint
 
         return VStack(alignment: .leading, spacing: 6) {
@@ -919,6 +1058,12 @@ private struct MenuBarMonitorPopover: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let assessment, assessment.level != .normal {
+                    Text(assessment.reason)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(tint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(.leading, 43)
         }

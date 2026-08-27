@@ -87,6 +87,7 @@ final class NativeSystemMonitorTests: XCTestCase {
         XCTAssertEqual(configuration.networkMode, .physicalAggregate)
         XCTAssertEqual(configuration.refreshInterval, .twoSeconds)
         XCTAssertTrue(configuration.metrics.allSatisfy { $0.style == .text })
+        XCTAssertEqual(configuration.alertThresholds, .defaults)
     }
 
     func testNormalizedConfigurationAddsNewMetricsWithoutOverwritingChoice() {
@@ -118,6 +119,7 @@ final class NativeSystemMonitorTests: XCTestCase {
         XCTAssertEqual(configuration.presentationMode, .compact)
         XCTAssertEqual(configuration.networkMode, .physicalAggregate)
         XCTAssertTrue(configuration.globalHotKeyEnabled)
+        XCTAssertEqual(configuration.alertThresholds, .defaults)
 
         configuration.move(.cpu, by: -1)
         XCTAssertEqual(configuration.metrics.prefix(2).map(\.metric), [.cpu, .memory])
@@ -199,7 +201,8 @@ final class NativeSystemMonitorTests: XCTestCase {
         )
         XCTAssertEqual(
             makeHealthSample(fanRPM: 5_500, fanLoadPercent: nil).healthLevel(for: .fan),
-            .warning
+            .normal,
+            "A raw RPM value is not comparable across different Mac fan designs"
         )
     }
 
@@ -223,6 +226,35 @@ final class NativeSystemMonitorTests: XCTestCase {
                 batteryIsCharging: true
             ).healthLevel(for: .battery),
             .normal
+        )
+    }
+
+    func testCustomThresholdsAreSharedByHealthAssessment() throws {
+        let thresholds = NativeAlertThresholds(
+            cpuTemperatureWarningCelsius: 75,
+            cpuTemperatureCriticalCelsius: 90,
+            diskFreeWarningPercent: 20,
+            diskFreeCriticalPercent: 8,
+            fanLoadWarningPercent: 70
+        )
+        XCTAssertEqual(
+            makeHealthSample(temperatureCelsius: 76).healthLevel(
+                for: .temperature,
+                thresholds: thresholds
+            ),
+            .warning
+        )
+        let disk = makeHealthSample(diskUsedPercent: 82)
+        XCTAssertEqual(disk.healthLevel(for: .disk, thresholds: thresholds), .warning)
+        XCTAssertTrue(try XCTUnwrap(
+            disk.healthAssessment(for: .disk, thresholds: thresholds)?.reason
+        ).contains("20%"))
+        XCTAssertEqual(
+            makeHealthSample(fanRPM: 3_000, fanLoadPercent: 71).healthLevel(
+                for: .fan,
+                thresholds: thresholds
+            ),
+            .warning
         )
     }
 }

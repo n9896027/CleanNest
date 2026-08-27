@@ -20,6 +20,11 @@ public enum CleanNestDataPaths {
             .appendingPathComponent("metrics.sqlite3", isDirectory: false)
     }
 
+    public static func systemAlertTimeline(fileManager: FileManager = .default) -> URL {
+        applicationSupportDirectory(fileManager: fileManager)
+            .appendingPathComponent("system-alert-timeline.json", isDirectory: false)
+    }
+
     public static func diskEvidenceSnapshot(fileManager: FileManager = .default) -> URL {
         applicationSupportDirectory(fileManager: fileManager)
             .appendingPathComponent("disk-evidence.json", isDirectory: false)

@@ -218,6 +218,12 @@ final class AgentWorkspaceTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: recovered.operationDirectory.appendingPathComponent("backup.zip").path
         ))
+        let manifestPermissions = try XCTUnwrap(
+            FileManager.default.attributesOfItem(
+                atPath: recovered.operationDirectory.appendingPathComponent("manifest.json").path
+            )[.posixPermissions] as? NSNumber
+        ).intValue
+        XCTAssertEqual(manifestPermissions & 0o777, 0o600)
         XCTAssertEqual(try service.listRecords().map(\.id), [recovered.record.id])
 
         let restored = try await service.restore(operationID: recovered.record.id)

@@ -128,8 +128,12 @@ macOS ServiceManagement
 
 CleanNest 有两条相互独立的状态链路：
 
-1. `NativeSystemMonitor` 按用户选定的 1/2/5/10 秒频率，从 Mach、`getifaddrs`、启动卷容量、IOBlockStorageDriver、IOAccelerator、IOPowerSources 和只读 AppleSMC 获取短期样本，驱动顶部菜单栏与系统状态页的实时仪表。每轮先合并历史、诊断和容量变化，再发布一个一致样本，避免同一轮重复刷新界面。这条链路不需要 Mole，只在内存中保留最近 90 个样本，退出 App 即停止。
+1. `NativeSystemMonitor` 按用户选定的 1/2/5/10 秒频率，从 Mach、`getifaddrs`、启动卷容量、IOBlockStorageDriver、IOAccelerator、IOPowerSources 和只读 AppleSMC 获取短期样本，驱动顶部菜单栏与系统状态页的实时仪表。高频样本通过独立 `CurrentValueSubject` 发送，只有总览、系统状态、菜单设置与菜单弹窗订阅；它不再触发整个 `AppStore`，因此磁盘/Agent 等长列表不会每 2 秒重排。这条链路不需要 Mole，只在内存中保留最近 90 个样本，退出 App 即停止。
 2. Mole 状态与原生内存探测合并为单次 `SystemSnapshot`。App 运行时每 60 秒写入 `metrics.sqlite3`，默认保留 30 天，用于长期趋势。
+
+`NativeAlertThresholds` 是菜单栏、弹出面板和系统状态页的唯一异常判断来源。温度、磁盘剩余、低电量和风扇相对负载使用可调保守阈值；内存使用 macOS 压力等级；CPU/GPU/网络利用率始终只表示工作量。`SystemAlertTimeline` 最多原子保存 200 条异常、峰值与恢复到权限受限的本机 Application Support，采样空档超过 5 分钟会结束上一段，避免把睡眠或退出时间算入持续异常。
+
+菜单栏先以完整字符串测量每项宽度，再应用异常优先预算；空间不足时移除普通状态项但保留在弹出面板，不通过省略号或固定 70 pt 裁切数值。显示器参数变化会重新计算预算。风扇只有在 AppleSMC 返回该机型相对最大转速，或温度/系统热状态异常时才告警；原始 RPM 不跨机型比较。
 
 温度、GPU 和风扇计数只在系统返回有效值时显示，缺失保持为空，不伪造为零。AppleSMC 适配层不包含任何写方法，因此不能改变风扇模式或转速。MCP 只读打开历史 WAL 数据库，不创建表、不修剪数据。详见 [METRICS.md](METRICS.md) 与 [MCP.md](MCP.md)。
 

@@ -819,9 +819,19 @@ public struct AgentWorkspaceRecoveryService: Sendable {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(record)
+        let url = operationDirectory.appendingPathComponent("manifest.json", isDirectory: false)
+        // NSData's iOS file-protection writing flags return EPERM for ordinary
+        // macOS directories on macOS 26. The recovery directory is already
+        // owner-only (0700); keep the atomic replacement and enforce an
+        // owner-only manifest (0600) instead of turning an unsupported flag
+        // into a failed backup.
         try data.write(
-            to: operationDirectory.appendingPathComponent("manifest.json", isDirectory: false),
-            options: [.atomic, .completeFileProtection]
+            to: url,
+            options: .atomic
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o600)],
+            ofItemAtPath: url.path
         )
     }
 

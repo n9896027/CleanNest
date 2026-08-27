@@ -168,6 +168,9 @@ final class AppStore: ObservableObject {
     @Published var systemSnapshot: SystemSnapshot?
     @Published private(set) var memoryAnalysis: MemoryAnalysis?
     @Published private(set) var memoryProcesses: [MemoryProcessSnapshot] = []
+    var memoryApplicationGroups: [MemoryApplicationGroup] {
+        MemoryApplicationGrouper.groups(memoryProcesses)
+    }
     @Published private(set) var terminatingMemoryProcessID: String?
     @Published private(set) var forceTerminationProcessID: String?
     @Published private(set) var memoryProcessMessage: String?
@@ -186,10 +189,14 @@ final class AppStore: ObservableObject {
     @Published private(set) var metricsRetentionDays = 30
     @Published private(set) var metricsSamplingIsActive = false
     @Published private(set) var menuBarConfiguration = MenuBarMonitorConfiguration.defaults
-    @Published private(set) var nativeMonitorSample: NativeMonitorSample?
+    let nativeMonitorSamplePublisher = CurrentValueSubject<NativeMonitorSample?, Never>(nil)
+    private(set) var nativeMonitorSample: NativeMonitorSample? {
+        didSet { nativeMonitorSamplePublisher.send(nativeMonitorSample) }
+    }
     private(set) var nativeMonitorHistory: [NativeMonitorSample] = []
     @Published private(set) var nativeMonitorIsActive = false
     @Published private(set) var nativeMonitorDiagnostic = "正在准备菜单栏实时监测…"
+    @Published private(set) var systemAlertEvents: [SystemAlertEvent] = []
     @Published private(set) var menuBarVisibilityDiagnostic = "正在确认菜单栏显示状态…"
     @Published private(set) var globalHotKeyDiagnostic = "正在注册 ⌘⌥M…"
     @Published private(set) var launchAtLoginEnabled = false
@@ -418,6 +425,8 @@ final class AppStore: ObservableObject {
     private var activeAgentWorkspaceScanTask: Task<AgentWorkspaceScannerResponse, Error>?
     private var agentWorkspaceReleaseTask: Task<Void, Never>?
     private var systemStatusReleaseTask: Task<Void, Never>?
+    private var systemAlertTimeline = SystemAlertTimeline()
+    private var systemAlertPersistenceTask: Task<Void, Never>?
     private var agentWorkspaceScanID = UUID()
     private var applicationIsActive = true
     private var activeLifecyclePage: SidebarItem?
@@ -449,6 +458,20 @@ final class AppStore: ObservableObject {
         if let data = settings.data(forKey: "menuBarMonitorConfiguration"),
            let saved = try? JSONDecoder().decode(MenuBarMonitorConfiguration.self, from: data) {
             menuBarConfiguration = saved.normalized
+        }
+        if !demoMode,
+           var timeline = try? SystemAlertTimelinePersistence.load(
+               from: CleanNestDataPaths.systemAlertTimeline()
+           ) {
+            let repaired = timeline.closeUnfinishedEventsFromPreviousRun()
+            systemAlertTimeline = timeline
+            systemAlertEvents = timeline.events
+            if repaired {
+                try? SystemAlertTimelinePersistence.save(
+                    timeline,
+                    to: CleanNestDataPaths.systemAlertTimeline()
+                )
+            }
         }
         refreshLaunchAtLoginStatus()
         localAIEndpoint = settings.string(forKey: "localAIEndpoint") ?? "http://127.0.0.1:8080/v1"
@@ -1901,16 +1924,34 @@ final class AppStore: ObservableObject {
         persistMenuBarConfiguration()
     }
 
+    func updateNativeAlertThresholds(
+        _ update: (inout NativeAlertThresholds) -> Void
+    ) {
+        var thresholds = menuBarConfiguration.alertThresholds
+        update(&thresholds)
+        menuBarConfiguration.alertThresholds = thresholds.normalized
+        persistMenuBarConfiguration()
+        Task { await refreshNativeMonitorNow() }
+    }
+
+    func resetNativeAlertThresholds() {
+        menuBarConfiguration.alertThresholds = .defaults
+        persistMenuBarConfiguration()
+        Task { await refreshNativeMonitorNow() }
+    }
+
     func moveMenuBarMetric(_ metric: MenuBarMetric, by offset: Int) {
         menuBarConfiguration.move(metric, by: offset)
         persistMenuBarConfiguration()
     }
 
     func setMenuBarVisibilityDiagnostic(_ value: String) {
+        guard menuBarVisibilityDiagnostic != value else { return }
         menuBarVisibilityDiagnostic = value
     }
 
     func setGlobalHotKeyDiagnostic(_ value: String) {
+        guard globalHotKeyDiagnostic != value else { return }
         globalHotKeyDiagnostic = value
     }
 
@@ -1996,12 +2037,6 @@ final class AppStore: ObservableObject {
     }
 
     private func applyNativeMonitorSample(_ sample: NativeMonitorSample) {
-        if let free = sample.diskFreeBytes {
-            let minimumMeaningfulChange: Int64 = 16 * 1_048_576
-            if abs(free - diskFreeBytes) >= minimumMeaningfulChange {
-                diskFreeBytes = free
-            }
-        }
         nativeMonitorHistory.append(sample)
         if nativeMonitorHistory.count > 90 {
             nativeMonitorHistory.removeFirst(nativeMonitorHistory.count - 90)
@@ -2028,8 +2063,32 @@ final class AppStore: ObservableObject {
         if nativeMonitorDiagnostic != diagnostic {
             nativeMonitorDiagnostic = diagnostic
         }
+        if systemAlertTimeline.record(
+            sample: sample,
+            thresholds: menuBarConfiguration.alertThresholds
+        ) {
+            systemAlertEvents = systemAlertTimeline.events
+            scheduleSystemAlertPersistence()
+        }
         // Publish one coherent UI update after the sample, history and diagnostics agree.
         nativeMonitorSample = sample
+    }
+
+    private func scheduleSystemAlertPersistence() {
+        guard !demoMode else { return }
+        systemAlertPersistenceTask?.cancel()
+        systemAlertPersistenceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(2))
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            try? SystemAlertTimelinePersistence.save(
+                self.systemAlertTimeline,
+                to: CleanNestDataPaths.systemAlertTimeline()
+            )
+        }
     }
 
     private func persistMenuBarConfiguration() {
@@ -2646,6 +2705,14 @@ final class AppStore: ObservableObject {
         agentWorkspaceReleaseTask = nil
         systemStatusReleaseTask?.cancel()
         systemStatusReleaseTask = nil
+        systemAlertPersistenceTask?.cancel()
+        systemAlertPersistenceTask = nil
+        if !demoMode {
+            try? SystemAlertTimelinePersistence.save(
+                systemAlertTimeline,
+                to: CleanNestDataPaths.systemAlertTimeline()
+            )
+        }
         activeDiskScanTask?.cancel()
         activeDiskScanTask = nil
         invalidateCleanupAI()
@@ -2664,7 +2731,7 @@ final class AppStore: ObservableObject {
             SystemMemoryProbe.sample()
         }
         let processTask: Task<[MemoryProcessSnapshot], Never>? = includeProcesses
-            ? Task.detached(priority: .utility) { inspector.topProcesses(limit: 16) }
+            ? Task.detached(priority: .utility) { inspector.topProcesses(limit: 40) }
             : nil
         let batteryTask: Task<BatteryProbeResult, Never>? = includeProcesses
             ? Task.detached(priority: .utility) { PowerSourceProbe.sample() }
@@ -2795,7 +2862,7 @@ final class AppStore: ObservableObject {
         }
 
         let refreshed = await Task.detached(priority: .utility) {
-            inspector.topProcesses(limit: 16)
+            inspector.topProcesses(limit: 40)
         }.value
         memoryProcesses = refreshed
         if let systemSnapshot {
@@ -5123,6 +5190,14 @@ final class AppStore: ObservableObject {
             )
         }
         nativeMonitorSample = nativeMonitorHistory.last
+        systemAlertTimeline = SystemAlertTimeline()
+        for sample in nativeMonitorHistory {
+            systemAlertTimeline.record(
+                sample: sample,
+                thresholds: menuBarConfiguration.alertThresholds
+            )
+        }
+        systemAlertEvents = systemAlertTimeline.events
         diskTotalBytes = 494_000_000_000
         diskFreeBytes = 148_000_000_000
         seedDemoAgentWorkspace(home: home)

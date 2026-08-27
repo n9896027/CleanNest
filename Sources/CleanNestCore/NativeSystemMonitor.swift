@@ -27,6 +27,36 @@ public enum NativeMetricHealthLevel: Int, Comparable, Codable, Sendable {
     }
 }
 
+public enum NativeMetricRiskDirection: String, Codable, Sendable {
+    case higherIsWorse
+    case lowerIsWorse
+}
+
+public struct NativeMetricHealthAssessment: Equatable, Sendable {
+    public let metric: MenuBarMetric
+    public let level: NativeMetricHealthLevel
+    public let reason: String
+    public let observedValue: Double?
+    public let observedDescription: String
+    public let riskDirection: NativeMetricRiskDirection
+
+    public init(
+        metric: MenuBarMetric,
+        level: NativeMetricHealthLevel,
+        reason: String,
+        observedValue: Double?,
+        observedDescription: String,
+        riskDirection: NativeMetricRiskDirection
+    ) {
+        self.metric = metric
+        self.level = level
+        self.reason = reason
+        self.observedValue = observedValue
+        self.observedDescription = observedDescription
+        self.riskDirection = riskDirection
+    }
+}
+
 public enum NativeThermalState: String, Codable, Sendable {
     case nominal
     case fair
@@ -83,6 +113,82 @@ public struct MenuBarMetricPreference: Codable, Equatable, Sendable {
     }
 }
 
+public struct NativeAlertThresholds: Codable, Equatable, Sendable {
+    public var cpuTemperatureWarningCelsius: Double
+    public var cpuTemperatureCriticalCelsius: Double
+    public var batteryTemperatureWarningCelsius: Double
+    public var batteryTemperatureCriticalCelsius: Double
+    public var diskFreeWarningPercent: Double
+    public var diskFreeCriticalPercent: Double
+    public var batteryLowWarningPercent: Double
+    public var batteryLowCriticalPercent: Double
+    public var fanLoadWarningPercent: Double
+    public var memoryPressureWarningEnabled: Bool
+
+    public init(
+        cpuTemperatureWarningCelsius: Double = 85,
+        cpuTemperatureCriticalCelsius: Double = 95,
+        batteryTemperatureWarningCelsius: Double = 40,
+        batteryTemperatureCriticalCelsius: Double = 45,
+        diskFreeWarningPercent: Double = 10,
+        diskFreeCriticalPercent: Double = 3,
+        batteryLowWarningPercent: Double = 20,
+        batteryLowCriticalPercent: Double = 10,
+        fanLoadWarningPercent: Double = 85,
+        memoryPressureWarningEnabled: Bool = true
+    ) {
+        self.cpuTemperatureWarningCelsius = cpuTemperatureWarningCelsius
+        self.cpuTemperatureCriticalCelsius = cpuTemperatureCriticalCelsius
+        self.batteryTemperatureWarningCelsius = batteryTemperatureWarningCelsius
+        self.batteryTemperatureCriticalCelsius = batteryTemperatureCriticalCelsius
+        self.diskFreeWarningPercent = diskFreeWarningPercent
+        self.diskFreeCriticalPercent = diskFreeCriticalPercent
+        self.batteryLowWarningPercent = batteryLowWarningPercent
+        self.batteryLowCriticalPercent = batteryLowCriticalPercent
+        self.fanLoadWarningPercent = fanLoadWarningPercent
+        self.memoryPressureWarningEnabled = memoryPressureWarningEnabled
+    }
+
+    public static let defaults = NativeAlertThresholds()
+
+    public var normalized: NativeAlertThresholds {
+        let cpuWarning = cpuTemperatureWarningCelsius.clamped(to: 60...103)
+        let cpuCritical = cpuTemperatureCriticalCelsius.clamped(
+            to: (cpuWarning + 2)...110
+        )
+        let batteryWarning = batteryTemperatureWarningCelsius.clamped(to: 30...54)
+        let batteryCritical = batteryTemperatureCriticalCelsius.clamped(
+            to: (batteryWarning + 1)...60
+        )
+        let diskWarning = diskFreeWarningPercent.clamped(to: 5...30)
+        let diskCritical = diskFreeCriticalPercent.clamped(
+            to: 1...max(1, diskWarning - 1)
+        )
+        let batteryLowWarning = batteryLowWarningPercent.clamped(to: 15...40)
+        let batteryLowCritical = batteryLowCriticalPercent.clamped(
+            to: 2...max(2, batteryLowWarning - 1)
+        )
+        return NativeAlertThresholds(
+            cpuTemperatureWarningCelsius: cpuWarning,
+            cpuTemperatureCriticalCelsius: cpuCritical,
+            batteryTemperatureWarningCelsius: batteryWarning,
+            batteryTemperatureCriticalCelsius: batteryCritical,
+            diskFreeWarningPercent: diskWarning,
+            diskFreeCriticalPercent: diskCritical,
+            batteryLowWarningPercent: batteryLowWarning,
+            batteryLowCriticalPercent: batteryLowCritical,
+            fanLoadWarningPercent: fanLoadWarningPercent.clamped(to: 60...100),
+            memoryPressureWarningEnabled: memoryPressureWarningEnabled
+        )
+    }
+}
+
+private extension Double {
+    func clamped(to range: ClosedRange<Double>) -> Double {
+        min(range.upperBound, max(range.lowerBound, self))
+    }
+}
+
 public struct MenuBarMonitorConfiguration: Codable, Equatable, Sendable {
     public var isEnabled: Bool
     public var metrics: [MenuBarMetricPreference]
@@ -93,6 +199,7 @@ public struct MenuBarMonitorConfiguration: Codable, Equatable, Sendable {
     public var networkMode: MenuBarNetworkMode
     public var selectedNetworkInterface: String?
     public var globalHotKeyEnabled: Bool
+    public var alertThresholds: NativeAlertThresholds
 
     public init(
         isEnabled: Bool,
@@ -103,7 +210,8 @@ public struct MenuBarMonitorConfiguration: Codable, Equatable, Sendable {
         refreshInterval: MenuBarRefreshInterval = .twoSeconds,
         networkMode: MenuBarNetworkMode = .physicalAggregate,
         selectedNetworkInterface: String? = nil,
-        globalHotKeyEnabled: Bool = true
+        globalHotKeyEnabled: Bool = true,
+        alertThresholds: NativeAlertThresholds = .defaults
     ) {
         self.isEnabled = isEnabled
         self.metrics = metrics
@@ -114,6 +222,7 @@ public struct MenuBarMonitorConfiguration: Codable, Equatable, Sendable {
         self.networkMode = networkMode
         self.selectedNetworkInterface = selectedNetworkInterface
         self.globalHotKeyEnabled = globalHotKeyEnabled
+        self.alertThresholds = alertThresholds.normalized
     }
 
     public static let defaults = MenuBarMonitorConfiguration(
@@ -134,7 +243,8 @@ public struct MenuBarMonitorConfiguration: Codable, Equatable, Sendable {
         refreshInterval: .twoSeconds,
         networkMode: .physicalAggregate,
         selectedNetworkInterface: nil,
-        globalHotKeyEnabled: true
+        globalHotKeyEnabled: true,
+        alertThresholds: .defaults
     )
 
     public var normalized: MenuBarMonitorConfiguration {
@@ -159,7 +269,8 @@ public struct MenuBarMonitorConfiguration: Codable, Equatable, Sendable {
             selectedNetworkInterface: selectedNetworkInterface?.isEmpty == false
                 ? selectedNetworkInterface
                 : nil,
-            globalHotKeyEnabled: globalHotKeyEnabled
+            globalHotKeyEnabled: globalHotKeyEnabled,
+            alertThresholds: alertThresholds.normalized
         )
     }
 
@@ -173,6 +284,7 @@ public struct MenuBarMonitorConfiguration: Codable, Equatable, Sendable {
         case networkMode
         case selectedNetworkInterface
         case globalHotKeyEnabled
+        case alertThresholds
     }
 
     public init(from decoder: Decoder) throws {
@@ -203,6 +315,10 @@ public struct MenuBarMonitorConfiguration: Codable, Equatable, Sendable {
         )
         globalHotKeyEnabled = try values.decodeIfPresent(Bool.self, forKey: .globalHotKeyEnabled)
             ?? Self.defaults.globalHotKeyEnabled
+        alertThresholds = try values.decodeIfPresent(
+            NativeAlertThresholds.self,
+            forKey: .alertThresholds
+        ) ?? Self.defaults.alertThresholds
     }
 
     public func preference(for metric: MenuBarMetric) -> MenuBarMetricPreference {
@@ -362,61 +478,268 @@ public struct NativeMonitorSample: Equatable, Sendable {
         }
     }
 
-    public func healthLevel(for metric: MenuBarMetric) -> NativeMetricHealthLevel {
+    public func healthLevel(
+        for metric: MenuBarMetric,
+        thresholds: NativeAlertThresholds = .defaults
+    ) -> NativeMetricHealthLevel {
+        healthAssessment(for: metric, thresholds: thresholds)?.level ?? .normal
+    }
+
+    public func healthAssessment(
+        for metric: MenuBarMetric,
+        thresholds rawThresholds: NativeAlertThresholds = .defaults
+    ) -> NativeMetricHealthAssessment? {
+        let thresholds = rawThresholds.normalized
         switch metric {
         case .memory:
+            let level: NativeMetricHealthLevel
+            let reason: String
             switch memoryPressureLevel {
-            case .normal, .unknown: return .normal
-            case .warning: return .warning
-            case .critical: return .critical
+            case .normal:
+                level = .normal
+                reason = "macOS 内存压力正常。"
+            case .warning:
+                level = thresholds.memoryPressureWarningEnabled ? .warning : .normal
+                reason = thresholds.memoryPressureWarningEnabled
+                    ? "macOS 已报告内存压力警告。"
+                    : "macOS 报告警告压力；当前设置只在严重压力时提醒。"
+            case .critical:
+                level = .critical
+                reason = "macOS 已报告严重内存压力。"
+            case .unknown:
+                return nil
             }
+            return NativeMetricHealthAssessment(
+                metric: metric,
+                level: level,
+                reason: reason,
+                observedValue: Double(level.rawValue),
+                observedDescription: memoryPressureLevel.rawValue,
+                riskDirection: .higherIsWorse
+            )
         case .temperature:
-            return temperatureHealthLevel()
+            guard temperatureCelsius != nil
+                    || batteryTemperatureCelsius != nil
+                    || thermalState != .unknown else { return nil }
+            let level = temperatureHealthLevel(thresholds: thresholds)
+            let cpuLevel = sensorTemperatureLevel(
+                temperatureCelsius,
+                warning: thresholds.cpuTemperatureWarningCelsius,
+                critical: thresholds.cpuTemperatureCriticalCelsius
+            )
+            let batteryLevel = sensorTemperatureLevel(
+                batteryTemperatureCelsius,
+                warning: thresholds.batteryTemperatureWarningCelsius,
+                critical: thresholds.batteryTemperatureCriticalCelsius
+            )
+            let observed: Double?
+            let description: String
+            let reason: String
+            if thermalState.healthLevel >= max(cpuLevel, batteryLevel),
+               thermalState.healthLevel != .normal {
+                observed = temperatureCelsius ?? batteryTemperatureCelsius
+                description = "macOS 热状态 " + thermalState.rawValue
+                reason = "macOS 热状态已达到 " + thermalState.rawValue + "。"
+            } else if batteryLevel > cpuLevel, let batteryTemperatureCelsius {
+                observed = batteryTemperatureCelsius
+                description = String(format: "电池 %.1f°C", batteryTemperatureCelsius)
+                reason = temperatureReason(
+                    name: "电池",
+                    value: batteryTemperatureCelsius,
+                    level: level,
+                    warning: thresholds.batteryTemperatureWarningCelsius,
+                    critical: thresholds.batteryTemperatureCriticalCelsius
+                )
+            } else if let temperatureCelsius {
+                observed = temperatureCelsius
+                description = String(format: "CPU %.1f°C", temperatureCelsius)
+                reason = temperatureReason(
+                    name: "CPU",
+                    value: temperatureCelsius,
+                    level: level,
+                    warning: thresholds.cpuTemperatureWarningCelsius,
+                    critical: thresholds.cpuTemperatureCriticalCelsius
+                )
+            } else if let batteryTemperatureCelsius {
+                observed = batteryTemperatureCelsius
+                description = String(format: "电池 %.1f°C", batteryTemperatureCelsius)
+                reason = temperatureReason(
+                    name: "电池",
+                    value: batteryTemperatureCelsius,
+                    level: level,
+                    warning: thresholds.batteryTemperatureWarningCelsius,
+                    critical: thresholds.batteryTemperatureCriticalCelsius
+                )
+            } else {
+                observed = nil
+                description = "macOS 热状态 " + thermalState.rawValue
+                reason = level == .normal ? "macOS 热状态正常。" : "macOS 热状态异常。"
+            }
+            return NativeMetricHealthAssessment(
+                metric: metric,
+                level: level,
+                reason: reason,
+                observedValue: observed,
+                observedDescription: description,
+                riskDirection: .higherIsWorse
+            )
         case .disk:
-            guard let diskUsedPercent else { return .normal }
-            if diskUsedPercent >= 97 { return .critical }
-            if diskUsedPercent >= 90 { return .warning }
-            return .normal
+            guard let diskUsedPercent else { return nil }
+            let freePercent = max(0, 100 - diskUsedPercent)
+            let level: NativeMetricHealthLevel
+            if freePercent <= thresholds.diskFreeCriticalPercent {
+                level = .critical
+            } else if freePercent <= thresholds.diskFreeWarningPercent {
+                level = .warning
+            } else {
+                level = .normal
+            }
+            let reason: String
+            switch level {
+            case .normal:
+                reason = String(format: "启动卷剩余 %.1f%%，高于 %.0f%% 提醒线。", freePercent, thresholds.diskFreeWarningPercent)
+            case .warning:
+                reason = String(format: "启动卷只剩 %.1f%%，已低于 %.0f%% 提醒线。", freePercent, thresholds.diskFreeWarningPercent)
+            case .critical:
+                reason = String(format: "启动卷只剩 %.1f%%，已低于 %.0f%% 严重线。", freePercent, thresholds.diskFreeCriticalPercent)
+            }
+            return NativeMetricHealthAssessment(
+                metric: metric,
+                level: level,
+                reason: reason,
+                observedValue: freePercent,
+                observedDescription: String(format: "剩余 %.1f%%", freePercent),
+                riskDirection: .lowerIsWorse
+            )
         case .fan:
-            guard fanCount.map({ $0 > 0 }) == true, fanRPM != nil else { return .normal }
-            let temperatureLevel = temperatureHealthLevel()
-            if temperatureLevel == .critical { return .critical }
-            if temperatureLevel == .warning { return .warning }
-            // Match the rounded whole-percent value shown in the UI so a visible
-            // "85%" never remains unmarked because the sensor returned 84.x%.
-            if let fanLoadPercent, fanLoadPercent.rounded() >= 85 { return .warning }
-            if fanLoadPercent == nil, let fanRPM, fanRPM >= 5_500 { return .warning }
-            return .normal
+            guard fanCount.map({ $0 > 0 }) == true, fanRPM != nil else { return nil }
+            let temperatureLevel = temperatureHealthLevel(thresholds: thresholds)
+            let level: NativeMetricHealthLevel
+            if temperatureLevel == .critical {
+                level = .critical
+            } else if temperatureLevel == .warning {
+                level = .warning
+            } else if let fanLoadPercent,
+                      fanLoadPercent.rounded() >= thresholds.fanLoadWarningPercent {
+                level = .warning
+            } else {
+                level = .normal
+            }
+            let description = fanLoadPercent.map {
+                String(format: "约 %.0f%% 最大转速", $0)
+            } ?? "没有相对最大转速证据"
+            let reason: String
+            if temperatureLevel == .critical {
+                reason = "风扇正在运转，同时温度或 macOS 热状态已严重。"
+            } else if temperatureLevel == .warning {
+                reason = "风扇正在运转，同时温度或 macOS 热状态需要留意。"
+            } else if level == .warning, let fanLoadPercent {
+                reason = String(
+                    format: "风扇约为最大转速的 %.0f%%，达到 %.0f%% 提醒线。",
+                    fanLoadPercent,
+                    thresholds.fanLoadWarningPercent
+                )
+            } else if fanLoadPercent == nil {
+                reason = "当前硬件只返回 RPM，没有相对最大转速；不会套用通用 RPM 告警线。"
+            } else {
+                reason = "风扇相对转速与热状态正常。"
+            }
+            return NativeMetricHealthAssessment(
+                metric: metric,
+                level: level,
+                reason: reason,
+                observedValue: fanLoadPercent,
+                observedDescription: description,
+                riskDirection: .higherIsWorse
+            )
         case .battery:
             guard batteryIsCharging != true,
                   batteryStatus != "连接电源",
-                  let batteryLevel else { return .normal }
-            if batteryLevel <= 10 { return .critical }
-            if batteryLevel <= 20 { return .warning }
-            return .normal
+                  let batteryLevel else {
+                guard let batteryLevel else { return nil }
+                return NativeMetricHealthAssessment(
+                    metric: metric,
+                    level: .normal,
+                    reason: "电池正在充电或连接电源。",
+                    observedValue: batteryLevel,
+                    observedDescription: String(format: "%.0f%%", batteryLevel),
+                    riskDirection: .lowerIsWorse
+                )
+            }
+            let level: NativeMetricHealthLevel
+            if batteryLevel <= thresholds.batteryLowCriticalPercent {
+                level = .critical
+            } else if batteryLevel <= thresholds.batteryLowWarningPercent {
+                level = .warning
+            } else {
+                level = .normal
+            }
+            let reason: String
+            switch level {
+            case .normal:
+                reason = String(format: "电量 %.0f%%，高于 %.0f%% 提醒线。", batteryLevel, thresholds.batteryLowWarningPercent)
+            case .warning:
+                reason = String(format: "电量 %.0f%%，已低于 %.0f%% 提醒线。", batteryLevel, thresholds.batteryLowWarningPercent)
+            case .critical:
+                reason = String(format: "电量 %.0f%%，已低于 %.0f%% 严重线。", batteryLevel, thresholds.batteryLowCriticalPercent)
+            }
+            return NativeMetricHealthAssessment(
+                metric: metric,
+                level: level,
+                reason: reason,
+                observedValue: batteryLevel,
+                observedDescription: String(format: "%.0f%%", batteryLevel),
+                riskDirection: .lowerIsWorse
+            )
         case .cpu, .network, .gpu:
             // High utilization or throughput is workload, not evidence of a hardware problem.
-            return .normal
+            return nil
         }
     }
 
-    private func temperatureHealthLevel() -> NativeMetricHealthLevel {
+    private func temperatureHealthLevel(
+        thresholds: NativeAlertThresholds
+    ) -> NativeMetricHealthLevel {
         var level = thermalState.healthLevel
-        if let temperatureCelsius {
-            if temperatureCelsius >= 95 {
-                level = max(level, .critical)
-            } else if temperatureCelsius >= 85 {
-                level = max(level, .warning)
-            }
-        }
-        if let batteryTemperatureCelsius {
-            if batteryTemperatureCelsius >= 45 {
-                level = max(level, .critical)
-            } else if batteryTemperatureCelsius >= 40 {
-                level = max(level, .warning)
-            }
-        }
+        level = max(level, sensorTemperatureLevel(
+            temperatureCelsius,
+            warning: thresholds.cpuTemperatureWarningCelsius,
+            critical: thresholds.cpuTemperatureCriticalCelsius
+        ))
+        level = max(level, sensorTemperatureLevel(
+            batteryTemperatureCelsius,
+            warning: thresholds.batteryTemperatureWarningCelsius,
+            critical: thresholds.batteryTemperatureCriticalCelsius
+        ))
         return level
+    }
+
+    private func sensorTemperatureLevel(
+        _ value: Double?,
+        warning: Double,
+        critical: Double
+    ) -> NativeMetricHealthLevel {
+        guard let value else { return .normal }
+        if value >= critical { return .critical }
+        if value >= warning { return .warning }
+        return .normal
+    }
+
+    private func temperatureReason(
+        name: String,
+        value: Double,
+        level: NativeMetricHealthLevel,
+        warning: Double,
+        critical: Double
+    ) -> String {
+        switch level {
+        case .normal:
+            return String(format: "%@ %.1f°C，低于 %.0f°C 提醒线。", name, value, warning)
+        case .warning:
+            return String(format: "%@ %.1f°C，达到 %.0f°C 提醒线。", name, value, warning)
+        case .critical:
+            return String(format: "%@ %.1f°C，达到 %.0f°C 严重线。", name, value, critical)
+        }
     }
 }
 

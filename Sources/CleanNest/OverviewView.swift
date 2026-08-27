@@ -3,6 +3,7 @@ import CleanNestCore
 
 struct OverviewView: View {
     @EnvironmentObject private var store: AppStore
+    @State private var nativeMonitorSample: NativeMonitorSample? = nil
 
     private enum FocusAction {
         case scanCleanup
@@ -72,6 +73,7 @@ struct OverviewView: View {
             .frame(maxWidth: CNTheme.contentMaxWidth, alignment: .leading)
             .padding(CNTheme.pagePadding)
         }
+        .onReceive(store.nativeMonitorSamplePublisher) { nativeMonitorSample = $0 }
     }
 
     private var usedBytes: Int64 {
@@ -84,7 +86,7 @@ struct OverviewView: View {
     }
 
     private var focusState: FocusState {
-        if store.nativeMonitorSample?.memoryPressureLevel == .critical {
+        if nativeMonitorSample?.memoryPressureLevel == .critical {
             return FocusState(
                 title: "内存压力较高",
                 detail: "macOS 已报告严重内存压力。先查看占用进程，再决定是否退出。",
@@ -114,7 +116,7 @@ struct OverviewView: View {
             )
         }
 
-        if store.nativeMonitorSample?.memoryPressureLevel == .warning {
+        if nativeMonitorSample?.memoryPressureLevel == .warning {
             return FocusState(
                 title: "内存压力正在升高",
                 detail: "macOS 已报告内存压力警告。查看连续采样和占用进程，再决定是否退出。",
@@ -380,7 +382,7 @@ struct OverviewView: View {
     private func focusVerifiedAt(_ action: FocusAction) -> Date? {
         switch action {
         case .scanCleanup, .openCleanup: return store.cleanupScanCompletedAt
-        case .openSystemStatus: return store.nativeMonitorSample?.sampledAt
+        case .openSystemStatus: return nativeMonitorSample?.sampledAt
         case .openSettings: return store.fullDiskAccessProbeCompletedAt
         case .openActivity(let id): return store.activities.first(where: { $0.id == id })?.date
         }
@@ -648,7 +650,7 @@ struct OverviewView: View {
     }
 
     private var memoryPressureLabel: String {
-        switch store.nativeMonitorSample?.memoryPressureLevel {
+        switch nativeMonitorSample?.memoryPressureLevel {
         case .normal: return CNL10n.string("正常")
         case .warning: return CNL10n.string("警告")
         case .critical: return CNL10n.string("严重")
@@ -658,14 +660,14 @@ struct OverviewView: View {
     }
 
     private var memoryUsageDetail: String {
-        guard let value = store.nativeMonitorSample?.memoryUsedPercent else {
+        guard let value = nativeMonitorSample?.memoryUsedPercent else {
             return CNL10n.string("原生实时采样")
         }
         return CNL10n.format("内存已用 %@", CleanNestFormatting.percent(value))
     }
 
     private var memoryPressureTint: Color {
-        switch store.nativeMonitorSample?.memoryPressureLevel {
+        switch nativeMonitorSample?.memoryPressureLevel {
         case .normal: return CNTheme.success
         case .warning: return CNTheme.warning
         case .critical: return CNTheme.danger

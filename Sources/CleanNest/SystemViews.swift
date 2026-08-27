@@ -5,7 +5,9 @@ import CleanNestCore
 struct SystemStatusView: View {
     @EnvironmentObject private var store: AppStore
     @State private var showsAllMemoryProcesses = false
+    @State private var expandedMemoryGroupIDs = Set<String>()
     @State private var pendingMemoryTermination: PendingMemoryTermination?
+    @State private var realtimeSample: NativeMonitorSample? = nil
 
     private let columns = [
         GridItem(.flexible(), spacing: 14),
@@ -34,6 +36,7 @@ struct SystemStatusView: View {
                 }
 
                 nativeRealtimeCard
+                systemAlertTimelineCard
 
                 if store.engine == nil {
                     EmptyPanel(
@@ -73,8 +76,8 @@ struct SystemStatusView: View {
                         ResourceCard(
                             title: "磁盘",
                             symbol: "internaldrive",
-                            value: store.nativeMonitorSample?.diskUsedPercent ?? snapshot.diskUsedPercent,
-                            detail: (store.nativeMonitorSample?.diskFreeBytes ?? snapshot.diskFreeBytes)
+                            value: realtimeSample?.diskUsedPercent ?? snapshot.diskUsedPercent,
+                            detail: (realtimeSample?.diskFreeBytes ?? snapshot.diskFreeBytes)
                                 .map { CNL10n.format("可用 %@", CleanNestFormatting.bytes($0)) }
                                 ?? "可用空间未知",
                             tint: CNTheme.success
@@ -102,6 +105,7 @@ struct SystemStatusView: View {
             }
             .padding(CNTheme.pagePadding)
         }
+        .onReceive(store.nativeMonitorSamplePublisher) { realtimeSample = $0 }
         .alert(item: $pendingMemoryTermination) { pending in
             if pending.force {
                 return Alert(
@@ -133,7 +137,7 @@ struct SystemStatusView: View {
                         Text(store.nativeMonitorDiagnostic)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        if let sampledAt = store.nativeMonitorSample?.sampledAt {
+                        if let sampledAt = realtimeSample?.sampledAt {
                             Text("最新样本 " + sampledAt.formatted(date: .omitted, time: .standard))
                                 .font(.caption2.monospacedDigit())
                                 .foregroundStyle(.tertiary)
@@ -147,7 +151,7 @@ struct SystemStatusView: View {
                     )
                 }
 
-                if let sample = store.nativeMonitorSample {
+                if let sample = realtimeSample {
                     LazyVGrid(
                         columns: [GridItem(.adaptive(minimum: 195), spacing: 10)],
                         spacing: 10
@@ -179,7 +183,14 @@ struct SystemStatusView: View {
         _ metric: MenuBarMetric,
         sample: NativeMonitorSample
     ) -> some View {
-        let healthLevel = sample.healthLevel(for: metric)
+        let healthLevel = sample.healthLevel(
+            for: metric,
+            thresholds: store.menuBarConfiguration.alertThresholds
+        )
+        let assessment = sample.healthAssessment(
+            for: metric,
+            thresholds: store.menuBarConfiguration.alertThresholds
+        )
         let tint = healthLevel.highlightColor ?? metric.tint
 
         return VStack(alignment: .leading, spacing: 8) {
@@ -217,6 +228,12 @@ struct SystemStatusView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if let assessment, assessment.level != .normal {
+                Text(assessment.reason)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(tint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
         .padding(11)
@@ -315,6 +332,96 @@ struct SystemStatusView: View {
         }
     }
 
+    private var systemAlertTimelineCard: some View {
+        SurfaceCard(title: "告警时间线", symbol: "bell.and.waves.left.and.right", tint: CNTheme.warning) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 10) {
+                    Text("只记录温度、电池、内存压力、磁盘余量和风扇相对负载的异常、峰值与恢复；CPU、GPU 和网络繁忙不会被当成故障。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 12)
+                    StatusPill(
+                        text: store.systemAlertEvents.contains(where: \.isActive)
+                            ? "有持续异常"
+                            : "当前无异常",
+                        symbol: store.systemAlertEvents.contains(where: \.isActive)
+                            ? "exclamationmark"
+                            : "checkmark",
+                        style: store.systemAlertEvents.contains(where: \.isActive)
+                            ? .warning
+                            : .success
+                    )
+                }
+
+                if store.systemAlertEvents.isEmpty {
+                    InlineBanner(
+                        title: "还没有告警记录",
+                        detail: "这是正常状态。达到你在设置中保存的阈值后，这里才会开始计时并说明变色原因。",
+                        kind: .success
+                    )
+                } else {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(store.systemAlertEvents.prefix(8).enumerated()), id: \.element.id) { index, event in
+                            systemAlertRow(event)
+                            if index < min(8, store.systemAlertEvents.count) - 1 {
+                                Divider().padding(.leading, 45)
+                            }
+                        }
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    Image(systemName: "lock.shield")
+                        .foregroundStyle(CNTheme.success)
+                    Text("历史只保存在本机，不记录网络地址、访问内容或流量正文；睡眠和退出期间不会虚增持续时间。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func systemAlertRow(_ event: SystemAlertEvent) -> some View {
+        let tint = event.level.highlightColor ?? event.metric.tint
+        return HStack(alignment: .top, spacing: 11) {
+            CNIconTile(symbol: event.metric.symbol, tint: tint, size: 34)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 7) {
+                    Text(event.metric.displayName)
+                        .font(.subheadline.weight(.semibold))
+                    StatusPill(
+                        text: event.isActive ? "持续中" : "已恢复",
+                        symbol: event.isActive ? "waveform.path" : "checkmark",
+                        style: event.isActive ? event.level.badgeStyle : .success
+                    )
+                    .controlSize(.mini)
+                }
+                Text(event.reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("峰值：\(event.peakDescription) · 持续 \(alertDuration(event.duration(at: realtimeSample?.sampledAt ?? Date())))")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 8)
+            Text(event.startedAt.formatted(date: .abbreviated, time: .shortened))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 9)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func alertDuration(_ seconds: TimeInterval) -> String {
+        let value = max(0, Int(seconds.rounded()))
+        if value >= 3_600 { return "\(value / 3_600) 小时 \((value % 3_600) / 60) 分" }
+        if value >= 60 { return "\(value / 60) 分 \(value % 60) 秒" }
+        return "\(value) 秒"
+    }
+
     private func memoryAnalysisCard(_ snapshot: SystemSnapshot) -> some View {
         SurfaceCard {
             VStack(alignment: .leading, spacing: 14) {
@@ -391,17 +498,18 @@ struct SystemStatusView: View {
     }
 
     private func memoryProcessesCard(_ snapshot: SystemSnapshot) -> some View {
-        let processes = showsAllMemoryProcesses
-            ? store.memoryProcesses
-            : Array(store.memoryProcesses.prefix(10))
+        let allGroups = store.memoryApplicationGroups
+        let groups = showsAllMemoryProcesses
+            ? allGroups
+            : Array(allGroups.prefix(10))
 
         return SurfaceCard {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .center, spacing: 10) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Label("内存占用较高的应用与进程", systemImage: "list.number")
+                        Label("内存占用较高的应用", systemImage: "square.stack.3d.up")
                             .font(.headline)
-                        Text("按近似内存足迹排序；系统或受保护进程只展示，不会提供结束按钮。")
+                        Text("先按所属 App 汇总，再按需展开辅助进程；退出风险仍逐个确认，不提供整组强制结束。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -420,7 +528,7 @@ struct SystemStatusView: View {
                     )
                 }
 
-                if processes.isEmpty {
+                if groups.isEmpty {
                     InlineBanner(
                         title: "还没有进程数据",
                         detail: "点击页面右上角的“刷新”，重新探测当前内存占用。",
@@ -428,16 +536,16 @@ struct SystemStatusView: View {
                     )
                 } else {
                     LazyVStack(spacing: 0) {
-                        ForEach(Array(processes.enumerated()), id: \.element.id) { index, process in
-                            memoryProcessRow(process)
-                            if index < processes.count - 1 {
+                        ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+                            memoryApplicationGroupRow(group)
+                            if index < groups.count - 1 {
                                 Divider().padding(.leading, 48)
                             }
                         }
                     }
 
-                    if store.memoryProcesses.count > 10 {
-                        Button(showsAllMemoryProcesses ? "只显示前 10 项" : "显示全部 \(store.memoryProcesses.count) 项") {
+                    if allGroups.count > 10 {
+                        Button(showsAllMemoryProcesses ? "只显示前 10 个 App" : "显示全部 \(allGroups.count) 个 App") {
                             withAnimation(.easeInOut(duration: 0.18)) {
                                 showsAllMemoryProcesses.toggle()
                             }
@@ -451,6 +559,69 @@ struct SystemStatusView: View {
                 }
             }
         }
+    }
+
+    private func memoryApplicationGroupRow(_ group: MemoryApplicationGroup) -> some View {
+        let isExpanded = expandedMemoryGroupIDs.contains(group.id)
+        let footprint = group.physicalFootprintBytes > 0
+            ? group.physicalFootprintBytes
+            : group.residentBytes
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    if isExpanded {
+                        expandedMemoryGroupIDs.remove(group.id)
+                    } else {
+                        expandedMemoryGroupIDs.insert(group.id)
+                    }
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "app.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(CNTheme.accent)
+                        .frame(width: 34, height: 34)
+                        .background(CNTheme.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(group.displayName)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text("\(group.processes.count) 个进程"
+                             + (group.protectedProcessCount > 0 ? " · \(group.protectedProcessCount) 个受保护" : ""))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 12)
+                    Text(CleanNestFormatting.bytes(footprint))
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedMetric()
+                        .foregroundStyle(.primary)
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(group.displayName)，\(group.processes.count) 个进程，近似内存足迹 \(CleanNestFormatting.bytes(footprint))")
+            .accessibilityHint(isExpanded ? "收起进程" : "展开进程并逐个查看退出风险")
+
+            if isExpanded {
+                VStack(spacing: 0) {
+                    ForEach(Array(group.processes.enumerated()), id: \.element.id) { index, process in
+                        memoryProcessRow(process)
+                            .padding(.leading, 18)
+                        if index < group.processes.count - 1 {
+                            Divider().padding(.leading, 64)
+                        }
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.vertical, 8)
     }
 
     private func memoryProcessRow(_ process: MemoryProcessSnapshot) -> some View {
