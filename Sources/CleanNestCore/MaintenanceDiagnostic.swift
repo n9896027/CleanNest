@@ -107,24 +107,7 @@ public enum MaintenanceDiagnosticPolicy {
     ) -> MaintenanceEvidence {
         switch action {
         case .quickLook:
-            switch readOnlyProbeSucceeded {
-            case true:
-                return MaintenanceEvidence(
-                    action: action,
-                    checkedAt: checkedAt,
-                    state: .noAnomalyDetected,
-                    headline: "Quick Look 基础接口可以响应。",
-                    detail: "这只能证明基础接口可用，不能判断你正在看的某个文件是否仍用了旧缩略图。"
-                )
-            case false:
-                return MaintenanceEvidence(
-                    action: action,
-                    checkedAt: checkedAt,
-                    state: .anomalyDetected,
-                    headline: "Quick Look 基础接口没有正常响应。",
-                    detail: "重建缓存有明确依据；原文件不会被修改。"
-                )
-            case nil:
+            guard let readOnlyProbeSucceeded else {
                 return MaintenanceEvidence(
                     action: action,
                     checkedAt: checkedAt,
@@ -133,6 +116,22 @@ public enum MaintenanceDiagnosticPolicy {
                     detail: "仍可由你确认重建缓存，但不能把未知状态写成已经诊断出故障。"
                 )
             }
+            if readOnlyProbeSucceeded {
+                return MaintenanceEvidence(
+                    action: action,
+                    checkedAt: checkedAt,
+                    state: .noAnomalyDetected,
+                    headline: "Quick Look 基础接口可以响应。",
+                    detail: "这只能证明基础接口可用，不能判断你正在看的某个文件是否仍用了旧缩略图。"
+                )
+            }
+            return MaintenanceEvidence(
+                action: action,
+                checkedAt: checkedAt,
+                state: .anomalyDetected,
+                headline: "Quick Look 基础接口没有正常响应。",
+                detail: "重建缓存有明确依据；原文件不会被修改。"
+            )
 
         case .finder, .dock, .menuBar:
             let processName = action.verificationProcessName ?? action.rawValue
