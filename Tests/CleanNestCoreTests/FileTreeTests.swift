@@ -34,4 +34,41 @@ final class FileTreeTests: XCTestCase {
         XCTAssertTrue(children.contains { $0.lastPathComponent == "nested" })
         XCTAssertFalse(children.contains { $0.lastPathComponent == "item-1.bin" })
     }
+
+    func testTraversalReportsEntryLimitInsteadOfClaimingComplete() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CleanNestFileTreeLimit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        for index in 0..<20 {
+            try Data(repeating: UInt8(index), count: 64)
+                .write(to: root.appendingPathComponent("item-\(index).bin"))
+        }
+
+        let limited = FileTree.metrics(of: root, maximumEntries: 5)
+        let exhaustive = FileTree.metrics(of: root, maximumEntries: nil)
+
+        XCTAssertTrue(limited.traversal.reachedEntryLimit)
+        XCTAssertEqual(limited.traversal.entryLimit, 5)
+        XCTAssertEqual(limited.traversal.visitedEntryCount, 5)
+        XCTAssertFalse(limited.traversal.isCompleteWithinFileSystem)
+        XCTAssertFalse(exhaustive.traversal.reachedEntryLimit)
+        XCTAssertEqual(exhaustive.traversal.regularFileCount, 20)
+        XCTAssertGreaterThan(exhaustive.allocatedBytes, limited.allocatedBytes)
+    }
+
+    func testDiskEnumerationCanIncludeHiddenTopLevelItemsExplicitly() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CleanNestHiddenChildren-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data([1]).write(to: root.appendingPathComponent("visible.bin"))
+        try Data([2]).write(to: root.appendingPathComponent(".hidden.bin"))
+
+        XCTAssertEqual(FileTree.directChildren(of: root).map(\.lastPathComponent), ["visible.bin"])
+        XCTAssertEqual(
+            Set(FileTree.directChildren(of: root, includingHidden: true).map(\.lastPathComponent)),
+            Set(["visible.bin", ".hidden.bin"])
+        )
+    }
 }

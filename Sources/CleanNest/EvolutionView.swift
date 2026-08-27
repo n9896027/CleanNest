@@ -4,6 +4,8 @@ import CleanNestCore
 struct EvolutionView: View {
     @EnvironmentObject private var store: AppStore
     @State private var confirmingReset = false
+    @State private var visibleRuleLimit = 100
+    @State private var visibleModelLimit = 50
 
     private var hasMemory: Bool {
         !store.evolutionMemory.events.isEmpty
@@ -33,7 +35,10 @@ struct EvolutionView: View {
             }
             .frame(maxWidth: CNTheme.contentMaxWidth, alignment: .leading)
             .padding(CNTheme.pagePadding)
+            .accessibilityElement(children: .contain)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("本机学习")
         .alert("清空所有本机学习记录？", isPresented: $confirmingReset) {
             Button("取消", role: .cancel) { }
             Button("清空记录", role: .destructive) {
@@ -138,12 +143,16 @@ struct EvolutionView: View {
                 statDivider
                 stat("已启用", CNL10n.format("%d 条", store.evolutionMemory.enabledRuleCount), "可随时暂停或撤销")
                 statDivider
+                stat("试用中", CNL10n.format("%d 条", store.evolutionMemory.trialRuleCount), "到期自动暂停")
+                statDivider
                 stat("模型评价", CNL10n.format("%d 条", store.evolutionMemory.modelFeedbackCount), "用于比较本机模型")
             }
             VStack(spacing: 12) {
                 stat("待审核", CNL10n.format("%d 条", store.evolutionMemory.pendingRuleCount), "尚未影响任何排序")
                 Divider()
                 stat("已启用", CNL10n.format("%d 条", store.evolutionMemory.enabledRuleCount), "可随时暂停或撤销")
+                Divider()
+                stat("试用中", CNL10n.format("%d 条", store.evolutionMemory.trialRuleCount), "到期自动暂停")
                 Divider()
                 stat("模型评价", CNL10n.format("%d 条", store.evolutionMemory.modelFeedbackCount), "用于比较本机模型")
             }
@@ -226,115 +235,170 @@ struct EvolutionView: View {
     }
 
     private var ruleReview: some View {
-        SurfaceCard(
-            title: "规则审核台",
+        let clusters = store.evolutionMemory.ruleClusters()
+        let visibleClusters = Array(clusters.prefix(visibleRuleLimit))
+        let impact = store.cleanupLearningSortingImpact
+        return SurfaceCard(
+            title: "类别规则审核台",
             symbol: "checklist",
             prominence: .prominent,
             tint: CNTheme.violet
         ) {
             VStack(alignment: .leading, spacing: 12) {
                 InlineBanner(
-                    title: "提案不是自动化",
-                    detail: "待审核和已暂停规则不会改变排序；已启用规则也不会勾选项目、删除文件、结束进程或扩大权限。",
+                    title: "一组规则代表同类证据，不代表批量删除",
+                    detail: "规则按类型、位置级别、风险和时间聚合。启用后只改变下次列表顺序；不会勾选项目、扩大路径、删除文件或结束进程。",
                     kind: .success
                 )
 
-                if store.evolutionMemory.sortedRuleProposals.isEmpty {
+                sortingImpactPanel(impact)
+
+                if store.evolutionMemory.expiredRuleCount() > 0 {
+                    InlineBanner(
+                        title: "有 \(store.evolutionMemory.expiredRuleCount()) 条试用规则已经到期",
+                        detail: "它们已自动暂停，不再影响排序；可以一次清理这些过期记录。",
+                        kind: .warning,
+                        actionTitle: "清理过期规则"
+                    ) {
+                        store.removeExpiredCleanupRules()
+                    }
+                }
+
+                if clusters.isEmpty {
                     compactEmpty(
                         symbol: "doc.badge.plus",
                         title: "还没有规则提案",
                         detail: "在清理列表中选择“提议：以后优先清理/保留”，或完成一次安全清理。"
                     )
                 } else {
-                    VStack(spacing: 0) {
-                        ForEach(Array(store.evolutionMemory.sortedRuleProposals.enumerated()), id: \.element.id) { index, proposal in
-                            ruleRow(proposal)
-                            if index < store.evolutionMemory.sortedRuleProposals.count - 1 {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(visibleClusters.enumerated()), id: \.element.id) { index, cluster in
+                            ruleClusterRow(cluster)
+                            if index < visibleClusters.count - 1 {
                                 Divider().padding(.leading, 43)
                             }
                         }
+                    }
+                    if visibleClusters.count < clusters.count {
+                        Button("再显示 \(min(100, clusters.count - visibleClusters.count)) 组") {
+                            visibleRuleLimit += 100
+                        }
+                        .buttonStyle(.borderless)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityHint("只加载更多类别规则，不会启用或修改规则")
                     }
                 }
             }
         }
     }
 
-    private func ruleRow(_ proposal: CleanupRuleProposal) -> some View {
-        HStack(alignment: .center, spacing: 12) {
+    private func sortingImpactPanel(_ impact: CleanupRuleSortingImpact) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            CNIconTile(symbol: "arrow.up.arrow.down", tint: CNTheme.cyan, size: 34)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("对当前清理列表的真实影响")
+                    .font(.subheadline.weight(.semibold))
+                if store.cleanupCandidates.isEmpty {
+                    Text("当前没有保留扫描结果；下次扫描后会显示具体有多少项目被前移或后移。")
+                } else if impact.matchedCount == 0 {
+                    Text("当前扫描结果没有命中已启用规则，排序保持原样。")
+                } else {
+                    Text("命中 \(impact.matchedCount) 项，其中 \(impact.movedCount) 项位置发生变化：\(impact.preferCleanupCount) 项前移复核，\(impact.preferKeepCount) 项后移保留。")
+                }
+                Text("已选数量与安全校验：0 项被规则自动改变。")
+                    .foregroundStyle(CNTheme.mint)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+        }
+        .padding(12)
+        .background(CNTheme.cyan.opacity(0.055), in: RoundedRectangle(cornerRadius: 13))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("规则排序影响，命中 \(impact.matchedCount) 项，移动 \(impact.movedCount) 项，没有自动改变选择")
+    }
+
+    private func ruleClusterRow(_ cluster: CleanupRuleCluster) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 12) {
+                ruleClusterDescription(cluster)
+                Spacer(minLength: 12)
+                ruleClusterActions(cluster)
+            }
+            VStack(alignment: .leading, spacing: 11) {
+                ruleClusterDescription(cluster)
+                ruleClusterActions(cluster)
+            }
+        }
+        .padding(.vertical, 11)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(cluster.kind.rawValue)，\(cluster.locationLevel.displayName)，\(cluster.riskLevel.displayName)，\(cluster.ageBand.displayName)，共 \(cluster.proposalCount) 条规则")
+    }
+
+    private func ruleClusterDescription(_ cluster: CleanupRuleCluster) -> some View {
+        HStack(alignment: .top, spacing: 12) {
             CNIconTile(
-                symbol: proposal.suggestedPreference == .preferKeep ? "hand.raised.fill" : "sparkles",
-                tint: proposal.suggestedPreference == .preferKeep ? CNTheme.warning : CNTheme.success,
+                symbol: cluster.suggestedPreference == .preferKeep ? "hand.raised.fill" : cluster.kind.symbolName,
+                tint: cluster.suggestedPreference == .preferKeep ? CNTheme.warning : CNTheme.success,
                 size: 34
             )
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 7) {
-                    Text(proposal.displayName)
+                    Text("\(cluster.kind.rawValue) · \(cluster.locationLevel.displayName)")
                         .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
                     StatusPill(
-                        text: ruleStateLabel(proposal.state),
-                        symbol: ruleStateSymbol(proposal.state),
-                        style: ruleStateStyle(proposal.state)
+                        text: cluster.riskLevel.displayName,
+                        symbol: cluster.riskLevel == .high ? "exclamationmark.triangle" : nil,
+                        style: cluster.riskLevel == .high ? .warning : .neutral
                     )
                     StatusPill(
-                        text: proposal.suggestedPreference == .preferKeep ? "建议优先保留" : "建议优先复核",
+                        text: cluster.suggestedPreference == .preferKeep ? "优先保留" : "优先复核",
                         symbol: nil,
-                        style: proposal.suggestedPreference == .preferKeep ? .warning : .success
+                        style: cluster.suggestedPreference == .preferKeep ? .warning : .success
                     )
                 }
-                Text(proposal.reason)
+                Text("\(cluster.ageBand.displayName) · \(cluster.proposalCount) 条文件证据 · 共 \(cluster.evidenceCount) 次判断")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("\(proposal.kind.rawValue) · \(proposal.evidenceCount) 条本机证据 · 更新于 \(proposal.lastUpdatedAt.formatted(date: .abbreviated, time: .shortened))")
+                Text(ruleClusterStateText(cluster))
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(cluster.expiredCount > 0 ? CNTheme.warning : Color.secondary.opacity(0.72))
+                if !cluster.exampleNames.isEmpty {
+                    Text("示例：\(cluster.exampleNames.joined(separator: "、"))")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
-            Spacer(minLength: 12)
-            ruleActions(proposal)
         }
-        .padding(.vertical, 10)
     }
 
     @ViewBuilder
-    private func ruleActions(_ proposal: CleanupRuleProposal) -> some View {
-        switch proposal.state {
-        case .pending:
-            Button("审核并启用") { store.enableCleanupRule(proposal.id) }
+    private func ruleClusterActions(_ cluster: CleanupRuleCluster) -> some View {
+        HStack(spacing: 8) {
+            if cluster.pendingCount > 0 || cluster.pausedCount > 0 {
+                Button("审核并启用") { store.enableCleanupRuleCluster(cluster) }
                 .buttonStyle(.borderedProminent)
-            Button("撤销") { store.removeCleanupRule(proposal.id) }
-        case .enabled:
-            Button("暂停") { store.pauseCleanupRule(proposal.id) }
-            Button("撤销") { store.removeCleanupRule(proposal.id) }
-        case .paused:
-            Button("重新启用") { store.enableCleanupRule(proposal.id) }
-                .buttonStyle(.borderedProminent)
-            Button("撤销") { store.removeCleanupRule(proposal.id) }
+                Button("试用 7 天") { store.trialCleanupRuleCluster(cluster) }
+            }
+            if cluster.enabledCount > 0 {
+                Button("暂停") { store.pauseCleanupRuleCluster(cluster) }
+            }
+            Button("撤销", role: .destructive) { store.removeCleanupRuleCluster(cluster) }
         }
+        .controlSize(.small)
     }
 
-    private func ruleStateLabel(_ state: EvolutionRuleState) -> String {
-        switch state {
-        case .pending: return "待审核"
-        case .enabled: return "已启用"
-        case .paused: return "已暂停"
-        }
-    }
-
-    private func ruleStateSymbol(_ state: EvolutionRuleState) -> String {
-        switch state {
-        case .pending: return "clock"
-        case .enabled: return "checkmark"
-        case .paused: return "pause"
-        }
-    }
-
-    private func ruleStateStyle(_ state: EvolutionRuleState) -> StatusPill.Style {
-        switch state {
-        case .pending: return .warning
-        case .enabled: return .success
-        case .paused: return .neutral
-        }
+    private func ruleClusterStateText(_ cluster: CleanupRuleCluster) -> String {
+        var parts: [String] = []
+        if cluster.pendingCount > 0 { parts.append("待审核 \(cluster.pendingCount)") }
+        if cluster.enabledCount > 0 { parts.append("已启用 \(cluster.enabledCount)") }
+        if cluster.trialCount > 0 { parts.append("试用中 \(cluster.trialCount)") }
+        if cluster.pausedCount > 0 { parts.append("已暂停 \(cluster.pausedCount)") }
+        if cluster.expiredCount > 0 { parts.append("已到期 \(cluster.expiredCount)") }
+        return parts.joined(separator: " · ")
     }
 
     private var cleanupMemory: some View {
@@ -370,12 +434,14 @@ struct EvolutionView: View {
     }
 
     private var modelMemory: some View {
-        SurfaceCard(title: "模型表现", symbol: "brain.head.profile") {
+        let signals = store.evolutionMemory.sortedModelSignals
+        let visibleSignals = Array(signals.prefix(visibleModelLimit))
+        return SurfaceCard(title: "模型表现", symbol: "brain.head.profile") {
             if store.evolutionMemory.sortedModelSignals.isEmpty {
                 compactEmpty(symbol: "hand.thumbsup", title: "还没有模型评价", detail: "完成一次 AI 分析后，评价建议是否有帮助。")
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(store.evolutionMemory.sortedModelSignals.enumerated()), id: \.element.id) { index, signal in
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(visibleSignals.enumerated()), id: \.element.id) { index, signal in
                         HStack(spacing: 10) {
                             Image(systemName: "cpu").foregroundStyle(CNTheme.accent).frame(width: 26)
                             VStack(alignment: .leading, spacing: 3) {
@@ -393,10 +459,17 @@ struct EvolutionView: View {
                             }
                         }
                         .padding(.vertical, 9)
-                        if index < store.evolutionMemory.sortedModelSignals.count - 1 {
+                        if index < visibleSignals.count - 1 {
                             Divider().padding(.leading, 36)
                         }
                     }
+                }
+                if visibleSignals.count < signals.count {
+                    Button("再显示 \(min(50, signals.count - visibleSignals.count)) 个模型") {
+                        visibleModelLimit += 50
+                    }
+                    .buttonStyle(.borderless)
+                    .frame(maxWidth: .infinity)
                 }
             }
         }

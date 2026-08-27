@@ -66,12 +66,82 @@ extension MenuBarMetric {
     }
 }
 
+extension NativeMetricHealthLevel {
+    var menuBarMarker: String {
+        switch self {
+        case .normal: return ""
+        case .warning: return "!"
+        case .critical: return "!!"
+        }
+    }
+
+    var highlightColor: Color? {
+        switch self {
+        case .normal: return nil
+        case .warning: return CNTheme.warning
+        case .critical: return CNTheme.danger
+        }
+    }
+
+    var highlightNSColor: NSColor? {
+        switch self {
+        case .normal: return nil
+        case .warning: return .systemOrange
+        case .critical: return .systemRed
+        }
+    }
+
+    var badgeText: String? {
+        switch self {
+        case .normal: return nil
+        case .warning: return "警告"
+        case .critical: return "严重"
+        }
+    }
+
+    var badgeSymbol: String? {
+        switch self {
+        case .normal: return nil
+        case .warning: return "exclamationmark"
+        case .critical: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    var badgeStyle: StatusPill.Style {
+        switch self {
+        case .normal: return .neutral
+        case .warning: return .warning
+        case .critical: return .danger
+        }
+    }
+}
+
 struct NativeMetricReading: Equatable {
     let values: [String]
     let accessibilityValue: String
 }
 
 extension NativeMonitorSample {
+    func healthSummary(
+        _ metric: MenuBarMetric,
+        thresholds: NativeAlertThresholds = .defaults
+    ) -> String? {
+        switch (metric, healthLevel(for: metric, thresholds: thresholds)) {
+        case (_, .normal): return nil
+        case (.memory, .warning): return "内存压力警告"
+        case (.memory, .critical): return "内存压力严重"
+        case (.temperature, .warning): return "温度偏高"
+        case (.temperature, .critical): return "温度过高"
+        case (.disk, .warning): return "磁盘空间紧张"
+        case (.disk, .critical): return "磁盘空间严重不足"
+        case (.fan, .warning): return "风扇高速散热"
+        case (.fan, .critical): return "高温与风扇高负载"
+        case (.battery, .warning): return "电量较低"
+        case (.battery, .critical): return "电量严重不足"
+        case (.cpu, _), (.network, _), (.gpu, _): return nil
+        }
+    }
+
     func isAvailable(_ metric: MenuBarMetric) -> Bool {
         switch metric {
         case .temperature:
@@ -272,6 +342,12 @@ extension NativeMonitorSample {
             if batteryTemperatureCelsius != nil {
                 sources.append(batteryTemperatureSource ?? "IOKit 电池温度")
             }
+            switch thermalState {
+            case .fair: sources.append(CNL10n.string("macOS 热状态：需要留意"))
+            case .serious: sources.append(CNL10n.string("macOS 热状态：严重"))
+            case .critical: sources.append(CNL10n.string("macOS 热状态：临界"))
+            case .nominal, .unknown: break
+            }
             source = sources.isEmpty ? "未返回有效温度" : sources.joined(separator: " · ")
         case .network:
             if let networkInterfaceName {
@@ -293,7 +369,8 @@ extension NativeMonitorSample {
             if fanCount == 0 {
                 source = "AppleSMC 报告 0 个风扇"
             } else if let fanCount {
-                source = "AppleSMC · " + String(fanCount) + " 个风扇"
+                let load = fanLoadPercent.map { " · 约 " + compactPercent($0) + " 最大转速" } ?? ""
+                source = "AppleSMC · " + String(fanCount) + " 个风扇" + load
             } else {
                 source = "AppleSMC 未返回风扇信息"
             }
@@ -396,7 +473,7 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
 
         Publishers.CombineLatest(
             store.$menuBarConfiguration,
-            store.$nativeMonitorSample
+            store.nativeMonitorSamplePublisher
         )
         .receive(on: RunLoop.main)
         .sink { [weak self, weak store] configuration, sample in
@@ -407,6 +484,18 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
             )
         }
         .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self, weak store] _ in
+                guard let store else { return }
+                self?.updateStatusItems(
+                    configuration: store.menuBarConfiguration,
+                    sample: store.nativeMonitorSample,
+                    history: store.nativeMonitorHistory
+                )
+            }
+            .store(in: &cancellables)
     }
 
     private func updateStatusItems(
@@ -431,10 +520,40 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
             return
         }
 
-        let desiredOrder = configuration.metrics.compactMap { preference -> MenuBarMetric? in
+        let availableOrder = configuration.metrics.compactMap { preference -> MenuBarMetric? in
             guard preference.isEnabled, sample?.isAvailable(preference.metric) == true else { return nil }
             return preference.metric
         }
+        let widthSelection: MenuBarWidthSelection
+        if let sample {
+            let candidates = availableOrder.map { metric in
+                MenuBarWidthCandidate(
+                    metric: metric,
+                    width: estimatedStatusItemWidth(
+                        metric: metric,
+                        sample: sample,
+                        configuration: configuration
+                    ),
+                    healthLevel: sample.healthLevel(
+                        for: metric,
+                        thresholds: configuration.alertThresholds
+                    )
+                )
+            }
+            widthSelection = MenuBarWidthPolicy.select(
+                candidates: candidates,
+                budget: automaticWidthBudget(),
+                preferredMetric: configuration.compactMetric
+            )
+        } else {
+            widthSelection = MenuBarWidthSelection(
+                visible: [],
+                collapsed: availableOrder,
+                usedWidth: 0,
+                budget: automaticWidthBudget()
+            )
+        }
+        let desiredOrder = widthSelection.visible
         let desired = Set(desiredOrder)
         if desiredOrder != lastMetricOrder {
             removeAllStatusItems()
@@ -450,6 +569,18 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
             let item = statusItems[metric] ?? makeStatusItem(metric)
             guard let button = item.button, let sample else { continue }
             let preference = configuration.preference(for: metric)
+            let healthLevel = sample.healthLevel(
+                for: metric,
+                thresholds: configuration.alertThresholds
+            )
+            let healthSummary = sample.healthSummary(
+                metric,
+                thresholds: configuration.alertThresholds
+            ).map(CNL10n.string)
+            let healthReason = sample.healthAssessment(
+                for: metric,
+                thresholds: configuration.alertThresholds
+            ).flatMap { $0.level == .normal ? nil : $0.reason }
             button.target = self
             button.action = #selector(statusItemPressed(_:))
             button.sendAction(on: [.leftMouseUp])
@@ -457,12 +588,16 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
                 metric,
                 temperatureUnit: configuration.temperatureUnit
             )
+                + (healthSummary.map { "\n" + $0 } ?? "")
+                + (healthReason.map { "\n" + $0 } ?? "")
                 + "\n" + sample.sourceDescription(metric)
             button.setAccessibilityLabel(
                 metric.displayName + " " + sample.detailedValue(
                     metric,
                     temperatureUnit: configuration.temperatureUnit
                 )
+                    + (healthSummary.map { "，" + $0 } ?? "")
+                    + (healthReason.map { "，" + $0 } ?? "")
             )
 
             switch preference.style {
@@ -474,36 +609,95 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
                             metric,
                             temperatureUnit: configuration.temperatureUnit
                         ),
-                        bottomLabel: metric.compactLabel
+                        bottomLabel: metric.compactLabel,
+                        healthLevel: healthLevel
                     )
                     item.length = image.size.width + 4
                     button.title = ""
+                    button.attributedTitle = NSAttributedString(string: "")
                     button.imagePosition = .imageOnly
                     button.image = image
                 case .separate:
                     item.length = NSStatusItem.variableLength
                     button.image = nil
                     button.imagePosition = .noImage
-                    button.title = sample.menuBarValue(
+                    let title = sample.menuBarValue(
                         metric,
                         temperatureUnit: configuration.temperatureUnit
+                    ) + (healthLevel.menuBarMarker.isEmpty ? "" : " " + healthLevel.menuBarMarker)
+                    button.attributedTitle = NSAttributedString(
+                        string: title,
+                        attributes: [
+                            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
+                            .foregroundColor: healthLevel.highlightNSColor ?? NSColor.labelColor
+                        ]
                     )
-                    button.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
                 }
             case .graph:
                 item.length = configuration.presentationMode == .compact ? 44 : 42
                 button.title = ""
+                button.attributedTitle = NSAttributedString(string: "")
                 button.imagePosition = .imageOnly
                 button.image = sparklineImage(
                     values: history.compactMap { $0.value(for: metric) },
                     range: metric.normalizedGraphRange,
-                    label: configuration.presentationMode == .compact ? metric.compactLabel : nil
+                    label: configuration.presentationMode == .compact ? metric.compactLabel : nil,
+                    healthLevel: healthLevel
                 )
             }
         }
 
         DispatchQueue.main.async { [weak self] in
-            self?.publishVisibilityDiagnostic(configuration: configuration, order: desiredOrder)
+            self?.publishVisibilityDiagnostic(
+                configuration: configuration,
+                order: desiredOrder,
+                collapsed: widthSelection.collapsed,
+                usedWidth: widthSelection.usedWidth,
+                budget: widthSelection.budget
+            )
+        }
+    }
+
+    private func automaticWidthBudget() -> Double {
+        let screenWidth = (NSApp.keyWindow?.screen ?? NSScreen.main)?.visibleFrame.width ?? 1_440
+        return min(460, max(210, Double(screenWidth) * 0.24))
+    }
+
+    private func estimatedStatusItemWidth(
+        metric: MenuBarMetric,
+        sample: NativeMonitorSample,
+        configuration: MenuBarMonitorConfiguration
+    ) -> Double {
+        let preference = configuration.preference(for: metric)
+        switch preference.style {
+        case .graph:
+            return configuration.presentationMode == .compact ? 44 : 42
+        case .text:
+            switch configuration.presentationMode {
+            case .compact:
+                let health = sample.healthLevel(
+                    for: metric,
+                    thresholds: configuration.alertThresholds
+                )
+                return Double(compactMetricWidth(
+                    topValue: sample.compactTopValue(
+                        metric,
+                        temperatureUnit: configuration.temperatureUnit
+                    ),
+                    bottomLabel: metric.compactLabel + health.menuBarMarker
+                ) + 4)
+            case .separate:
+                let title = sample.menuBarValue(
+                    metric,
+                    temperatureUnit: configuration.temperatureUnit
+                )
+                let width = (title as NSString).size(
+                    withAttributes: [
+                        .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+                    ]
+                ).width
+                return Double(ceil(width) + 16)
+            }
         }
     }
 
@@ -564,7 +758,10 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
 
     private func publishVisibilityDiagnostic(
         configuration: MenuBarMonitorConfiguration,
-        order: [MenuBarMetric]
+        order: [MenuBarMetric],
+        collapsed: [MenuBarMetric],
+        usedWidth: Double,
+        budget: Double
     ) {
         guard let store else { return }
         let hidden = order.filter { statusItems[$0]?.isVisible == false }
@@ -573,62 +770,106 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
                 "macOS 已隐藏 " + hidden.map(\.displayName).joined(separator: "、")
                     + "；可关闭部分项目，或保持“双层紧凑”。"
             )
+        } else if !collapsed.isEmpty {
+            store.setMenuBarVisibilityDiagnostic(
+                "自动宽度预算约 \(Int(budget.rounded())) pt；已保留异常项和首选项，将 "
+                    + collapsed.map(\.displayName).joined(separator: "、")
+                    + " 收进点开后的面板。数值没有被截断。"
+            )
         } else if configuration.presentationMode == .compact {
             store.setMenuBarVisibilityDiagnostic(
-                "\(order.count) 项已以双层短标签显示，比展开文字更节省宽度。"
+                "\(order.count) 项占用约 \(Int(usedWidth.rounded())) pt，均以完整双层数值显示。"
             )
         } else {
             store.setMenuBarVisibilityDiagnostic("\(order.count) 项已以展开文字显示。")
         }
     }
 
-    private func compactMetricImage(topValue: String, bottomLabel: String) -> NSImage {
-        let width = max(30, min(70, CGFloat(max(topValue.count, bottomLabel.count)) * 7 + 8))
+    private func compactMetricImage(
+        topValue: String,
+        bottomLabel: String,
+        healthLevel: NativeMetricHealthLevel
+    ) -> NSImage {
+        let displayedLabel = bottomLabel + healthLevel.menuBarMarker
+        let width = compactMetricWidth(topValue: topValue, bottomLabel: displayedLabel)
         let size = NSSize(width: width, height: 22)
         let image = NSImage(size: size, flipped: false) { rect in
             let paragraph = NSMutableParagraphStyle()
             paragraph.alignment = .center
-            let color = NSColor.labelColor
+            let stateColor = healthLevel.highlightNSColor
+            if let stateColor {
+                stateColor.setFill()
+                NSBezierPath(
+                    roundedRect: NSRect(x: 1, y: 8.5, width: rect.width - 2, height: 13),
+                    xRadius: 4.5,
+                    yRadius: 4.5
+                ).fill()
+            }
             (topValue as NSString).draw(
                 in: NSRect(x: 0, y: 9, width: rect.width, height: 12),
                 withAttributes: [
                     .font: NSFont.monospacedDigitSystemFont(ofSize: 10.2, weight: .semibold),
-                    .foregroundColor: color,
+                    .foregroundColor: stateColor == nil ? NSColor.labelColor : NSColor.white,
                     .paragraphStyle: paragraph
                 ]
             )
-            (bottomLabel as NSString).draw(
+            (displayedLabel as NSString).draw(
                 in: NSRect(x: 0, y: 0, width: rect.width, height: 9),
                 withAttributes: [
-                    .font: NSFont.systemFont(ofSize: 6.8, weight: .medium),
-                    .foregroundColor: color,
+                    .font: NSFont.systemFont(
+                        ofSize: 6.8,
+                        weight: healthLevel == .normal ? .medium : .bold
+                    ),
+                    .foregroundColor: stateColor ?? NSColor.labelColor,
                     .paragraphStyle: paragraph,
                     .kern: 0.25
                 ]
             )
             return true
         }
-        image.isTemplate = true
+        image.isTemplate = healthLevel == .normal
         return image
+    }
+
+    private func compactMetricWidth(topValue: String, bottomLabel: String) -> CGFloat {
+        let topWidth = (topValue as NSString).size(
+            withAttributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 10.2, weight: .semibold)
+            ]
+        ).width
+        let labelWidth = (bottomLabel as NSString).size(
+            withAttributes: [
+                .font: NSFont.systemFont(ofSize: 6.8, weight: .bold),
+                .kern: 0.25
+            ]
+        ).width
+        return max(30, ceil(max(topWidth, labelWidth)) + 8)
     }
 
     private func sparklineImage(
         values: [Double],
         range fixedRange: ClosedRange<Double>?,
-        label: String? = nil
+        label: String? = nil,
+        healthLevel: NativeMetricHealthLevel
     ) -> NSImage {
         let size = NSSize(width: 38, height: label == nil ? 16 : 22)
         let recent = Array(values.suffix(36))
         let image = NSImage(size: size, flipped: false) { rect in
             let graphBottom: CGFloat = label == nil ? 1 : 8
             guard recent.count > 1 else {
-                NSColor.secondaryLabelColor.setStroke()
+                (healthLevel.highlightNSColor ?? NSColor.secondaryLabelColor).setStroke()
                 let line = NSBezierPath()
                 line.move(to: NSPoint(x: 2, y: graphBottom + 5))
                 line.line(to: NSPoint(x: rect.maxX - 2, y: graphBottom + 5))
                 line.lineWidth = 1
                 line.stroke()
-                if let label { self.drawCompactLabel(label, in: rect) }
+                if let label {
+                    self.drawCompactLabel(
+                        label + healthLevel.menuBarMarker,
+                        in: rect,
+                        color: healthLevel.highlightNSColor
+                    )
+                }
                 return true
             }
             let lower = fixedRange?.lowerBound ?? recent.min() ?? 0
@@ -644,26 +885,32 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
                 )
                 index == 0 ? path.move(to: point) : path.line(to: point)
             }
-            NSColor.labelColor.setStroke()
+            (healthLevel.highlightNSColor ?? NSColor.labelColor).setStroke()
             path.lineWidth = 1.45
             path.lineJoinStyle = .round
             path.lineCapStyle = .round
             path.stroke()
-            if let label { self.drawCompactLabel(label, in: rect) }
+            if let label {
+                self.drawCompactLabel(
+                    label + healthLevel.menuBarMarker,
+                    in: rect,
+                    color: healthLevel.highlightNSColor
+                )
+            }
             return true
         }
-        image.isTemplate = true
+        image.isTemplate = healthLevel == .normal
         return image
     }
 
-    private func drawCompactLabel(_ label: String, in rect: NSRect) {
+    private func drawCompactLabel(_ label: String, in rect: NSRect, color: NSColor?) {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         (label as NSString).draw(
             in: NSRect(x: 0, y: 0, width: rect.width, height: 8),
             withAttributes: [
                 .font: NSFont.systemFont(ofSize: 6.6, weight: .medium),
-                .foregroundColor: NSColor.labelColor,
+                .foregroundColor: color ?? NSColor.labelColor,
                 .paragraphStyle: paragraph,
                 .kern: 0.2
             ]
@@ -673,6 +920,7 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
 
 private struct MenuBarMonitorPopover: View {
     @EnvironmentObject private var store: AppStore
+    @State private var liveSample: NativeMonitorSample? = nil
     let focusedMetric: MenuBarMetric
 
     private var enabledMetrics: [MenuBarMetric] {
@@ -712,7 +960,7 @@ private struct MenuBarMonitorPopover: View {
 
                 Divider()
 
-                if let sample = store.nativeMonitorSample {
+                if let sample = liveSample ?? store.nativeMonitorSample {
                     ScrollView {
                         VStack(spacing: 2) {
                             ForEach(enabledMetrics, id: \.self) { metric in
@@ -753,15 +1001,34 @@ private struct MenuBarMonitorPopover: View {
             }
         }
         .frame(width: 390, height: 500)
+        .onReceive(store.nativeMonitorSamplePublisher) { liveSample = $0 }
     }
 
     private func metricRow(_ metric: MenuBarMetric, sample: NativeMonitorSample) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let healthLevel = sample.healthLevel(
+            for: metric,
+            thresholds: store.menuBarConfiguration.alertThresholds
+        )
+        let assessment = sample.healthAssessment(
+            for: metric,
+            thresholds: store.menuBarConfiguration.alertThresholds
+        )
+        let tint = healthLevel.highlightColor ?? metric.tint
+
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 11) {
-                CNIconTile(symbol: metric.symbol, tint: metric.tint, size: 32)
+                CNIconTile(symbol: metric.symbol, tint: tint, size: 32)
                 HStack(spacing: 7) {
                     Text(metric.displayName)
                         .font(.subheadline.weight(.semibold))
+                    if let badgeText = healthLevel.badgeText {
+                        StatusPill(
+                            text: badgeText,
+                            symbol: healthLevel.badgeSymbol,
+                            style: healthLevel.badgeStyle
+                        )
+                        .controlSize(.mini)
+                    }
                     if !sample.isAvailable(metric) {
                         Text("暂不可用")
                             .font(.caption2.weight(.medium))
@@ -772,7 +1039,7 @@ private struct MenuBarMonitorPopover: View {
                 MiniTrend(
                     values: store.nativeMonitorHistory.compactMap { $0.value(for: metric) },
                     range: metric.normalizedGraphRange,
-                    tint: metric.tint
+                    tint: tint
                 )
                 .frame(width: 56, height: 24)
             }
@@ -786,18 +1053,34 @@ private struct MenuBarMonitorPopover: View {
                     font: .system(size: 13, weight: .semibold, design: .rounded),
                     spacing: 6
                 )
+                .foregroundStyle(healthLevel.highlightColor ?? Color.primary)
                 Text(sample.sourceDescription(metric))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let assessment, assessment.level != .normal {
+                    Text(assessment.reason)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(tint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(.leading, 43)
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
         .background(
-            focusedMetric == metric ? metric.tint.opacity(0.10) : Color.clear,
+            healthLevel != .normal
+                ? tint.opacity(0.12)
+                : (focusedMetric == metric ? metric.tint.opacity(0.10) : Color.clear),
             in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(
+                    healthLevel == .normal ? Color.clear : tint.opacity(0.34),
+                    lineWidth: 0.7
+                )
         )
         .accessibilityElement(children: .combine)
     }

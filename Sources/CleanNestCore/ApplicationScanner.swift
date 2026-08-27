@@ -2,9 +2,11 @@ import Foundation
 
 public struct ApplicationScanner: Sendable {
     public let homeDirectory: URL
+    private let dependencyGraphBuilder: ApplicationDependencyGraphBuilder
 
     public init(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.homeDirectory = homeDirectory.standardizedFileURL
+        self.dependencyGraphBuilder = ApplicationDependencyGraphBuilder(homeDirectory: homeDirectory)
     }
 
     public func scan() async -> [InstalledApplication] {
@@ -52,47 +54,30 @@ public struct ApplicationScanner: Sendable {
         for application: InstalledApplication,
         includeProtectedAppData: Bool = false
     ) async -> [CleanupCandidate] {
-        guard let identifier = application.bundleIdentifier, !identifier.isEmpty else { return [] }
+        let graph = await dependencyGraph(
+            for: application,
+            includeProtectedAppData: includeProtectedAppData
+        )
+        return graph.separatelyRemovableNodes.map { node in
+            CleanupCandidate(
+                name: node.name,
+                url: node.url,
+                kind: .leftover,
+                allocatedBytes: node.allocatedBytes,
+                modifiedAt: node.identity?.modifiedAt,
+                isRecommended: true,
+                detail: node.evidence.joined(separator: " · ")
+            )
+        }
+    }
 
-        return await Task.detached(priority: .userInitiated) {
-            let roots: [(relativePath: String, kind: CleanupKind, requiresAppDataAccess: Bool)] = [
-                ("Library/Application Support", .leftover, true),
-                ("Library/Caches", .leftover, false),
-                ("Library/Containers", .leftover, true),
-                ("Library/Group Containers", .leftover, true),
-                ("Library/HTTPStorages", .leftover, false),
-                ("Library/Logs", .leftover, false),
-                ("Library/Preferences", .leftover, false),
-                ("Library/Saved Application State", .leftover, false),
-                ("Library/WebKit", .leftover, false)
-            ]
-            var matches: [CleanupCandidate] = []
-
-            for rootSpec in roots where includeProtectedAppData || !rootSpec.requiresAppDataAccess {
-                let root = homeDirectory.appendingPathComponent(rootSpec.relativePath, isDirectory: true)
-                for child in FileTree.directChildren(of: root) {
-                    let name = child.lastPathComponent
-                    let isExactBundleMatch = name == identifier
-                        || name == identifier + ".plist"
-                        || name == identifier + ".savedState"
-                        || name.hasPrefix(identifier + ".")
-                    guard isExactBundleMatch else { continue }
-                    let values = try? child.resourceValues(forKeys: [.contentModificationDateKey, .isSymbolicLinkKey])
-                    guard values?.isSymbolicLink != true else { continue }
-                    matches.append(
-                        CleanupCandidate(
-                            name: name,
-                            url: child,
-                            kind: rootSpec.kind,
-                            allocatedBytes: FileTree.allocatedSize(of: child),
-                            modifiedAt: values?.contentModificationDate,
-                            isRecommended: true,
-                            detail: "按 Bundle ID 精确匹配：\(identifier)"
-                        )
-                    )
-                }
-            }
-            return matches.sorted { $0.allocatedBytes > $1.allocatedBytes }
-        }.value
+    public func dependencyGraph(
+        for application: InstalledApplication,
+        includeProtectedAppData: Bool = false
+    ) async -> ApplicationDependencyGraph {
+        await dependencyGraphBuilder.build(
+            for: application,
+            includeProtectedAppData: includeProtectedAppData
+        )
     }
 }

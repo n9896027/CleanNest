@@ -11,7 +11,7 @@ struct ApplicationsView: View {
         VStack(spacing: 0) {
             PageHeader(
                 title: "应用卸载",
-                subtitle: "先确认 App 本体和精确匹配的相关文件，再移到废纸篓。"
+                subtitle: "先看懂 App、私有数据、登录项、守护和扩展的关系，再决定处理什么。"
             ) {
                 Button {
                     Task { await store.scanApplications() }
@@ -23,6 +23,22 @@ struct ApplicationsView: View {
             }
             .padding(CNTheme.pagePadding)
             .padding(.bottom, 14)
+
+            if let session = store.applicationUninstallSession,
+               store.selectedApplication?.id != session.applicationID {
+                ApplicationUninstallResultCard(
+                    session: session,
+                    canRetry: store.canRetryApplicationUninstallRelatedFiles,
+                    reveal: {
+                        if let url = session.applicationTrashURL { store.revealInFinder(url) }
+                    },
+                    retry: {
+                        Task { await store.retryApplicationUninstallRelatedFiles() }
+                    }
+                )
+                .padding(.horizontal, CNTheme.pagePadding)
+                .padding(.bottom, 14)
+            }
 
             if !store.applicationsHaveScanned {
                 EmptyPanel(
@@ -58,7 +74,7 @@ struct ApplicationsView: View {
                 Task { await store.uninstallSelectedApplication(includeLeftovers: includeLeftovers) }
             }
         } message: {
-            let count = includeLeftovers ? store.selectedApplicationLeftovers.count : 0
+            let count = includeLeftovers ? selectedRelatedCount : 0
             if requiresAdministratorAuthentication {
                 Text(CNL10n.format("这个 App 由系统或其他管理员账户安装。下一步 macOS 会显示原生管理员认证；CleanNest 不会读取或保存密码。认证成功并确认 App 已进入废纸篓后，才会处理 %d 个相关项目。", count))
             } else {
@@ -179,65 +195,40 @@ struct ApplicationsView: View {
                         }
                     }
 
-                    SurfaceCard(title: "卸载检查", symbol: "checklist") {
-                        VStack(spacing: 0) {
-                            UninstallItemRow(
-                                title: "App 本体",
-                                path: application.url.path,
-                                bytes: application.allocatedBytes,
-                                selected: true,
-                                locked: true
-                            )
-                            Divider()
-                            HStack {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text("精确匹配的相关文件")
-                                        .font(.subheadline.weight(.medium))
-                                    Text("仅按 Bundle ID 匹配，不使用模糊名称猜测")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Text(CleanNestFormatting.bytes(store.selectedApplicationLeftovers.reduce(0) { $0 + $1.allocatedBytes }))
-                                    .font(.subheadline.weight(.semibold))
-                                    .monospacedMetric()
-                                Toggle("", isOn: $includeLeftovers)
-                                    .labelsHidden()
-                                    .toggleStyle(.switch)
-                            }
-                            .padding(.vertical, 12)
-                        }
-                    }
-
-                    if includeLeftovers {
-                        SurfaceCard(title: "相关文件", symbol: "doc.on.doc") {
-                            if store.selectedApplicationLeftovers.isEmpty {
-                                Text(store.fullDiskAccessProbePassed
-                                    ? "没有发现能够确认归属的相关文件。"
-                                    : "当前可访问的位置没有发现能够确认归属的相关文件；受保护位置尚未检查。")
+                    if store.applicationDependencyGraphIsLoading {
+                        SurfaceCard(title: "正在建立依赖地图", symbol: "point.3.connected.trianglepath.dotted") {
+                            HStack(spacing: 12) {
+                                ProgressView().controlSize(.small)
+                                Text("正在核对代码签名、Launch Services、相关目录与 launchd 配置；不会改动文件。")
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
-                                    .padding(.vertical, 8)
-                            } else {
-                                VStack(spacing: 0) {
-                                    ForEach(Array(store.selectedApplicationLeftovers.enumerated()), id: \.element.id) { index, item in
-                                        UninstallItemRow(
-                                            title: item.name,
-                                            path: item.url.path,
-                                            bytes: item.allocatedBytes,
-                                            selected: true,
-                                            locked: false
-                                        )
-                                        if index < store.selectedApplicationLeftovers.count - 1 { Divider() }
-                                    }
-                                }
                             }
+                            .padding(.vertical, 10)
                         }
+                    } else if let graph = store.selectedApplicationDependencyGraph,
+                              graph.applicationID == application.id {
+                        ApplicationIdentityEvidenceCard(graph: graph)
+
+                        ApplicationUninstallFlowCard(
+                            session: store.applicationUninstallSession?.applicationID == application.id
+                                ? store.applicationUninstallSession
+                                : nil,
+                            applicationIsRunning: store.applicationIsRunning(application),
+                            requiresAuthentication: requiresAdministratorAuthentication
+                        )
+
+                        ApplicationDependencyMapCard(
+                            graph: graph,
+                            includeRemovableItems: $includeLeftovers,
+                            selectedIDs: store.selectedApplicationDependencyIDs,
+                            setSelected: store.setApplicationDependencySelected,
+                            reveal: store.revealInFinder
+                        )
                     }
 
                     InlineBanner(
                         title: "恢复方式：废纸篓",
-                        detail: "当前版本不执行永久删除。清空废纸篓前，你仍可恢复 App 和相关文件。",
+                        detail: "当前版本不执行永久删除。共享组、系统管理项和无法证明归属的项目始终只读；完成后会显示 App 与相关文件各自的恢复位置。",
                         kind: .info
                     )
                 }
@@ -247,7 +238,7 @@ struct ApplicationsView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("预计处理 \(1 + (includeLeftovers ? store.selectedApplicationLeftovers.count : 0)) 项")
+                        Text("预计处理 \(1 + (includeLeftovers ? selectedRelatedCount : 0)) 项")
                             .font(.subheadline.weight(.semibold))
                         Text(CNL10n.string(requiresAdministratorAuthentication ? "先由 macOS 完成管理员认证，再移到废纸篓" : "全部移到废纸篓"))
                             .font(.caption)
@@ -269,6 +260,7 @@ struct ApplicationsView: View {
                         store.applicationIsRunning(application)
                             || store.isWorking
                             || selectedRemovalRequirement == nil
+                            || store.selectedApplicationDependencyGraph?.applicationID != application.id
                     )
                 }
                 .padding(.horizontal, CNTheme.pagePadding)
@@ -283,6 +275,13 @@ struct ApplicationsView: View {
                 detail: "右侧会显示应用本体、相关文件、预计大小和恢复方式。"
             )
             .padding(CNTheme.pagePadding)
+        }
+    }
+
+    private var selectedRelatedCount: Int {
+        guard includeLeftovers, let graph = store.selectedApplicationDependencyGraph else { return 0 }
+        return graph.separatelyRemovableNodes.reduce(0) {
+            $0 + (store.selectedApplicationDependencyIDs.contains($1.id) ? 1 : 0)
         }
     }
 }
@@ -314,37 +313,489 @@ private struct ApplicationListRow: View {
     }
 }
 
-private struct UninstallItemRow: View {
-    let title: String
-    let path: String
-    let bytes: Int64
-    let selected: Bool
-    let locked: Bool
+private struct ApplicationIdentityEvidenceCard: View {
+    let graph: ApplicationDependencyGraph
 
     var body: some View {
-        HStack(spacing: 11) {
-            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(selected ? CNTheme.success : .secondary)
+        SurfaceCard(title: "身份与注册证据", symbol: "checkmark.shield") {
+            VStack(alignment: .leading, spacing: 13) {
+                HStack(spacing: 8) {
+                    StatusPill(
+                        text: graph.codeSignature.status.displayName,
+                        symbol: signatureSymbol,
+                        style: signatureStyle
+                    )
+                    StatusPill(
+                        text: graph.registration.scannedPathIsRegistered ? "路径已登记" : "登记路径待复核",
+                        symbol: graph.registration.scannedPathIsRegistered ? "checkmark.circle" : "exclamationmark.circle",
+                        style: graph.registration.scannedPathIsRegistered ? .success : .warning
+                    )
+                    Spacer()
+                }
+
+                EvidenceLine(
+                    title: "签名身份",
+                    value: [
+                        graph.codeSignature.signingIdentifier,
+                        graph.codeSignature.teamIdentifier.map { "Team \($0)" }
+                    ].compactMap { $0 }.joined(separator: " · ").nonEmpty ?? "未取得可展示的签名身份"
+                )
+                EvidenceLine(title: "代码签名", value: graph.codeSignature.diagnostic)
+                EvidenceLine(title: "系统登记", value: graph.registration.diagnostic)
+                if !graph.registration.registeredURLs.isEmpty {
+                    EvidenceLine(
+                        title: "登记位置",
+                        value: graph.registration.registeredURLs
+                            .prefix(2)
+                            .map { displayPath($0.path) }
+                            .joined(separator: " · ")
+                    )
+                }
+            }
+        }
+    }
+
+    private var signatureSymbol: String {
+        graph.codeSignature.status == .valid ? "checkmark.seal.fill" : "exclamationmark.triangle"
+    }
+
+    private var signatureStyle: StatusPill.Style {
+        switch graph.codeSignature.status {
+        case .valid: return .success
+        case .unsigned, .unavailable: return .warning
+        case .invalid: return .danger
+        }
+    }
+}
+
+private struct EvidenceLine: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 68, alignment: .leading)
+            Text(value)
+                .font(.caption)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct ApplicationUninstallFlowCard: View {
+    let session: ApplicationUninstallSession?
+    let applicationIsRunning: Bool
+    let requiresAuthentication: Bool
+
+    var body: some View {
+        SurfaceCard(title: "卸载状态机", symbol: "list.number") {
+            VStack(spacing: 0) {
+                ForEach(ApplicationUninstallStage.allCases, id: \.self) { stage in
+                    let step = session?.steps.first { $0.stage == stage }
+                    ApplicationUninstallFlowRow(
+                        stage: stage,
+                        state: step?.state,
+                        previewDetail: previewDetail(for: stage)
+                    )
+                    if stage != ApplicationUninstallStage.allCases.last { Divider().padding(.leading, 34) }
+                }
+            }
+        }
+    }
+
+    private func previewDetail(for stage: ApplicationUninstallStage) -> String {
+        switch stage {
+        case .quitApplication:
+            return applicationIsRunning ? "等待你先保存工作并请求退出" : "执行时再次确认 App 没有运行"
+        case .revalidateIdentity:
+            return "核对路径、设备号、文件号、所有者与 Bundle ID"
+        case .authenticate:
+            return requiresAuthentication ? "需要 macOS 原生管理员认证" : "当前账户预计无需管理员认证"
+        case .confirmApplicationTrash:
+            return "未确认 App 本体进入废纸篓前，相关文件保持零变更"
+        case .removeRelatedFiles:
+            return "只处理你勾选且能证明为 App 私有的项目"
+        case .finalReview:
+            return "列出恢复位置、未完成项和可重试项"
+        }
+    }
+}
+
+private struct ApplicationUninstallFlowRow: View {
+    let stage: ApplicationUninstallStage
+    let state: ApplicationUninstallStageState?
+    let previewDetail: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 11) {
+            Group {
+                if case .running? = state {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: symbol)
+                        .foregroundStyle(tint)
+                }
+            }
+            .frame(width: 20, height: 20)
+
             VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(title).font(.subheadline.weight(.medium))
-                    if locked {
-                        Image(systemName: "lock.fill")
-                            .font(.caption2)
+                Text(stage.displayName)
+                    .font(.subheadline.weight(.medium))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 8)
+            if let statusText {
+                Text(statusText)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(tint)
+            }
+        }
+        .padding(.vertical, 9)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var detail: String {
+        guard let state else { return previewDetail }
+        switch state {
+        case .pending, .running: return previewDetail
+        case .succeeded(let value), .skipped(let value), .failed(let value): return value
+        }
+    }
+
+    private var statusText: String? {
+        guard let state else { return "待执行" }
+        switch state {
+        case .pending: return "待执行"
+        case .running: return "进行中"
+        case .succeeded: return "完成"
+        case .skipped: return "跳过"
+        case .failed: return "未完成"
+        }
+    }
+
+    private var symbol: String {
+        guard let state else { return "circle" }
+        switch state {
+        case .pending: return "circle"
+        case .running: return "arrow.clockwise"
+        case .succeeded: return "checkmark.circle.fill"
+        case .skipped: return "minus.circle.fill"
+        case .failed: return "xmark.circle.fill"
+        }
+    }
+
+    private var tint: Color {
+        guard let state else { return .secondary }
+        switch state {
+        case .pending: return .secondary
+        case .running: return CNTheme.accent
+        case .succeeded: return CNTheme.success
+        case .skipped: return .secondary
+        case .failed: return CNTheme.danger
+        }
+    }
+}
+
+private struct ApplicationDependencyMapCard: View {
+    let graph: ApplicationDependencyGraph
+    @Binding var includeRemovableItems: Bool
+    let selectedIDs: Set<String>
+    let setSelected: (String, Bool) -> Void
+    let reveal: (URL) -> Void
+
+    var body: some View {
+        SurfaceCard(title: "依赖地图", symbol: "point.3.connected.trianglepath.dotted") {
+            VStack(alignment: .leading, spacing: 15) {
+                HStack(spacing: 12) {
+                    DependencyMetric(
+                        value: "\(graph.separatelyRemovableNodes.count)",
+                        label: "可单独处理",
+                        tint: CNTheme.success
+                    )
+                    DependencyMetric(
+                        value: "\(graph.includedNodes.count)",
+                        label: "随 App 本体",
+                        tint: CNTheme.accent
+                    )
+                    DependencyMetric(
+                        value: "\(graph.readOnlyNodes.count)",
+                        label: "只读证据",
+                        tint: CNTheme.warning
+                    )
+                    Spacer()
+                }
+
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("处理 App 私有相关文件")
+                            .font(.subheadline.weight(.semibold))
+                        Text("总开关关闭时全部保留；打开后仍可逐项取消。")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    Spacer()
+                    Toggle("", isOn: $includeRemovableItems)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
                 }
-                Text(path.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
-                    .font(.caption2.monospaced())
+                .padding(12)
+                .background(CNTheme.surfaceSubtle, in: RoundedRectangle(cornerRadius: 10))
+
+                ForEach(ApplicationDependencyOwnership.allCases, id: \.self) { ownership in
+                    let nodes = graph.nodes.filter { $0.ownership == ownership }
+                    if !nodes.isEmpty {
+                        DependencyOwnershipSection(
+                            ownership: ownership,
+                            nodes: nodes,
+                            includeRemovableItems: includeRemovableItems,
+                            selectedIDs: selectedIDs,
+                            setSelected: setSelected,
+                            reveal: reveal
+                        )
+                    }
+                }
+
+                Text(graph.diagnostic)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct DependencyMetric: View {
+    let value: String
+    let label: String
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.title3.weight(.semibold))
+                .monospacedMetric()
+                .foregroundStyle(tint)
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(minWidth: 86, alignment: .leading)
+    }
+}
+
+private struct DependencyOwnershipSection: View {
+    let ownership: ApplicationDependencyOwnership
+    let nodes: [ApplicationDependencyNode]
+    let includeRemovableItems: Bool
+    let selectedIDs: Set<String>
+    let setSelected: (String, Bool) -> Void
+    let reveal: (URL) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 7) {
+                Image(systemName: ownershipSymbol)
+                    .foregroundStyle(ownershipTint)
+                Text(ownership.displayName)
+                    .font(.subheadline.weight(.semibold))
+                Text("\(nodes.count) 项")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if ownership != .applicationOwned {
+                    StatusPill(text: "只读", symbol: "lock.fill", style: ownership == .unverified ? .warning : .neutral)
+                }
+            }
+            .padding(.bottom, 7)
+
+            VStack(spacing: 0) {
+                ForEach(Array(nodes.enumerated()), id: \.element.id) { index, node in
+                    ApplicationDependencyRow(
+                        node: node,
+                        includeRemovableItems: includeRemovableItems,
+                        selected: selectedIDs.contains(node.id),
+                        setSelected: setSelected,
+                        reveal: reveal
+                    )
+                    if index < nodes.count - 1 { Divider().padding(.leading, 39) }
+                }
+            }
+            .padding(.horizontal, 12)
+            .background(CNTheme.surfaceSubtle.opacity(0.72), in: RoundedRectangle(cornerRadius: 11))
+        }
+    }
+
+    private var ownershipSymbol: String {
+        switch ownership {
+        case .applicationOwned: return "app.badge.checkmark"
+        case .sharedGroup: return "person.2.fill"
+        case .systemManaged: return "gearshape.2.fill"
+        case .unverified: return "questionmark.diamond.fill"
+        }
+    }
+
+    private var ownershipTint: Color {
+        switch ownership {
+        case .applicationOwned: return CNTheme.success
+        case .sharedGroup: return CNTheme.accent
+        case .systemManaged: return .secondary
+        case .unverified: return CNTheme.warning
+        }
+    }
+}
+
+private struct ApplicationDependencyRow: View {
+    let node: ApplicationDependencyNode
+    let includeRemovableItems: Bool
+    let selected: Bool
+    let setSelected: (String, Bool) -> Void
+    let reveal: (URL) -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            if node.action == .removeAfterApplication {
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { includeRemovableItems && selected },
+                        set: { setSelected(node.id, $0) }
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.checkbox)
+                .disabled(!includeRemovableItems)
+            } else {
+                Image(systemName: actionSymbol)
+                    .foregroundStyle(actionTint)
+                    .frame(width: 16)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(node.name)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                    Text(node.kind.displayName)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Text(node.evidence.first ?? "没有可展示的归属证据")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Text(displayPath(node.url.path))
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            Spacer()
-            Text(CleanNestFormatting.bytes(bytes))
-                .font(.caption.weight(.semibold))
-                .monospacedMetric()
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 5) {
+                Text(CleanNestFormatting.bytes(node.allocatedBytes))
+                    .font(.caption.weight(.semibold))
+                    .monospacedMetric()
+                Text(actionText)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(actionTint)
+            }
+            Button {
+                reveal(node.url)
+            } label: {
+                Image(systemName: "folder")
+            }
+            .buttonStyle(.borderless)
+            .help("在 Finder 中查看")
+            .accessibilityLabel("在 Finder 中查看 \(node.name)")
         }
         .padding(.vertical, 10)
     }
+
+    private var actionText: String {
+        switch node.action {
+        case .applicationBundle: return "先处理本体"
+        case .removeAfterApplication: return includeRemovableItems && selected ? "已勾选" : "保留"
+        case .includedInApplication: return "随本体"
+        case .readOnly: return "只读"
+        }
+    }
+
+    private var actionSymbol: String {
+        switch node.action {
+        case .applicationBundle: return "lock.fill"
+        case .removeAfterApplication: return selected ? "checkmark.square.fill" : "square"
+        case .includedInApplication: return "arrow.turn.down.right"
+        case .readOnly: return "eye.fill"
+        }
+    }
+
+    private var actionTint: Color {
+        switch node.action {
+        case .applicationBundle, .includedInApplication: return CNTheme.accent
+        case .removeAfterApplication: return selected ? CNTheme.success : .secondary
+        case .readOnly: return node.ownership == .unverified ? CNTheme.warning : .secondary
+        }
+    }
+}
+
+private struct ApplicationUninstallResultCard: View {
+    let session: ApplicationUninstallSession
+    let canRetry: Bool
+    let reveal: () -> Void
+    let retry: () -> Void
+
+    var body: some View {
+        SurfaceCard(
+            title: session.failedRelatedPaths.isEmpty ? "\(session.applicationName) 已进入废纸篓" : "\(session.applicationName) 已卸载，仍有未完成项",
+            symbol: session.failedRelatedPaths.isEmpty ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+        ) {
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(resultSummary)
+                        .font(.subheadline)
+                    if let appTrashURL = session.applicationTrashURL {
+                        Text("App 恢复位置：\(displayPath(appTrashURL.path))")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    if let first = session.failedRelatedPaths.first {
+                        Text("保持原位：\(displayPath(first))\(session.failedRelatedPaths.count > 1 ? " 等 \(session.failedRelatedPaths.count) 项" : "")")
+                            .font(.caption)
+                            .foregroundStyle(CNTheme.warning)
+                    }
+                }
+                Spacer()
+                Button("在 Finder 中查看", action: reveal)
+                    .disabled(session.applicationTrashURL == nil)
+                if canRetry {
+                    Button("重试未完成项", action: retry)
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+    }
+
+    private var resultSummary: String {
+        if session.failedRelatedPaths.isEmpty {
+            return "App 本体与 \(session.relatedTrashURLs.count) 个所选私有项目都有可恢复位置；共享、系统管理和未证实项目没有改动。"
+        }
+        return "\(session.relatedTrashURLs.count) 个私有项目已进入废纸篓，\(session.failedRelatedPaths.count) 个项目仍在原位，可安全重试。"
+    }
+}
+
+private func displayPath(_ path: String) -> String {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    if path == home { return "~" }
+    if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
+    return path
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }

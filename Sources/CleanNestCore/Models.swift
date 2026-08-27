@@ -35,7 +35,7 @@ public struct CommandResult: Equatable, Sendable {
     }
 }
 
-public enum CleanupKind: String, CaseIterable, Codable, Sendable {
+public enum CleanupKind: String, CaseIterable, Codable, Hashable, Sendable {
     case developer = "开发缓存"
     case packageManager = "包管理器缓存"
     case logs = "旧日志"
@@ -185,13 +185,21 @@ public struct DiskEntry: Codable, Identifiable, Hashable, Sendable {
     public let url: URL
     public let bytes: Int64
     public let isDirectory: Bool
+    public let traversal: FileTreeTraversalEvidence?
 
-    public init(name: String, url: URL, bytes: Int64, isDirectory: Bool) {
+    public init(
+        name: String,
+        url: URL,
+        bytes: Int64,
+        isDirectory: Bool,
+        traversal: FileTreeTraversalEvidence? = nil
+    ) {
         self.id = url.standardizedFileURL.path
         self.name = name
         self.url = url
         self.bytes = bytes
         self.isDirectory = isDirectory
+        self.traversal = traversal
     }
 }
 
@@ -354,6 +362,8 @@ public enum TrashFailureKind: String, Equatable, Sendable {
     case validation
     case targetChanged
     case authorizationCancelled
+    case authorizationDenied
+    case automationDenied
     case permissionDenied
     case operationFailed
     case missingResult
@@ -384,7 +394,7 @@ public struct TrashOutcome: Identifiable, Sendable {
     }
 }
 
-public enum MaintenanceAction: String, CaseIterable, Identifiable, Sendable {
+public enum MaintenanceAction: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
     case quickLook = "重建快速预览缓存"
     case finder = "重新启动 Finder"
     case dock = "重新启动 Dock"

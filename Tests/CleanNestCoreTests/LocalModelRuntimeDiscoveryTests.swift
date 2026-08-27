@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import CleanNestCore
 
@@ -117,7 +118,8 @@ final class LocalModelRuntimeDiscoveryTests: XCTestCase {
             commandName: "omlx-server",
             executablePath: "/opt/homebrew/bin/omlx-server",
             residentMemoryBytes: nil,
-            startedAt: startedAt
+            startedAt: startedAt,
+            ownerUserID: UInt32(getuid())
         )
         let external = LocalModelRuntimeInstance(
             id: "omlx:4615:8080",
@@ -179,21 +181,24 @@ final class LocalModelRuntimeDiscoveryTests: XCTestCase {
             commandName: "ollama",
             executablePath: "/opt/homebrew/bin/ollama",
             residentMemoryBytes: nil,
-            startedAt: Date(timeIntervalSince1970: 1_700_000_000)
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            ownerUserID: UInt32(getuid())
         )
         let matching = LocalModelProcessSnapshot(
             pid: 42,
             commandName: "ollama",
             executablePath: "/opt/homebrew/bin/ollama",
             residentMemoryBytes: nil,
-            startedAt: Date(timeIntervalSince1970: 1_700_000_001)
+            startedAt: Date(timeIntervalSince1970: 1_700_000_001),
+            ownerUserID: UInt32(getuid())
         )
         let reused = LocalModelProcessSnapshot(
             pid: 42,
             commandName: "other",
             executablePath: "/tmp/other",
             residentMemoryBytes: nil,
-            startedAt: Date(timeIntervalSince1970: 1_700_000_100)
+            startedAt: Date(timeIntervalSince1970: 1_700_000_100),
+            ownerUserID: UInt32(getuid())
         )
 
         XCTAssertNil(

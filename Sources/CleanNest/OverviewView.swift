@@ -3,11 +3,14 @@ import CleanNestCore
 
 struct OverviewView: View {
     @EnvironmentObject private var store: AppStore
+    @State private var nativeMonitorSample: NativeMonitorSample? = nil
 
     private enum FocusAction {
         case scanCleanup
         case openCleanup
         case openSystemStatus
+        case openSettings(CleanNestSettingsSection)
+        case openActivity(UUID)
     }
 
     private struct FocusState {
@@ -19,7 +22,22 @@ struct OverviewView: View {
         let tint: Color
         let pillText: String
         let pillStyle: StatusPill.Style
-        let safetyHint: String
+    }
+
+    private struct PriorityTask: Identifiable {
+        let id: String
+        let title: String
+        let detail: String
+        let source: String
+        let verifiedAt: Date?
+        let impact: String
+        let reason: String
+        let actionTitle: String
+        let action: FocusAction
+        let symbol: String
+        let tint: Color
+        let pillText: String
+        let pillStyle: StatusPill.Style
     }
 
     var body: some View {
@@ -27,7 +45,7 @@ struct OverviewView: View {
             VStack(alignment: .leading, spacing: 24) {
                 PageHeader(
                     title: "总览",
-                    subtitle: "查看这台 Mac 当前状态，并从一项明确任务开始。"
+                    subtitle: "先处理现在最值得做的事；状态数字和功能入口放在后面。"
                 ) {
                     StatusPill(
                         text: store.demoMode ? "演示数据" : (store.engine == nil ? "部分功能待设置" : "本地运行"),
@@ -47,13 +65,15 @@ struct OverviewView: View {
                     }
                 }
 
-                currentStatePanel
+                priorityTaskQueue
+                readOnlySnapshot
                 commonTasks
                 recentResults
             }
             .frame(maxWidth: CNTheme.contentMaxWidth, alignment: .leading)
             .padding(CNTheme.pagePadding)
         }
+        .onReceive(store.nativeMonitorSamplePublisher) { nativeMonitorSample = $0 }
     }
 
     private var usedBytes: Int64 {
@@ -66,7 +86,7 @@ struct OverviewView: View {
     }
 
     private var focusState: FocusState {
-        if store.nativeMonitorSample?.memoryPressureLevel == .critical {
+        if nativeMonitorSample?.memoryPressureLevel == .critical {
             return FocusState(
                 title: "内存压力较高",
                 detail: "macOS 已报告严重内存压力。先查看占用进程，再决定是否退出。",
@@ -75,8 +95,7 @@ struct OverviewView: View {
                 symbol: "memorychip.fill",
                 tint: CNTheme.danger,
                 pillText: "需要处理",
-                pillStyle: .danger,
-                safetyHint: "只读查看，不会自动结束进程"
+                pillStyle: .danger
             )
         }
 
@@ -93,12 +112,11 @@ struct OverviewView: View {
                 symbol: "internaldrive.fill",
                 tint: CNTheme.warning,
                 pillText: "需要处理",
-                pillStyle: .warning,
-                safetyHint: "扫描与预览不会删除文件"
+                pillStyle: .warning
             )
         }
 
-        if store.nativeMonitorSample?.memoryPressureLevel == .warning {
+        if nativeMonitorSample?.memoryPressureLevel == .warning {
             return FocusState(
                 title: "内存压力正在升高",
                 detail: "macOS 已报告内存压力警告。查看连续采样和占用进程，再决定是否退出。",
@@ -107,8 +125,7 @@ struct OverviewView: View {
                 symbol: "memorychip",
                 tint: CNTheme.warning,
                 pillText: "建议查看",
-                pillStyle: .warning,
-                safetyHint: "只读查看，不会自动结束进程"
+                pillStyle: .warning
             )
         }
 
@@ -126,8 +143,7 @@ struct OverviewView: View {
                 symbol: "checklist",
                 tint: CNTheme.accent,
                 pillText: "等待你决定",
-                pillStyle: .neutral,
-                safetyHint: "移到废纸篓前仍需要你确认"
+                pillStyle: .neutral
             )
         }
 
@@ -140,8 +156,7 @@ struct OverviewView: View {
                 symbol: "sparkle.magnifyingglass",
                 tint: CNTheme.accent,
                 pillText: "未扫描",
-                pillStyle: .neutral,
-                safetyHint: "扫描只读，不会删除文件"
+                pillStyle: .neutral
             )
         }
 
@@ -153,67 +168,241 @@ struct OverviewView: View {
             symbol: "checkmark.shield.fill",
             tint: CNTheme.success,
             pillText: "状态正常",
-            pillStyle: .success,
-            safetyHint: "系统状态为只读采样"
+            pillStyle: .success
         )
     }
 
-    private var currentStatePanel: some View {
+    private var priorityTasks: [PriorityTask] {
         let focus = focusState
-        return VStack(alignment: .leading, spacing: 21) {
-            ContentSectionHeader(
-                "当前状态",
-                detail: "实时本机数据",
-                symbol: "gauge.with.dots.needle.67percent",
-                tint: focus.tint
-            ) {
-                StatusPill(text: focus.pillText, symbol: focus.symbol, style: focus.pillStyle)
-            }
+        var tasks = [PriorityTask(
+            id: "primary",
+            title: focus.title,
+            detail: focus.detail,
+            source: focusSource(focus.action),
+            verifiedAt: focusVerifiedAt(focus.action),
+            impact: focusImpact(focus.action),
+            reason: focusReason(focus),
+            actionTitle: focus.actionTitle,
+            action: focus.action,
+            symbol: focus.symbol,
+            tint: focus.tint,
+            pillText: focus.pillText,
+            pillStyle: focus.pillStyle
+        )]
 
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 34) {
-                    focusContent(focus)
-                    Spacer(minLength: 12)
-                    StorageRing(used: usedBytes, total: store.diskTotalBytes)
-                }
-                VStack(alignment: .leading, spacing: 18) {
-                    focusContent(focus)
-                    StorageRing(used: usedBytes, total: store.diskTotalBytes)
-                }
-            }
-
-            Divider().opacity(0.65)
-            summaryMetrics
+        if let failed = store.activities.first(where: { $0.outcome == .failed }) {
+            tasks.append(PriorityTask(
+                id: "activity:\(failed.id.uuidString)",
+                title: "查看最近未完成的操作",
+                detail: failed.title + "：" + failed.detail,
+                source: "活动记录",
+                verifiedAt: failed.date,
+                impact: "确认失败原因和下一步，不重复盲试。",
+                reason: "最近记录里仍有一项未完成。",
+                actionTitle: "查看记录详情",
+                action: .openActivity(failed.id),
+                symbol: "exclamationmark.bubble",
+                tint: CNTheme.warning,
+                pillText: "待复核",
+                pillStyle: .warning
+            ))
         }
-        .cnHeroPanel()
+
+        if store.fullDiskAccessProbeResult != .accessible {
+            tasks.append(PriorityTask(
+                id: "privacy",
+                title: store.fullDiskAccessProbeResult == .permissionDenied
+                    ? "受保护目录访问未通过"
+                    : "确认受保护目录访问",
+                detail: store.fullDiskAccessProbeResult == .permissionDenied
+                    ? "需要受保护目录的任务会在扫描前停止；普通目录仍可使用。"
+                    : "CleanNest 本次还没有实测受保护目录；进入隐私设置后只检测一次。",
+                source: "扫描与隐私",
+                verifiedAt: store.fullDiskAccessProbeCompletedAt,
+                impact: "避免扫描到一半才发现权限不足。",
+                reason: store.fullDiskAccessProbeResult == .permissionDenied
+                    ? "上次实际读取被 macOS 拒绝。"
+                    : "本次运行尚无可确认的访问结果。",
+                actionTitle: "打开扫描与隐私",
+                action: .openSettings(.scanAndPrivacy),
+                symbol: "lock.shield",
+                tint: CNTheme.warning,
+                pillText: store.fullDiskAccessProbeResult == .permissionDenied ? "未通过" : "待确认",
+                pillStyle: .warning
+            ))
+        }
+
+        if store.engine == nil {
+            tasks.append(PriorityTask(
+                id: "engine",
+                title: "连接本地清理引擎",
+                detail: "Mole 尚未就绪；原生清理、卸载和菜单栏仍可用。",
+                source: "常规设置",
+                verifiedAt: store.engineLastCheckedAt,
+                impact: "补齐系统健康与 Mole 提供的分析能力。",
+                reason: "本次检测没有找到可用的 Mole CLI。",
+                actionTitle: "打开常规设置",
+                action: .openSettings(.general),
+                symbol: "gearshape.2",
+                tint: CNTheme.warning,
+                pillText: "待设置",
+                pillStyle: .warning
+            ))
+        }
+
+        var seen = Set<String>()
+        return tasks.filter { seen.insert($0.id).inserted }.prefix(3).map { $0 }
     }
 
-    private func focusContent(_ focus: FocusState) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(CNL10n.string(focus.title))
-                .font(.system(size: 28, weight: .semibold, design: .rounded))
-                .tracking(-0.45)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(CNL10n.string(focus.detail))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: 650, alignment: .leading)
-            HStack(spacing: 11) {
-                Button {
-                    perform(focus.action)
-                } label: {
-                    Label(CNL10n.string(focus.actionTitle), systemImage: focus.symbol)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(store.isWorking)
+    private var priorityTaskQueue: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            ContentSectionHeader(
+                "现在最值得做",
+                detail: "按风险与可行动性排序 · \(priorityTasks.count) 项",
+                symbol: "list.bullet.rectangle.portrait",
+                tint: CNTheme.accent
+            ) {
+                StatusPill(text: "点击进入", symbol: "arrow.right", style: .neutral)
+            }
 
-                Text(CNL10n.string(focus.safetyHint))
+            ForEach(priorityTasks) { task in
+                Button { perform(task.action) } label: {
+                    VStack(alignment: .leading, spacing: 13) {
+                        HStack(alignment: .top, spacing: 12) {
+                            CNIconTile(symbol: task.symbol, tint: task.tint, size: 40)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(CNL10n.string(task.title))
+                                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(.primary)
+                                Text(CNL10n.string(task.detail))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 8)
+                            StatusPill(text: task.pillText, symbol: nil, style: task.pillStyle)
+                        }
+
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 18) { taskFacts(task) }
+                            VStack(alignment: .leading, spacing: 8) { taskFacts(task) }
+                        }
+
+                        HStack {
+                            Label(CNL10n.string(task.actionTitle), systemImage: "arrow.right.circle.fill")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(task.tint)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .padding(16)
+                    .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(task.tint.opacity(0.20), lineWidth: 0.7)
+                )
+                .accessibilityLabel(
+                    CNL10n.format(
+                        "%@。来源：%@。最后验证：%@。影响：%@。为什么现在：%@。下一步：%@",
+                        task.title,
+                        task.source,
+                        verificationText(task.verifiedAt),
+                        task.impact,
+                        task.reason,
+                        task.actionTitle
+                    )
+                )
+                .accessibilityHint("打开对应栏目；不会直接执行清理或修改设置")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func taskFacts(_ task: PriorityTask) -> some View {
+        taskFact("来源", task.source, symbol: "tray.full")
+        taskFact("最后验证", verificationText(task.verifiedAt), symbol: "clock")
+        taskFact("影响", task.impact, symbol: "scope")
+        taskFact("为什么现在", task.reason, symbol: "questionmark.circle")
+    }
+
+    private func taskFact(_ label: String, _ value: String, symbol: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: symbol)
+                .foregroundStyle(.tertiary)
+                .frame(width: 14)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).font(.caption2).foregroundStyle(.tertiary)
+                Text(value)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var readOnlySnapshot: some View {
+        SurfaceCard(
+            title: "只读状态快照",
+            symbol: "gauge.with.dots.needle.67percent",
+            prominence: .quiet,
+            tint: CNTheme.cyan
+        ) {
+            HStack {
+                Text("这些数字只用于判断，不是按钮，也不会自动执行操作。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                StatusPill(text: "只读", symbol: "eye", style: .neutral)
+            }
+            summaryMetrics
+        }
+    }
+
+    private func verificationText(_ date: Date?) -> String {
+        guard let date else { return "尚未验证" }
+        return date.formatted(.relative(presentation: .named))
+    }
+
+    private func focusSource(_ action: FocusAction) -> String {
+        switch action {
+        case .scanCleanup, .openCleanup: return "清理扫描"
+        case .openSystemStatus: return "系统状态"
+        case .openSettings: return "设置"
+        case .openActivity: return "活动记录"
+        }
+    }
+
+    private func focusVerifiedAt(_ action: FocusAction) -> Date? {
+        switch action {
+        case .scanCleanup, .openCleanup: return store.cleanupScanCompletedAt
+        case .openSystemStatus: return nativeMonitorSample?.sampledAt
+        case .openSettings: return store.fullDiskAccessProbeCompletedAt
+        case .openActivity(let id): return store.activities.first(where: { $0.id == id })?.date
+        }
+    }
+
+    private func focusImpact(_ action: FocusAction) -> String {
+        switch action {
+        case .scanCleanup, .openCleanup: return "形成可逐项复核的处理清单。"
+        case .openSystemStatus: return "定位持续占用或资源压力来源。"
+        case .openSettings: return "补齐当前任务所需设置。"
+        case .openActivity: return "回看结果与失败原因。"
+        }
+    }
+
+    private func focusReason(_ focus: FocusState) -> String {
+        switch focus.pillStyle {
+        case .danger: return "当前指标已进入严重状态。"
+        case .warning: return "当前证据提示值得优先复核。"
+        case .neutral: return "当前没有可执行清单或仍等待你的决定。"
+        case .success: return "没有异常，可按需查看完整状态。"
         }
     }
 
@@ -344,9 +533,9 @@ struct OverviewView: View {
     }
 
     private var recentResults: some View {
-        let statistics = ActivityStatistics(entries: store.activities)
+        let totals = store.activityLifetimeTotals
         return SurfaceCard(title: "最近结果", symbol: "clock.arrow.circlepath", prominence: .quiet, tint: CNTheme.mint) {
-            if store.activities.isEmpty {
+            if store.activities.isEmpty, totals.productiveOperations == 0 {
                 HStack(alignment: .top, spacing: 11) {
                     CNIconTile(symbol: "clock", tint: Color(nsColor: .secondaryLabelColor), size: 31)
                     VStack(alignment: .leading, spacing: 4) {
@@ -360,20 +549,20 @@ struct OverviewView: View {
             } else {
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .top, spacing: 18) {
-                        resultStatistics(statistics)
+                        resultStatistics(totals)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Divider().frame(height: 76)
                         recentActivity
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     VStack(alignment: .leading, spacing: 14) {
-                        resultStatistics(statistics)
+                        resultStatistics(totals)
                         Divider()
                         recentActivity
                     }
                 }
 
-                Label("记录统计；移到废纸篓不等于磁盘已释放。", systemImage: "info.circle")
+                Label("累计成果独立保存；清空明细不会归零。移到废纸篓也不等于磁盘已释放。", systemImage: "info.circle")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
 
@@ -387,21 +576,21 @@ struct OverviewView: View {
         }
     }
 
-    private func resultStatistics(_ statistics: ActivityStatistics) -> some View {
+    private func resultStatistics(_ totals: ActivityLifetimeTotals) -> some View {
         HStack(spacing: 20) {
             resultStatistic(
                 label: "累计处理空间",
-                value: CleanNestFormatting.bytes(statistics.processedBytes),
-                detail: "来自清理与卸载记录"
+                value: CleanNestFormatting.bytes(totals.processedBytes),
+                detail: "独立累计"
             )
             resultStatistic(
                 label: "清理项目",
-                value: statistics.cleanedItems.formatted(),
+                value: totals.cleanedItems.formatted(),
                 detail: "已移到废纸篓"
             )
             resultStatistic(
                 label: "卸载 App",
-                value: statistics.uninstalledApplications.formatted(),
+                value: totals.uninstalledApplications.formatted(),
                 detail: "App 本体已移到废纸篓"
             )
         }
@@ -428,20 +617,40 @@ struct OverviewView: View {
     @ViewBuilder
     private var recentActivity: some View {
         if let recent = store.activities.first {
-            HStack(alignment: .top, spacing: 11) {
-                CNIconTile(symbol: recent.outcome.symbol, tint: Color.outcome(recent.outcome), size: 31)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(CNL10n.string(recent.title)).font(.subheadline.weight(.medium))
-                    Text(recent.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                    Text(recent.date, style: .relative).font(.caption2).foregroundStyle(.tertiary)
+            Button { store.openActivityDetail(recent.id) } label: {
+                HStack(alignment: .top, spacing: 11) {
+                    CNIconTile(symbol: recent.outcome.symbol, tint: Color.outcome(recent.outcome), size: 31)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(CNL10n.string(recent.title)).font(.subheadline.weight(.medium))
+                        Text(recent.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        Text(recent.date, style: .relative).font(.caption2).foregroundStyle(.tertiary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
                 }
-                Spacer()
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                CNL10n.format(
+                    "%@。%@。%@。%@",
+                    recent.title,
+                    recent.detail,
+                    recent.outcome.rawValue,
+                    recent.date.formatted(date: .abbreviated, time: .shortened)
+                )
+            )
+            .accessibilityHint("打开这条活动记录的完整详情")
+        } else {
+            Text("活动明细已清空；累计成果仍保留。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
     private var memoryPressureLabel: String {
-        switch store.nativeMonitorSample?.memoryPressureLevel {
+        switch nativeMonitorSample?.memoryPressureLevel {
         case .normal: return CNL10n.string("正常")
         case .warning: return CNL10n.string("警告")
         case .critical: return CNL10n.string("严重")
@@ -451,14 +660,14 @@ struct OverviewView: View {
     }
 
     private var memoryUsageDetail: String {
-        guard let value = store.nativeMonitorSample?.memoryUsedPercent else {
+        guard let value = nativeMonitorSample?.memoryUsedPercent else {
             return CNL10n.string("原生实时采样")
         }
         return CNL10n.format("内存已用 %@", CleanNestFormatting.percent(value))
     }
 
     private var memoryPressureTint: Color {
-        switch store.nativeMonitorSample?.memoryPressureLevel {
+        switch nativeMonitorSample?.memoryPressureLevel {
         case .normal: return CNTheme.success
         case .warning: return CNTheme.warning
         case .critical: return CNTheme.danger
@@ -477,6 +686,10 @@ struct OverviewView: View {
             store.selection = .cleanup
         case .openSystemStatus:
             store.selection = .status
+        case .openSettings(let section):
+            store.openSettings(section)
+        case .openActivity(let id):
+            store.openActivityDetail(id)
         }
     }
 }
@@ -535,47 +748,7 @@ private struct OverviewActionTile: View {
         .offset(y: reduceMotion ? 0 : (isHovered ? -2 : 0))
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isHovered)
         .onHover { isHovered = $0 }
-    }
-}
-
-private struct StorageRing: View {
-    let used: Int64
-    let total: Int64
-
-    private var fraction: Double {
-        guard total > 0 else { return 0 }
-        return min(1, max(0, Double(used) / Double(total)))
-    }
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(.ultraThinMaterial)
-                .shadow(color: CNTheme.accent.opacity(0.16), radius: 22)
-            Circle()
-                .stroke(Color.primary.opacity(0.075), lineWidth: 12)
-            Circle()
-                .trim(from: 0, to: fraction)
-                .stroke(
-                    AngularGradient(
-                        colors: [CNTheme.accentStrong, CNTheme.accent, CNTheme.cyan],
-                        center: .center
-                    ),
-                    style: StrokeStyle(lineWidth: 12, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-            VStack(spacing: 2) {
-                Text("\(Int((fraction * 100).rounded()))%")
-                    .font(.system(size: 25, weight: .semibold, design: .rounded))
-                    .monospacedMetric()
-                Text("磁盘已使用")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(width: 148, height: 148)
-        .padding(7)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(CNL10n.format("磁盘已使用 %d 百分比", Int((fraction * 100).rounded())))
+        .accessibilityLabel(CNL10n.format("%@。%@", title, detail))
+        .accessibilityHint("打开对应功能；不会直接执行删除")
     }
 }

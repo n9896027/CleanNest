@@ -20,9 +20,24 @@ public enum CleanNestDataPaths {
             .appendingPathComponent("metrics.sqlite3", isDirectory: false)
     }
 
+    public static func systemAlertTimeline(fileManager: FileManager = .default) -> URL {
+        applicationSupportDirectory(fileManager: fileManager)
+            .appendingPathComponent("system-alert-timeline.json", isDirectory: false)
+    }
+
+    public static func maintenanceHistory(fileManager: FileManager = .default) -> URL {
+        applicationSupportDirectory(fileManager: fileManager)
+            .appendingPathComponent("maintenance-history.json", isDirectory: false)
+    }
+
     public static func diskEvidenceSnapshot(fileManager: FileManager = .default) -> URL {
         applicationSupportDirectory(fileManager: fileManager)
             .appendingPathComponent("disk-evidence.json", isDirectory: false)
+    }
+
+    public static func diskEvidenceHistory(fileManager: FileManager = .default) -> URL {
+        applicationSupportDirectory(fileManager: fileManager)
+            .appendingPathComponent("disk-evidence-history.json", isDirectory: false)
     }
 
     public static func diskScanCache(fileManager: FileManager = .default) -> URL {
@@ -45,8 +60,28 @@ public enum CleanNestDataPaths {
             .appendingPathComponent("activity.json", isDirectory: false)
     }
 
+    public static func activityLifetimeTotals(fileManager: FileManager = .default) -> URL {
+        applicationSupportDirectory(fileManager: fileManager)
+            .appendingPathComponent("activity-lifetime-totals.json", isDirectory: false)
+    }
+
     public static func evolutionMemory(fileManager: FileManager = .default) -> URL {
         applicationSupportDirectory(fileManager: fileManager)
             .appendingPathComponent("evolution-memory.json", isDirectory: false)
+    }
+
+    public static func agentWorkspaceObservation(fileManager: FileManager = .default) -> URL {
+        applicationSupportDirectory(fileManager: fileManager)
+            .appendingPathComponent("agent-workspace-observation.json", isDirectory: false)
+    }
+
+    public static func agentWorkspaceSummary(fileManager: FileManager = .default) -> URL {
+        applicationSupportDirectory(fileManager: fileManager)
+            .appendingPathComponent("agent-workspace-summary.json", isDirectory: false)
+    }
+
+    public static func agentWorkspaceRecoveryDirectory(fileManager: FileManager = .default) -> URL {
+        applicationSupportDirectory(fileManager: fileManager)
+            .appendingPathComponent("AgentRecovery", isDirectory: true)
     }
 }

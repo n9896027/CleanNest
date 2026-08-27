@@ -42,17 +42,20 @@ CleanNest turns Mac cleanup from a black-box button into an understandable, reve
 ## Core capabilities
 
 - **Storage cleanup** — scan developer caches, logs, installers, and other candidates; select items individually and move them to the macOS Trash.
+- **Desktop and mounted installer media** — review DMG, PKG, XIP, ISO, and installer ZIP files from Desktop and Downloads. Mounted installer images expose their source and a separately confirmed safe-eject action; content under `/Volumes` never enters the deletion list.
 - **Downloads, screenshots, media, and exact duplicates** — common `ScreenShot`, `Screenshot`, `Screen Shot`, `ScreenCapture`, and Chinese screenshot names enter a dedicated group with one-click select/deselect. Other media still uses age and size gates, while exact duplicates require full SHA-256. Personal files are never preselected, and file identity plus the retained copy are revalidated before execution.
 - **Isolated scanner service** — cleanup, disk sizing, and evidence indexing run inside an embedded, independently signed XPC service. Cancellation, interruption, or a scanner crash leaves the UI alive and cannot replace the last complete result with partial state.
+- **Agent Workspace** — build bounded ledgers for Codex, Claude, Pi Agent, Kimi, WorkBuddy, Hermes, OpenClaw, Trae, and MiniMax Hub; Xiaoyunque remains explicitly unverified when no reproducible sample exists. Installed Agents use the real icon from their local App bundle; CLI-only or unavailable apps receive a neutral fallback, and CleanNest does not redistribute third-party icons. Version 0.6.4 maps applications, data roots, processes, launchd jobs, ports, and local models, and reports a model link only when an established TCP connection proves it. Backup-first actions remain hard-coded to settled Codex/Claude cache, temporary, and log files; every other Agent, session, private index, memory, credential, and runtime stays read-only.
+- **Native developer-tool ledger** — use Git `worktree prune --dry-run`, Docker `system df`, Hugging Face `cache prune --dry-run`, npm's configured cache location, and pip `cache info`. Only Git and Hugging Face expose a confirmed action after a fresh dry run; broad Docker, npm, and pip cleanup stays disabled without an official preview.
 - **Incremental disk browser** — stream partial results while scanning; reuse only unchanged metadata signatures for 15 minutes; disclose cache hits, live scans, and a cache-bypassing deep refresh.
 - **Cleanup Decision Center** — combine breadcrumb drill-down and a native treemap with deterministic purpose, growth cause, impact, recoverability, confidence, and a safe next action for every item. You can manually mark an item for review, keep it, or decide later without overriding safety boundaries.
-- **Live menu-bar monitor** — independently sample CPU, memory, network, disk, GPU, temperature, fans, and battery at a selectable 1/2/5/10-second interval. A State-style two-line value/abbreviation layout is the compact default; expanded text, mini graphs, ordering, and per-item visibility remain configurable.
-- **Local Model Runtime Center** — correlate processes, listening sockets, platform APIs, and launchd supervisors to show model IDs, PIDs, memory, exposure, and `KeepAlive` / login-launch evidence. After confirmation, an external service can be disabled together with its exact user supervisor and closed; its configuration remains available for re-enabling.
+- **Live menu-bar monitor** — independently sample CPU, memory, network, disk, GPU, temperature, fans, and battery at a selectable 1/2/5/10-second interval. A State-style two-line value/abbreviation layout is the compact default; expanded text, mini graphs, ordering, and per-item visibility remain configurable. Warning and critical states use both color and `!` / `!!`, combining macOS thermal state with pressure signals instead of treating ordinary high workload as a fault.
+- **Local Model Runtime Center** — organize platform, service, model short ID, established TCP clients, and launchd supervisors into an evidence topology, with explicit diagnostics for port conflicts, model replacement, and automatic restarts. CleanNest-owned processes, current-user processes, user LaunchAgents, and system/other-user services use four distinct control tiers; every controllable action revalidates identity, and supervisor configuration remains recoverable.
 - **System status** — combine the native live instrument panel with battery and health information, 60-second local history, and plain-language memory-pressure and process guidance.
 - **Process management** — request a normal process quit only after identity checks, system-process protection, and user confirmation; CleanNest does not automatically force-quit it.
 - **App uninstall** — browse installed apps and preview the app bundle plus related files matched by exact Bundle ID.
 - **System maintenance** — run selected low-risk maintenance tasks and keep their results in one activity history.
-- **Auditable local learning** — explicit choices and successful cleanups create reviewable rule proposals. Nothing affects future ordering until you enable it, and every rule can be paused, resumed, or removed.
+- **Auditable local learning** — file proposals are clustered by type, location level, risk, and age. Clusters support batch review, seven-day trials, pause, revoke, expiry cleanup, and measured impact on the current list; they never select or delete files.
 - **Model Workbench** — run a minimal streaming request that contains no scan metadata, then see loopback health latency, time to first output, total time, the exact API model ID, and memory-headroom guidance.
 - **Data controls** — export or clear the activity log independently; restoring safe defaults resets preferences without silently erasing activity, learning rules, disk indexes, metric history, or macOS permissions.
 - **Mole integration** — discover `mo` installed through Apple Silicon or Intel Homebrew, or install/update Mole from inside the app.
@@ -124,8 +127,25 @@ Detailed maintainer documentation is currently written primarily in Simplified C
 | [Threat model](docs/THREAT_MODEL.md) | Protected assets, attack surfaces, controls, and exclusions |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Mole, permissions, AI, build, process, and battery-status issues |
 | [Architecture](docs/ARCHITECTURE.md) | Modules, data flow, and dangerous-operation boundaries |
+| [Agent Workspace](docs/AGENT_WORKSPACE.md) | Multi-Agent ledgers, runtime evidence, signed rules, backup-first actions, and recovery boundaries |
 | [Privacy](PRIVACY.md) | Local data, network access, retention, and removal |
 | [Roadmap](ROADMAP.md) | Completed work, near-term priorities, and explicit non-commitments |
+| [0.6.3 verification report](docs/VERIFICATION-0.6.3.md) | Agent decisions, verified backups, conflict-safe restore, native-tool boundaries, and local build evidence |
+| [0.6.5 verification report](docs/VERIFICATION-0.6.5.md) | Sealed version, full-section audit, multi-Agent boundaries, tests, and local build evidence |
+| [0.7.0 verification report](docs/VERIFICATION-0.7.0.md) | Cold start, page lifecycle, measured memory gates, lazy lists, and accessibility evidence |
+| [0.7.1 verification report](docs/VERIFICATION-0.7.1.md) | Task-first overview, segmented settings, activity traceability, independent totals, and memory gates |
+| [0.7.2 verification report](docs/VERIFICATION-0.7.2.md) | Scan sessions, processing basket, media/duplicate review, three separate space facts, and startup-volume default |
+| [0.7.3 verification report](docs/VERIFICATION-0.7.3.md) | App dependency graph, per-item choices, six-stage fail-closed uninstall flow, and returned recovery locations |
+| [0.7.4 verification report](docs/VERIFICATION-0.7.4.md) | APFS ledger, classified-file coverage, reliable growth comparison, and live 314/868/126 reconciliation |
+| [0.7.5 verification report](docs/VERIFICATION-0.7.5.md) | Shared alert thresholds, local alert timeline, menu-width budget, app-level process grouping, and high-frequency update isolation |
+| [0.7.6 verification report](docs/VERIFICATION-0.7.6.md) | Read-only maintenance preflight, impact confirmation, before/after evidence, recovery checks, and honest uncertainty |
+| [0.7.7 verification report](docs/VERIFICATION-0.7.7.md) | Local-model evidence topology, live clients, four control tiers, runtime diagnostics, and a bounded Ollama lifecycle check |
+| [0.7.8 verification report](docs/VERIFICATION-0.7.8.md) | Agent overview/detail lazy loading, clustered learning rules, trials, measured sorting impact, and a 10,000-history projection test |
+| [0.7.9 source-release verification](docs/VERIFICATION-0.7.9.md) | 0.6.5 migration/rollback, cancellation storm, trilingual audit, the real 48-hour gate, SBOM, and provenance |
+| [0.7 migration and rollback](docs/MIGRATION-0.7.md) | Honest compatibility boundaries for settings, metrics, activity, indexes, learning rules, and Agent recovery records |
+| [Localization status](docs/LOCALIZATION-STATUS.md) | Catalog coverage, remaining Chinese fallbacks, and the strict release gate |
+| [0.7 series roadmap](docs/ROADMAP-0.7.md) | Product, architecture, acceptance gates, and explicit non-goals for 0.7.0–0.7.9 |
+| [0.6.5 section audit](docs/AUDIT-0.6.5.md) | Current behavior, gaps, performance, and accessibility evidence for every primary surface |
 | [0.6.0 verification report](docs/VERIFICATION-0.6.0.md) | XPC isolation, cancellation rollback, injected scanner failure, recovery, and cold-start memory evidence |
 | [0.5.5 verification report](docs/VERIFICATION-0.5.5.md) | Scan peak memory, adaptive background work, staged duplicate proof, and cancellation behavior |
 | [0.5.4 verification report](docs/VERIFICATION-0.5.4.md) | Downloads, media, exact duplicate detection, and personal-file safety boundaries |
@@ -163,6 +183,6 @@ Preview the UI with synthetic data only:
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-The current development version is **0.6.0 (Build 21)**. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
+The current source release is **0.7.9 (Build 37)**. It adds migration, rollback, stability and provenance gates, plus a multi-perspective disk ledger. The GitHub Release contains source only and no App bundle: the real 48-hour soak, complete trilingual UI, Developer ID signing, and Apple notarization remain open, so this is not a production macOS installer. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
 
 Core navigation and the main overview, disk, status, and settings surfaces now include English, Simplified Chinese, and Traditional Chinese resources. Some runtime diagnostics and path-dependent copy can still fall back to the source language; Japanese and Korean currently have localized project overviews rather than full UI resources.

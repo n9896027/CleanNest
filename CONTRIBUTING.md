@@ -29,6 +29,9 @@ CLEANNEST_CODESIGN_IDENTITY="-" ./build.sh release
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
+检查菜单栏异常高亮时，可在演示模式中附加 `CLEANNEST_DEMO_HEALTH=warning` 或
+`CLEANNEST_DEMO_HEALTH=critical`；它只替换合成温度、风扇和 macOS 热状态，不读取或修改真实硬件。
+
 ## 不可破坏的安全约束
 
 - AI 输出只能注释本次请求中的 token，不能产生路径、命令、勾选或删除动作。

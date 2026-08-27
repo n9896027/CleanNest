@@ -1,0 +1,20 @@
+{
+  "appVersion" : "CleanNest 0.7.1 (28)",
+  "coldBudgetBytes" : 230686720,
+  "demoMode" : false,
+  "interactionBudgetBytes" : 681574400,
+  "limitations" : [
+
+  ],
+  "mode" : "cold",
+  "passed" : true,
+  "samples" : [
+    {
+      "capturedAt" : "2026-08-27T12:53:43Z",
+      "phase" : "cold-15s",
+      "physicalFootprintBytes" : 101532800
+    }
+  ],
+  "schemaVersion" : 1,
+  "settledBudgetBytes" : 367001600
+}

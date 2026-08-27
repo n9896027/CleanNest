@@ -5,7 +5,9 @@ import CleanNestCore
 struct SystemStatusView: View {
     @EnvironmentObject private var store: AppStore
     @State private var showsAllMemoryProcesses = false
+    @State private var expandedMemoryGroupIDs = Set<String>()
     @State private var pendingMemoryTermination: PendingMemoryTermination?
+    @State private var realtimeSample: NativeMonitorSample? = nil
 
     private let columns = [
         GridItem(.flexible(), spacing: 14),
@@ -34,6 +36,7 @@ struct SystemStatusView: View {
                 }
 
                 nativeRealtimeCard
+                systemAlertTimelineCard
 
                 if store.engine == nil {
                     EmptyPanel(
@@ -73,8 +76,8 @@ struct SystemStatusView: View {
                         ResourceCard(
                             title: "磁盘",
                             symbol: "internaldrive",
-                            value: store.nativeMonitorSample?.diskUsedPercent ?? snapshot.diskUsedPercent,
-                            detail: (store.nativeMonitorSample?.diskFreeBytes ?? snapshot.diskFreeBytes)
+                            value: realtimeSample?.diskUsedPercent ?? snapshot.diskUsedPercent,
+                            detail: (realtimeSample?.diskFreeBytes ?? snapshot.diskFreeBytes)
                                 .map { CNL10n.format("可用 %@", CleanNestFormatting.bytes($0)) }
                                 ?? "可用空间未知",
                             tint: CNTheme.success
@@ -102,6 +105,7 @@ struct SystemStatusView: View {
             }
             .padding(CNTheme.pagePadding)
         }
+        .onReceive(store.nativeMonitorSamplePublisher) { realtimeSample = $0 }
         .alert(item: $pendingMemoryTermination) { pending in
             if pending.force {
                 return Alert(
@@ -133,7 +137,7 @@ struct SystemStatusView: View {
                         Text(store.nativeMonitorDiagnostic)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        if let sampledAt = store.nativeMonitorSample?.sampledAt {
+                        if let sampledAt = realtimeSample?.sampledAt {
                             Text("最新样本 " + sampledAt.formatted(date: .omitted, time: .standard))
                                 .font(.caption2.monospacedDigit())
                                 .foregroundStyle(.tertiary)
@@ -147,7 +151,7 @@ struct SystemStatusView: View {
                     )
                 }
 
-                if let sample = store.nativeMonitorSample {
+                if let sample = realtimeSample {
                     LazyVGrid(
                         columns: [GridItem(.adaptive(minimum: 195), spacing: 10)],
                         spacing: 10
@@ -179,18 +183,36 @@ struct SystemStatusView: View {
         _ metric: MenuBarMetric,
         sample: NativeMonitorSample
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let healthLevel = sample.healthLevel(
+            for: metric,
+            thresholds: store.menuBarConfiguration.alertThresholds
+        )
+        let assessment = sample.healthAssessment(
+            for: metric,
+            thresholds: store.menuBarConfiguration.alertThresholds
+        )
+        let tint = healthLevel.highlightColor ?? metric.tint
+
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: metric.symbol)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(metric.tint)
+                    .foregroundStyle(tint)
                 Text(metric.displayName)
                     .font(.caption.weight(.semibold))
+                if let badgeText = healthLevel.badgeText {
+                    HStack(spacing: 3) {
+                        Image(systemName: healthLevel.badgeSymbol ?? "exclamationmark")
+                        Text(CNL10n.string(badgeText))
+                    }
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(tint)
+                }
                 Spacer()
                 MiniTrend(
                     values: store.nativeMonitorHistory.compactMap { $0.value(for: metric) },
                     range: metric.normalizedGraphRange,
-                    tint: metric.tint
+                    tint: tint
                 )
                 .frame(width: 50, height: 19)
             }
@@ -201,17 +223,31 @@ struct SystemStatusView: View {
                 ),
                 font: .system(size: 17, weight: .semibold, design: .rounded)
             )
+            .foregroundStyle(healthLevel.highlightColor ?? Color.primary)
             Text(sample.sourceDescription(metric))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if let assessment, assessment.level != .normal {
+                Text(assessment.reason)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(tint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
         .padding(11)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(metric.tint.opacity(sample.isAvailable(metric) ? 0.16 : 0.05), lineWidth: 0.7)
+                .stroke(
+                    tint.opacity(
+                        healthLevel == .normal
+                            ? (sample.isAvailable(metric) ? 0.16 : 0.05)
+                            : 0.48
+                    ),
+                    lineWidth: healthLevel == .normal ? 0.7 : 1
+                )
         )
         .accessibilityElement(children: .combine)
     }
@@ -296,6 +332,96 @@ struct SystemStatusView: View {
         }
     }
 
+    private var systemAlertTimelineCard: some View {
+        SurfaceCard(title: "告警时间线", symbol: "bell.and.waves.left.and.right", tint: CNTheme.warning) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 10) {
+                    Text("只记录温度、电池、内存压力、磁盘余量和风扇相对负载的异常、峰值与恢复；CPU、GPU 和网络繁忙不会被当成故障。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 12)
+                    StatusPill(
+                        text: store.systemAlertEvents.contains(where: \.isActive)
+                            ? "有持续异常"
+                            : "当前无异常",
+                        symbol: store.systemAlertEvents.contains(where: \.isActive)
+                            ? "exclamationmark"
+                            : "checkmark",
+                        style: store.systemAlertEvents.contains(where: \.isActive)
+                            ? .warning
+                            : .success
+                    )
+                }
+
+                if store.systemAlertEvents.isEmpty {
+                    InlineBanner(
+                        title: "还没有告警记录",
+                        detail: "这是正常状态。达到你在设置中保存的阈值后，这里才会开始计时并说明变色原因。",
+                        kind: .success
+                    )
+                } else {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(store.systemAlertEvents.prefix(8).enumerated()), id: \.element.id) { index, event in
+                            systemAlertRow(event)
+                            if index < min(8, store.systemAlertEvents.count) - 1 {
+                                Divider().padding(.leading, 45)
+                            }
+                        }
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    Image(systemName: "lock.shield")
+                        .foregroundStyle(CNTheme.success)
+                    Text("历史只保存在本机，不记录网络地址、访问内容或流量正文；睡眠和退出期间不会虚增持续时间。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func systemAlertRow(_ event: SystemAlertEvent) -> some View {
+        let tint = event.level.highlightColor ?? event.metric.tint
+        return HStack(alignment: .top, spacing: 11) {
+            CNIconTile(symbol: event.metric.symbol, tint: tint, size: 34)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 7) {
+                    Text(event.metric.displayName)
+                        .font(.subheadline.weight(.semibold))
+                    StatusPill(
+                        text: event.isActive ? "持续中" : "已恢复",
+                        symbol: event.isActive ? "waveform.path" : "checkmark",
+                        style: event.isActive ? event.level.badgeStyle : .success
+                    )
+                    .controlSize(.mini)
+                }
+                Text(event.reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("峰值：\(event.peakDescription) · 持续 \(alertDuration(event.duration(at: realtimeSample?.sampledAt ?? Date())))")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 8)
+            Text(event.startedAt.formatted(date: .abbreviated, time: .shortened))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 9)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func alertDuration(_ seconds: TimeInterval) -> String {
+        let value = max(0, Int(seconds.rounded()))
+        if value >= 3_600 { return "\(value / 3_600) 小时 \((value % 3_600) / 60) 分" }
+        if value >= 60 { return "\(value / 60) 分 \(value % 60) 秒" }
+        return "\(value) 秒"
+    }
+
     private func memoryAnalysisCard(_ snapshot: SystemSnapshot) -> some View {
         SurfaceCard {
             VStack(alignment: .leading, spacing: 14) {
@@ -372,17 +498,18 @@ struct SystemStatusView: View {
     }
 
     private func memoryProcessesCard(_ snapshot: SystemSnapshot) -> some View {
-        let processes = showsAllMemoryProcesses
-            ? store.memoryProcesses
-            : Array(store.memoryProcesses.prefix(10))
+        let allGroups = store.memoryApplicationGroups
+        let groups = showsAllMemoryProcesses
+            ? allGroups
+            : Array(allGroups.prefix(10))
 
         return SurfaceCard {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .center, spacing: 10) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Label("内存占用较高的应用与进程", systemImage: "list.number")
+                        Label("内存占用较高的应用", systemImage: "square.stack.3d.up")
                             .font(.headline)
-                        Text("按近似内存足迹排序；系统或受保护进程只展示，不会提供结束按钮。")
+                        Text("先按所属 App 汇总，再按需展开辅助进程；退出风险仍逐个确认，不提供整组强制结束。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -401,24 +528,24 @@ struct SystemStatusView: View {
                     )
                 }
 
-                if processes.isEmpty {
+                if groups.isEmpty {
                     InlineBanner(
                         title: "还没有进程数据",
                         detail: "点击页面右上角的“刷新”，重新探测当前内存占用。",
                         kind: .info
                     )
                 } else {
-                    VStack(spacing: 0) {
-                        ForEach(Array(processes.enumerated()), id: \.element.id) { index, process in
-                            memoryProcessRow(process)
-                            if index < processes.count - 1 {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+                            memoryApplicationGroupRow(group)
+                            if index < groups.count - 1 {
                                 Divider().padding(.leading, 48)
                             }
                         }
                     }
 
-                    if store.memoryProcesses.count > 10 {
-                        Button(showsAllMemoryProcesses ? "只显示前 10 项" : "显示全部 \(store.memoryProcesses.count) 项") {
+                    if allGroups.count > 10 {
+                        Button(showsAllMemoryProcesses ? "只显示前 10 个 App" : "显示全部 \(allGroups.count) 个 App") {
                             withAnimation(.easeInOut(duration: 0.18)) {
                                 showsAllMemoryProcesses.toggle()
                             }
@@ -432,6 +559,69 @@ struct SystemStatusView: View {
                 }
             }
         }
+    }
+
+    private func memoryApplicationGroupRow(_ group: MemoryApplicationGroup) -> some View {
+        let isExpanded = expandedMemoryGroupIDs.contains(group.id)
+        let footprint = group.physicalFootprintBytes > 0
+            ? group.physicalFootprintBytes
+            : group.residentBytes
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    if isExpanded {
+                        expandedMemoryGroupIDs.remove(group.id)
+                    } else {
+                        expandedMemoryGroupIDs.insert(group.id)
+                    }
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "app.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(CNTheme.accent)
+                        .frame(width: 34, height: 34)
+                        .background(CNTheme.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(group.displayName)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text("\(group.processes.count) 个进程"
+                             + (group.protectedProcessCount > 0 ? " · \(group.protectedProcessCount) 个受保护" : ""))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 12)
+                    Text(CleanNestFormatting.bytes(footprint))
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedMetric()
+                        .foregroundStyle(.primary)
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(group.displayName)，\(group.processes.count) 个进程，近似内存足迹 \(CleanNestFormatting.bytes(footprint))")
+            .accessibilityHint(isExpanded ? "收起进程" : "展开进程并逐个查看退出风险")
+
+            if isExpanded {
+                VStack(spacing: 0) {
+                    ForEach(Array(group.processes.enumerated()), id: \.element.id) { index, process in
+                        memoryProcessRow(process)
+                            .padding(.leading, 18)
+                        if index < group.processes.count - 1 {
+                            Divider().padding(.leading, 64)
+                        }
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.vertical, 8)
     }
 
     private func memoryProcessRow(_ process: MemoryProcessSnapshot) -> some View {
@@ -782,9 +972,8 @@ struct MaintenanceView: View {
     @EnvironmentObject private var store: AppStore
     @State private var pendingAction: MaintenanceAction?
 
-    private var latestMaintenanceActivity: ActivityEntry? {
-        let titles = Set(MaintenanceAction.allCases.map(\.rawValue))
-        return store.activities.first { titles.contains($0.title) }
+    private var latestMaintenanceRecord: MaintenanceRunRecord? {
+        store.maintenanceHistory.first
     }
 
     var body: some View {
@@ -823,8 +1012,8 @@ struct MaintenanceView: View {
                     }
                 }
 
-                if let latestMaintenanceActivity {
-                    latestResult(latestMaintenanceActivity)
+                if let latestMaintenanceRecord {
+                    latestResult(latestMaintenanceRecord)
                 }
             }
             .padding(CNTheme.pagePadding)
@@ -832,13 +1021,7 @@ struct MaintenanceView: View {
         .alert(item: $pendingAction) { action in
             Alert(
                 title: Text("执行“\(CNL10n.string(action.rawValue))”？"),
-                message: Text(CNL10n.format(
-                    "适用于：%@\n\n会发生：%@\n\n安全边界：%@\n\n如果未恢复：%@",
-                    CNL10n.string(action.symptom),
-                    CNL10n.string(action.effect),
-                    CNL10n.string(action.safetyNote),
-                    CNL10n.string(action.recovery)
-                )),
+                message: Text(confirmationMessage(action)),
                 primaryButton: .default(Text("确认运行")) {
                     Task { await store.runMaintenance(action) }
                 },
@@ -951,6 +1134,38 @@ struct MaintenanceView: View {
             }
             maintenanceDetailLine(symbol: "arrow.triangle.2.circlepath", text: action.effect)
             maintenanceDetailLine(symbol: "checkmark.shield", text: action.safetyNote)
+            if let evidence = store.maintenanceEvidence[action] {
+                evidenceSummary(evidence)
+            } else {
+                Label("尚未诊断；先做只读检查，不会重启服务。", systemImage: "magnifyingglass")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func evidenceSummary(_ evidence: MaintenanceEvidence) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: evidenceSymbol(evidence.state))
+                Text(evidence.state.title)
+                    .fontWeight(.semibold)
+                Text(evidence.checkedAt, style: .relative)
+                    .foregroundStyle(.tertiary)
+            }
+            .foregroundStyle(evidenceColor(evidence.state))
+            Text(evidence.headline)
+                .foregroundStyle(.primary)
+            Text(evidence.detail)
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption)
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(evidenceColor(evidence.state).opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9)
+                .stroke(evidenceColor(evidence.state).opacity(0.18), lineWidth: 1)
         }
     }
 
@@ -989,7 +1204,7 @@ struct MaintenanceView: View {
         _ action: MaintenanceAction,
         horizontal: Bool = false
     ) -> some View {
-        let last = store.activities.first { $0.title == action.rawValue }
+        let last = store.maintenanceHistory.first { $0.action == action }
         return Group {
             if horizontal {
                 HStack(spacing: 9) {
@@ -1006,15 +1221,15 @@ struct MaintenanceView: View {
         }
     }
 
-    private func lastStatus(_ entry: ActivityEntry?) -> some View {
+    private func lastStatus(_ record: MaintenanceRunRecord?) -> some View {
         VStack(alignment: .trailing, spacing: 3) {
-            if let entry {
+            if let record {
                 StatusPill(
-                    text: entry.outcome == .success ? "最近已完成" : "上次未完成",
-                    symbol: entry.outcome.symbol,
-                    style: entry.outcome == .success ? .success : .danger
+                    text: record.outcome.title,
+                    symbol: record.outcome.isSuccessful ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+                    style: record.outcome.isSuccessful ? .success : .warning
                 )
-                Text(entry.date, style: .relative)
+                Text(record.finishedAt, style: .relative)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             } else {
@@ -1023,41 +1238,73 @@ struct MaintenanceView: View {
         }
     }
 
+    @ViewBuilder
     private func runButton(_ action: MaintenanceAction) -> some View {
-        Button {
-            pendingAction = action
-        } label: {
-            Label("运行此任务…", systemImage: "play.fill")
+        if store.maintenanceEvidence[action] == nil {
+            Button {
+                Task { await store.diagnoseMaintenance(action) }
+            } label: {
+                Label("先诊断", systemImage: "stethoscope")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(store.isWorking)
+            .accessibilityLabel(CNL10n.format("诊断 %@", action.rawValue))
+        } else {
+            VStack(alignment: .trailing, spacing: 5) {
+                Button {
+                    pendingAction = action
+                } label: {
+                    Label("查看影响并执行…", systemImage: "play.fill")
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.isWorking)
+                .accessibilityLabel(CNL10n.format("运行 %@", action.rawValue))
+
+                Button("重新诊断") {
+                    Task { await store.diagnoseMaintenance(action) }
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .disabled(store.isWorking)
+            }
         }
-        .buttonStyle(.bordered)
-        .disabled(store.isWorking)
-        .accessibilityLabel(CNL10n.format("运行 %@", action.rawValue))
     }
 
-    private func latestResult(_ entry: ActivityEntry) -> some View {
+    private func latestResult(_ record: MaintenanceRunRecord) -> some View {
         SurfaceCard(
             title: "最近一次维护",
             symbol: "clock.arrow.circlepath",
             prominence: .quiet,
-            tint: Color.outcome(entry.outcome)
+            tint: record.outcome.isSuccessful ? CNTheme.mint : CNTheme.warning
         ) {
             HStack(alignment: .top, spacing: 12) {
-                CNIconTile(symbol: entry.outcome.symbol, tint: Color.outcome(entry.outcome), size: 34)
+                CNIconTile(
+                    symbol: record.outcome.isSuccessful ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+                    tint: record.outcome.isSuccessful ? CNTheme.mint : CNTheme.warning,
+                    size: 34
+                )
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
-                        Text(CNL10n.string(entry.title))
+                        Text(CNL10n.string(record.action.rawValue))
                             .font(.subheadline.weight(.semibold))
                         StatusPill(
-                            text: entry.outcome.rawValue,
+                            text: record.outcome.title,
                             symbol: nil,
-                            style: entry.outcome == .success ? .success : .danger
+                            style: record.outcome.isSuccessful ? .success : .warning
                         )
                     }
-                    Text(CNL10n.string(entry.detail))
+                    Text("执行前：\(record.before.headline)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(entry.date.formatted(date: .abbreviated, time: .shortened))
+                    Text("执行后：\(record.after.headline)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(record.summary)
+                        .font(.caption.weight(.medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(record.finishedAt.formatted(date: .abbreviated, time: .shortened))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.tertiary)
                 }
@@ -1067,6 +1314,41 @@ struct MaintenanceView: View {
                 }
                 .buttonStyle(.borderless)
             }
+        }
+    }
+
+    private func confirmationMessage(_ action: MaintenanceAction) -> String {
+        let evidence = store.maintenanceEvidence[action]
+        let diagnosis = evidence.map {
+            "只读检查：\($0.state.title)\n\($0.headline)\n\($0.detail)"
+        } ?? "只读检查：尚未完成。"
+        let noAnomalyWarning = evidence?.state == .noAnomalyDetected
+            ? "\n\n提醒：基础检查没有发现明确异常。反复重启不会让 Mac 更快。"
+            : ""
+        return CNL10n.format(
+            "%@%@\n\n适用于：%@\n\n会发生：%@\n\n安全边界：%@\n\n如果未恢复：%@",
+            diagnosis,
+            noAnomalyWarning,
+            CNL10n.string(action.symptom),
+            CNL10n.string(action.effect),
+            CNL10n.string(action.safetyNote),
+            CNL10n.string(action.recovery)
+        )
+    }
+
+    private func evidenceSymbol(_ state: MaintenanceEvidenceState) -> String {
+        switch state {
+        case .noAnomalyDetected: return "checkmark.circle.fill"
+        case .anomalyDetected: return "exclamationmark.triangle.fill"
+        case .uncertain: return "questionmark.circle.fill"
+        }
+    }
+
+    private func evidenceColor(_ state: MaintenanceEvidenceState) -> Color {
+        switch state {
+        case .noAnomalyDetected: return CNTheme.mint
+        case .anomalyDetected: return CNTheme.warning
+        case .uncertain: return .secondary
         }
     }
 }

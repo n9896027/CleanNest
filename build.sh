@@ -183,6 +183,16 @@ if [[ "$SIGN_IDENTITY" == "-" ]]; then
     codesign --force --sign "$SIGN_IDENTITY" \
         "$STAGING_PATH/Contents/XPCServices/$SCANNER_NAME.xpc"
     codesign --force --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_IDENTITY" "$STAGING_PATH"
+elif [[ "$SIGN_IDENTITY" == "$PREFERRED_SIGNING_IDENTITY" ]]; then
+    # The stable self-signed local identity preserves this Mac's TCC identity,
+    # but it is not a Developer ID distribution certificate. Keep Hardened
+    # Runtime while explicitly avoiding Apple's network timestamp service.
+    codesign --force --options runtime --timestamp=none --sign "$SIGN_IDENTITY" "$STAGING_PATH/Contents/MacOS/$MCP_NAME"
+    codesign --force --options runtime --timestamp=none --sign "$SIGN_IDENTITY" \
+        "$STAGING_PATH/Contents/Library/LoginItems/$LOGIN_ITEM_NAME.app"
+    codesign --force --options runtime --timestamp=none --sign "$SIGN_IDENTITY" \
+        "$STAGING_PATH/Contents/XPCServices/$SCANNER_NAME.xpc"
+    codesign --force --options runtime --timestamp=none --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_IDENTITY" "$STAGING_PATH"
 else
     # A real distribution identity must opt into Hardened Runtime and a trusted
     # timestamp before the bundle can be submitted to Apple's notarization service.

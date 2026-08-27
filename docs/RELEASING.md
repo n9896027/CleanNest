@@ -9,15 +9,36 @@
 3. 运行：
 
    ```bash
-   bash -n build.sh
-   swift test
-   swift run CleanNestSelfTest
-   CLEANNEST_CODESIGN_IDENTITY="-" ./build.sh release
-   swift Tools/SBOMGenerator.swift build/CleanNest.app build/CleanNest.spdx.json
+   scripts/verify-release-candidate.sh
+   ```
+
+   该脚本会核对三份 Info.plist 版本、源码洁净度、本地化目录、全部测试、自检、签名、SBOM、ZIP SHA-256 和来源清单。默认只生成明确标注信任边界的本机/源码候选，不会创建 tag、GitHub Release 或上传文件。
+
+   要求完整 UI 本地化门时使用：
+
+   ```bash
+   CLEANNEST_REQUIRE_STRICT_LOCALIZATION=1 scripts/verify-release-candidate.sh
+   ```
+
+   只有 Developer ID、公证装订和严格本地化均已具备时，才允许运行分发门：
+
+   ```bash
+   CLEANNEST_REQUIRE_DISTRIBUTION=1 scripts/verify-release-candidate.sh
    ```
 
 4. PR 的 CI、双架构兼容性、CodeQL 和依赖审查全部通过，安全告警为零。
 5. 合并后再从 `main` 的确切提交创建签名产物、tag 和 GitHub Release。
+
+## 48 小时常驻证据
+
+加速单元测试只能验证状态机，不能代替真实经过 48 小时。候选机先运行：
+
+```bash
+scripts/verify-system-monitor-soak.sh
+scripts/verify-48h-soak-report.sh build/system-monitor-soak.tsv
+```
+
+第二个命令会核对首尾 UTC 时间、进程连续存在、RSS/CPU 样本完整和峰值 RSS。缩短 `CLEANNEST_SOAK_SECONDS` 只用于验证采集器；正式发布门仍要求至少 172800 秒，报告要和测试机器、睡眠/唤醒与外接屏幕记录一起保存。
 
 ## Developer ID 构建
 
@@ -29,7 +50,9 @@ codesign --verify --deep --strict --verbose=2 build/CleanNest.app
 spctl --assess --type execute --verbose=2 build/CleanNest.app
 ```
 
-使用真实身份时，构建脚本会分别签署内置 `CleanNestMCP` 和外层 App，并启用 Hardened Runtime 与可信时间戳。本机直接运行脚本仍生成当前架构版本。
+使用 Developer ID 身份时，构建脚本会分别签署内置 `CleanNestMCP` 和外层 App，并启用 Hardened Runtime 与可信时间戳。本机直接运行脚本仍生成当前架构版本。
+
+项目的 `Yuan OS Local Code Signing` 是为了在开发 Mac 上稳定 TCC 代码身份的自签名证书，不是 Developer ID。构建脚本对它保留 Hardened Runtime，但明确不请求 Apple 发行时间戳，避免本机重建被网络时间戳故障阻断。这不改变其“仅本机开发”性质；指定 Developer ID 身份时仍必须获得可信时间戳。
 
 ## 免费 Universal 2 验证产物
 
@@ -69,3 +92,5 @@ spctl --assess --type execute --verbose=2 build/CleanNest.app
 - 发布说明包含从源码构建命令、版本变化、已知限制和对应提交 SHA。
 
 CleanNest 的“检查更新”只读取该仓库最新的非 Draft、非预发布 Release。因此，tag 或已合并代码本身不会让 App 识别为“最新正式版本”；维护者仍需在明确授权后创建正式 GitHub Release。
+
+0.6.5 到 0.7.x 的数据兼容和学习规则回退方式见 [迁移与回退说明](MIGRATION-0.7.md)；三语言的真实覆盖缺口见 [本地化覆盖状态](LOCALIZATION-STATUS.md)。

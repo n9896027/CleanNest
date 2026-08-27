@@ -20,6 +20,7 @@ struct RootView: View {
                         case .analyze: DiskAnalyzeView()
                         case .status: SystemStatusView()
                         case .maintenance: MaintenanceView()
+                        case .agentWorkspace: AgentWorkspaceView(presentation: store.agentWorkspaceState)
                         case .models: LocalModelsView()
                         case .evolution: EvolutionView()
                         case .activity: ActivityView()
@@ -41,6 +42,9 @@ struct RootView: View {
         .sheet(isPresented: $store.showingUpdateChecker) {
             UpdateCheckView()
                 .environmentObject(store)
+        }
+        .task(id: store.selection ?? .overview) {
+            await store.activatePage(store.selection ?? .overview)
         }
     }
 }

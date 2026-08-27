@@ -5,6 +5,8 @@ struct CleanupView: View {
     @EnvironmentObject private var store: AppStore
     @State private var searchText = ""
     @State private var confirmingTrash = false
+    @State private var confirmingMountedInstallerEject = false
+    @State private var mountedInstallerPendingEject: MountedInstallerVolume?
 
     private var filteredCandidates: [CleanupCandidate] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -45,7 +47,7 @@ struct CleanupView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     PageHeader(
                         title: "清理空间",
-                        subtitle: "把可重建缓存、下载文件、个人媒体与重复副本分开判断。"
+                        subtitle: "把可重建缓存、桌面/下载安装包、个人媒体与重复副本分开判断。"
                     ) {
                         HStack(spacing: 8) {
                             Button("推荐项") {
@@ -75,11 +77,30 @@ struct CleanupView: View {
                         kind: .success
                     )
 
-                    if store.cleanupHasScanned {
-                        CleanupEvidenceOverview(
-                            insights: store.cleanupScanInsights,
-                            screenshotCount: store.cleanupScreenshotCount,
+                    if let session = store.cleanupScanSession {
+                        CleanupScanSessionCard(
+                            session: session,
                             mediaScanEnabled: store.cleanupScanIncludedMediaAndDuplicates
+                        )
+                    }
+
+                    if store.cleanupHasScanned, !store.mountedInstallerVolumes.isEmpty {
+                        MountedInstallerVolumesCard(
+                            volumes: store.mountedInstallerVolumes,
+                            ejectingID: store.ejectingMountedInstallerID
+                        ) { volume in
+                            mountedInstallerPendingEject = volume
+                            confirmingMountedInstallerEject = true
+                        }
+                    }
+
+                    if let mountedInstallerMessage = store.mountedInstallerMessage {
+                        InlineBanner(
+                            title: store.mountedInstallerMessageIsWarning
+                                ? "安装介质需要处理"
+                                : "安装介质已更新",
+                            detail: mountedInstallerMessage,
+                            kind: store.mountedInstallerMessageIsWarning ? .warning : .success
                         )
                     }
 
@@ -102,7 +123,7 @@ struct CleanupView: View {
                         EmptyPanel(
                             symbol: "sparkle.magnifyingglass",
                             title: "先扫描，再做决定",
-                            detail: "CleanNest 会检查缓存、下载归档和大型媒体；启用媒体分析时还会用本机 SHA-256 查找字节完全相同的副本。扫描不会改动文件。",
+                            detail: "CleanNest 会检查缓存、桌面/下载安装包、已挂载安装介质和大型媒体；启用媒体分析时还会用本机 SHA-256 查找字节完全相同的副本。扫描不会改动文件。",
                             actionTitle: "扫描可清理内容"
                         ) {
                             Task { await store.scanCleanup() }
@@ -134,18 +155,16 @@ struct CleanupView: View {
                     }
                 }
                 .padding(CNTheme.pagePadding)
-                .padding(.bottom, store.cleanupCandidates.isEmpty ? 0 : 68)
+                .padding(.bottom, store.cleanupCandidates.isEmpty ? 0 : 112)
             }
 
             if !store.cleanupCandidates.isEmpty {
-                ReviewBar(
-                    count: store.selectedCleanupCount,
-                    bytes: store.selectedCleanupBytes,
-                    actionTitle: "移到废纸篓",
-                    disabled: store.selectedCleanupCount == 0 || store.isWorking
-                ) {
-                    confirmingTrash = true
-                }
+                CleanupProcessingBasketBar(
+                    summary: store.cleanupBasketSummary,
+                    disabled: store.selectedCleanupCount == 0 || store.isWorking,
+                    onClear: { store.clearCleanupSelection() },
+                    onReview: { confirmingTrash = true }
+                )
             }
         }
         .alert("将 \(store.selectedCleanupCount) 项移到废纸篓？", isPresented: $confirmingTrash) {
@@ -155,6 +174,25 @@ struct CleanupView: View {
             }
         } message: {
             Text(confirmationDetail)
+        }
+        .confirmationDialog(
+            mountedInstallerPendingEject.map {
+                CNL10n.format("推出“%@”？", $0.displayName)
+            } ?? CNL10n.string("推出安装介质？"),
+            isPresented: $confirmingMountedInstallerEject,
+            titleVisibility: .visible,
+            presenting: mountedInstallerPendingEject
+        ) { volume in
+            Button("安全推出") {
+                Task { await store.ejectMountedInstaller(volume) }
+            }
+            Button("取消", role: .cancel) { }
+        } message: { volume in
+            if volume.sourceExists {
+                Text("只会卸载当前磁盘映像，不会删除或移动原始安装包。请先关闭从该卷打开的安装程序。")
+            } else {
+                Text("原始安装包路径已不存在。推出后桌面图标会消失；若要再次打开，需要重新下载安装包。")
+            }
         }
     }
 
@@ -205,12 +243,77 @@ struct CleanupView: View {
     }
 }
 
-private struct CleanupEvidenceOverview: View {
-    let insights: CleanupScanInsights
-    let screenshotCount: Int
+private struct CleanupProcessingBasketBar: View {
+    let summary: CleanupBasketSummary
+    let disabled: Bool
+    let onClear: () -> Void
+    let onReview: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) { basketContent }
+                VStack(alignment: .leading, spacing: 10) { basketContent }
+            }
+            Text("理论余量只是“以后清空废纸篓”的上限估算；本次操作只移入废纸篓，完成后会单独记录 APFS 实测变化。")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, CNTheme.pagePadding)
+        .padding(.vertical, 12)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    @ViewBuilder
+    private var basketContent: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("处理篮 · 已选 \(summary.selectedCount) 项")
+                .font(.subheadline.weight(.semibold))
+            Text(CleanNestFormatting.bytes(summary.selectedBytes))
+                .font(.title3.weight(.semibold))
+                .monospacedMetric()
+        }
+        basketFact(
+            "清空废纸篓后的理论余量",
+            CleanNestFormatting.bytes(summary.projectedFreeBytesAfterEmptyingTrash),
+            symbol: "internaldrive"
+        )
+        basketFact("恢复方式", "清空前可从废纸篓放回", symbol: "arrow.uturn.backward.circle")
+        basketFact(
+            "执行前重验",
+            "身份 \(summary.identityRevalidationCount) 项 · 路径边界 \(summary.pathRevalidationCount) 项 · 重复哈希 \(summary.duplicateCount) 项",
+            symbol: "checkmark.shield"
+        )
+        Spacer(minLength: 8)
+        Button("清空选择", action: onClear)
+            .disabled(summary.selectedCount == 0)
+        Button("复核并继续…", action: onReview)
+            .buttonStyle(.borderedProminent)
+            .disabled(disabled)
+            .help("只打开最终复核；不会在这一步移动文件")
+    }
+
+    private func basketFact(_ label: String, _ value: String, symbol: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol)
+                .foregroundStyle(CNTheme.cyan)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label).font(.caption2).foregroundStyle(.tertiary)
+                Text(value).font(.caption.weight(.semibold)).lineLimit(1)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct CleanupScanSessionCard: View {
+    let session: CleanupScanSession
     let mediaScanEnabled: Bool
 
-    private let columns = [GridItem(.adaptive(minimum: 155), spacing: 0)]
+    private let metricColumns = [GridItem(.adaptive(minimum: 155), spacing: 10)]
+    private let evidenceColumns = [GridItem(.adaptive(minimum: 190), spacing: 8)]
 
     var body: some View {
         SurfaceCard {
@@ -221,78 +324,279 @@ private struct CleanupEvidenceOverview: View {
                         .frame(width: 32, height: 32)
                         .background(CNTheme.cyan.opacity(0.11), in: RoundedRectangle(cornerRadius: 9))
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("本机文件证据")
+                        Text("本次扫描会话")
                             .font(.headline)
-                        Text("先判断来源与内容关系，再让你决定；扫描结果本身不会删除文件。")
+                        Text("记下扫了哪里、看了多少文件、跳过了什么；结果本身不会删除文件。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    StatusPill(text: "仅在本机", symbol: "lock.shield", style: .success)
+                    StatusPill(
+                        text: "\(session.checkedRootCount)/\(session.roots.count) 个位置可读",
+                        symbol: "checklist",
+                        style: session.roots.contains(where: { $0.status == .unsafe || $0.status == .unreadable }) ? .warning : .success
+                    )
                 }
 
                 Divider()
 
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                LazyVGrid(columns: metricColumns, alignment: .leading, spacing: 10) {
                     EvidenceMetric(
-                        label: "下载文件",
-                        value: CNL10n.format("%d 项", insights.installerCount + insights.archiveCount),
-                        detail: CNL10n.format("%d 个安装包 · %d 个归档", insights.installerCount, insights.archiveCount),
-                        symbol: "arrow.down.doc",
-                        tint: CNTheme.warning
+                        label: "已检查文件",
+                        value: session.examinedFileCount.formatted(),
+                        detail: "有界扫描，不会为凑数读取包内容",
+                        symbol: "doc.text.magnifyingglass",
+                        tint: CNTheme.cyan
                     )
                     EvidenceMetric(
-                        label: "个人媒体",
-                        value: mediaScanEnabled ? CNL10n.format("%d 项", insights.mediaCount) : CNL10n.string("未启用"),
-                        detail: CNL10n.format("图片 %d（截图 %d）· 视频 %d · 音频 %d", insights.imageCount, screenshotCount, insights.videoCount, insights.audioCount),
-                        symbol: "photo.on.rectangle.angled",
-                        tint: CNTheme.violet
-                    )
-                    EvidenceMetric(
-                        label: "完全重复",
-                        value: mediaScanEnabled ? CNL10n.format("%d 组", insights.duplicateGroupCount) : CNL10n.string("未启用"),
-                        detail: CNL10n.format("%d 个副本 · %@", insights.duplicateFileCount, CleanNestFormatting.bytes(insights.duplicateBytes)),
-                        symbol: "square.on.square",
-                        tint: CNTheme.success
-                    )
-                    EvidenceMetric(
-                        label: "检查范围",
-                        value: CNL10n.format("%d 个文件", insights.examinedFileCount),
-                        detail: CNL10n.string(insights.wasLimited ? "达到本轮安全上限" : "有界扫描已完成"),
-                        symbol: "scope",
+                        label: "原始候选",
+                        value: CNL10n.format("%d 项", session.candidateCount),
+                        detail: "候选体积不等于已释放空间",
+                        symbol: "shippingbox.and.arrow.backward",
                         tint: CNTheme.accent
+                    )
+                    EvidenceMetric(
+                        label: "扫描耗时",
+                        value: String(format: "%.2f 秒", session.elapsedSeconds),
+                        detail: "高成本遍历在独立扫描进程中完成",
+                        symbol: "timer",
+                        tint: CNTheme.mint
+                    )
+                    EvidenceMetric(
+                        label: "证据时间",
+                        value: session.completedAt.formatted(date: .omitted, time: .shortened),
+                        detail: session.completedAt.formatted(date: .abbreviated, time: .omitted),
+                        symbol: "clock.badge.checkmark",
+                        tint: CNTheme.violet
                     )
                 }
 
-                Text("截图按 ScreenShot、Screenshot、Screen Shot、ScreenCapture、截屏或截图等文件名直接识别，不受大图和时间门槛限制；其他媒体仍要求至少 14 天未修改，图片 ≥ 5 MB、视频 ≥ 100 MB、音频 ≥ 20 MB。")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text("同一文件可能同时属于下载/媒体与完全重复，所以上方数量不能直接相加；列表保留原始类型，并用“字节完全相同”标记重叠项目。")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if insights.wasLimited || insights.skippedCloudItemCount > 0 {
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Image(systemName: "info.circle")
-                        Text(limitDetail)
+                evidenceSectionTitle("检查位置")
+                LazyVGrid(columns: evidenceColumns, alignment: .leading, spacing: 8) {
+                    ForEach(session.roots) { root in
+                        rootEvidence(root)
                     }
-                    .font(.caption)
+                }
+
+                if !session.categories.isEmpty {
+                    evidenceSectionTitle("本次扫描原始类别")
+                    LazyVGrid(columns: evidenceColumns, alignment: .leading, spacing: 8) {
+                        ForEach(session.categories) { category in
+                            Label(
+                                "\(CNL10n.string(category.kind.rawValue)) \(category.count) 项 · \(CleanNestFormatting.bytes(category.allocatedBytes))",
+                                systemImage: category.kind.symbolName
+                            )
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(9)
+                            .background(CNTheme.surfaceElevated, in: RoundedRectangle(cornerRadius: 9))
+                        }
+                    }
+                }
+
+                if !session.skips.isEmpty {
+                    evidenceSectionTitle("安全跳过")
+                    LazyVGrid(columns: evidenceColumns, alignment: .leading, spacing: 8) {
+                        ForEach(session.skips) { skip in
+                            Label(skipDescription(skip), systemImage: skipSymbol(skip.reason))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(9)
+                                .background(CNTheme.warning.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+                        }
+                    }
+                }
+
+                Text(mediaScanEnabled
+                    ? "截图按常见中英文文件名识别；其他媒体按修改时间和体积进入候选。同一文件可同时具有重复证据，不要将分类数量直接相加。"
+                    : "本次未启用媒体与重复文件分析；只检查桌面和下载中的安装包与归档。")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func evidenceSectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+    }
+
+    private func rootEvidence(_ root: CleanupScanRootEvidence) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: rootStatusSymbol(root.status))
+                .foregroundStyle(rootStatusTint(root.status))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(root.name).font(.caption.weight(.semibold))
+                Text("\(root.pathHint) · \(rootStatusLabel(root.status))")
+                    .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(9)
+        .background(CNTheme.surfaceElevated, in: RoundedRectangle(cornerRadius: 9))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func rootStatusLabel(_ status: CleanupScanRootStatus) -> String {
+        switch status {
+        case .checked: return "已检查"
+        case .missing: return "位置不存在"
+        case .unreadable: return "当前不可读"
+        case .unsafe: return "安全校验未通过"
+        }
+    }
+
+    private func rootStatusSymbol(_ status: CleanupScanRootStatus) -> String {
+        switch status {
+        case .checked: return "checkmark.circle.fill"
+        case .missing: return "minus.circle"
+        case .unreadable: return "lock.circle"
+        case .unsafe: return "exclamationmark.shield"
+        }
+    }
+
+    private func rootStatusTint(_ status: CleanupScanRootStatus) -> Color {
+        switch status {
+        case .checked: return CNTheme.success
+        case .missing: return .secondary
+        case .unreadable: return CNTheme.warning
+        case .unsafe: return CNTheme.danger
+        }
+    }
+
+    private func skipDescription(_ skip: CleanupScanSkipEvidence) -> String {
+        let label: String
+        switch skip.reason {
+        case .cloudPlaceholder: label = "云端文件尚未完整下载"
+        case .symbolicLink: label = "符号链接不跟随"
+        case .packageBoundary: label = "App/资料库包内容不展开"
+        case .unreadable: label = "文件或目录当前不可读"
+        case .depthLimit: label = "超出本轮有界深度"
+        case .unsafeRoot: label = "根目录未通过安全检查"
+        case .fileLimit: label = "达到本轮文件上限"
+        case .hashLimit: label = "达到本轮哈希上限"
+        }
+        return "\(label) · \(skip.count)"
+    }
+
+    private func skipSymbol(_ reason: CleanupScanSkipReason) -> String {
+        switch reason {
+        case .cloudPlaceholder: return "icloud.and.arrow.down"
+        case .symbolicLink: return "link.badge.plus"
+        case .packageBoundary: return "shippingbox"
+        case .unreadable: return "lock"
+        case .depthLimit: return "arrow.down.to.line.compact"
+        case .unsafeRoot: return "exclamationmark.shield"
+        case .fileLimit, .hashLimit: return "gauge.with.dots.needle.67percent"
+        }
+    }
+}
+
+private struct MountedInstallerVolumesCard: View {
+    let volumes: [MountedInstallerVolume]
+    let ejectingID: String?
+    let onEject: (MountedInstallerVolume) -> Void
+
+    var body: some View {
+        SurfaceCard {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    Image(systemName: "externaldrive.badge.checkmark")
+                        .foregroundStyle(CNTheme.warning)
+                        .frame(width: 32, height: 32)
+                        .background(CNTheme.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("已挂载安装介质")
+                            .font(.headline)
+                        Text("与可删除的安装包分开管理；不会把 /Volumes 内容加入清理清单。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    StatusPill(text: CNL10n.format("%d 个", volumes.count), symbol: "externaldrive")
+                }
+
+                Divider()
+
+                VStack(spacing: 0) {
+                    ForEach(Array(volumes.enumerated()), id: \.element.id) { index, volume in
+                        mountedVolumeRow(volume)
+                        if index < volumes.count - 1 {
+                            Divider().padding(.leading, 42)
+                        }
+                    }
                 }
             }
         }
     }
 
-    private var limitDetail: String {
-        var messages: [String] = []
-        if insights.wasLimited { messages.append(CNL10n.string("为控制耗时，本轮在文件或哈希上限处停止；结果是部分集合。")) }
-        if insights.skippedCloudItemCount > 0 {
-            messages.append(CNL10n.format("跳过 %d 个尚未完整下载的云端占位文件，避免触发下载。", insights.skippedCloudItemCount))
+    private func mountedVolumeRow(_ volume: MountedInstallerVolume) -> some View {
+        HStack(spacing: 11) {
+            CNIconTile(symbol: "externaldrive.fill", tint: CNTheme.warning, size: 32)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 7) {
+                    Text(volume.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    StatusPill(
+                        text: volume.sourceExists ? "原始包仍在" : "仅剩挂载卷",
+                        symbol: volume.sourceExists ? "checkmark.circle" : "exclamationmark.triangle",
+                        style: volume.sourceExists ? .success : .warning
+                    )
+                }
+                Text(volume.mountURL.path)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(sourceDetail(volume))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 10)
+
+            if let imageBytes = volume.imageBytes {
+                Text(CleanNestFormatting.bytes(imageBytes))
+                    .font(.caption.weight(.semibold))
+                    .monospacedMetric()
+                    .foregroundStyle(.secondary)
+            }
+
+            Button {
+                onEject(volume)
+            } label: {
+                if ejectingID == volume.id {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("推出…", systemImage: "eject")
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(ejectingID != nil)
+            .help("不删除原始安装包，只安全卸载当前磁盘映像")
         }
-        return messages.joined(separator: " ")
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func sourceDetail(_ volume: MountedInstallerVolume) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let source = volume.sourceURL.path.replacingOccurrences(of: home, with: "~")
+        if volume.sourceExists {
+            return CNL10n.format("原始安装包：%@；推出不会删除它。", source)
+        }
+        return CNL10n.format("原始路径已不存在：%@；推出后需重新下载才能再打开。", source)
     }
 }
 
@@ -338,9 +642,30 @@ private struct CleanupGroup: View {
         candidates.reduce(0) { $0 + (store.selectedCleanupIDs.contains($1.id) ? 1 : 0) }
     }
     private var allSelected: Bool { !candidates.isEmpty && selectedCount == candidates.count }
-    private var selectionTitle: String {
-        if allSelected { return "取消全选" }
-        return kind == .screenshot ? "全选截图" : "全选本组"
+    private var showsMediaClusters: Bool {
+        kind == .screenshot || kind == .image || kind == .video || kind == .audio
+    }
+    private var mediaClusterLabels: [String] {
+        guard showsMediaClusters else { return [] }
+        let summary = CleanupMediaClusterSummary(candidates: candidates)
+        let timeLabels: [(CleanupMediaTimeBucket, String)] = [
+            (.recent, "近 30 天"),
+            (.aging, "30–90 天"),
+            (.old, "90 天以上"),
+            (.unknown, "时间未知")
+        ]
+        let sizeLabels: [(CleanupMediaSizeBucket, String)] = [
+            (.under100MB, "< 100 MB"),
+            (.from100MBTo1GB, "100 MB–1 GB"),
+            (.over1GB, "> 1 GB")
+        ]
+        return timeLabels.compactMap { bucket, label in
+            guard let count = summary.timeCounts[bucket], count > 0 else { return nil }
+            return "\(label) \(count)"
+        } + sizeLabels.compactMap { bucket, label in
+            guard let count = summary.sizeCounts[bucket], count > 0 else { return nil }
+            return "\(label) \(count)"
+        }
     }
 
     init(kind: CleanupKind, candidates: [CleanupCandidate]) {
@@ -379,17 +704,56 @@ private struct CleanupGroup: View {
                     .accessibilityLabel(CNL10n.format("%@，%d 项，%@", CNL10n.string(kind.rawValue), candidates.count, CleanNestFormatting.bytes(total)))
                     .accessibilityHint(CNL10n.string(isExpanded ? "收起分组" : "展开查看全部项目"))
 
-                    Button {
-                        store.setCleanupSelection(candidates, selected: !allSelected)
-                    } label: {
-                        Label(
-                            CNL10n.string(selectionTitle),
-                            systemImage: allSelected ? "checkmark.square.fill" : "checkmark.square"
-                        )
+                    if kind == .screenshot {
+                        HStack(spacing: 6) {
+                            Button {
+                                store.setCleanupSelection(candidates, selected: !allSelected)
+                            } label: {
+                                Label(
+                                    allSelected ? "取消全选" : "全选截图",
+                                    systemImage: allSelected ? "checkmark.square.fill" : "checkmark.square"
+                                )
+                            }
+                            Button {
+                                store.invertCleanupSelection(candidates)
+                            } label: {
+                                Label("反选截图", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    } else {
+                        Button {
+                            store.setCleanupSelection(candidates, selected: !allSelected)
+                        } label: {
+                            Label(
+                                allSelected ? "取消全选" : "全选本组",
+                                systemImage: allSelected ? "checkmark.square.fill" : "checkmark.square"
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .accessibilityHint(CNL10n.format("仅修改 %@ 分组的勾选，不会立即移动文件", CNL10n.string(kind.rawValue)))
+                }
+
+                if showsMediaClusters, !mediaClusterLabels.isEmpty {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 112), spacing: 7)],
+                        alignment: .leading,
+                        spacing: 7
+                    ) {
+                        ForEach(mediaClusterLabels, id: \.self) { label in
+                            Text(label)
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(CNTheme.violet.opacity(0.08), in: Capsule())
+                        }
+                    }
+                    .padding(.top, 9)
+                    .accessibilityLabel("媒体时间与体积分组：\(mediaClusterLabels.joined(separator: "，"))")
                 }
 
                 if isExpanded {
@@ -459,6 +823,20 @@ private struct CleanupRow: View {
                 Text("\(candidate.detail) · \(CleanNestFormatting.age(from: candidate.modifiedAt))")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+                if let duplicate = candidate.duplicateEvidence {
+                    Label(
+                        "保留副本：\(redactedPath(duplicate.retainedURL)) · 本组 \(duplicate.groupFileCount) 份",
+                        systemImage: "checkmark.shield"
+                    )
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(CNTheme.success)
+                    .lineLimit(2)
+                    .help("移动前会重新计算候选与这份保留副本的完整 SHA-256")
+                } else if candidate.kind == .duplicate {
+                    Label("未找到可验证的保留副本；本项不会通过执行前重验", systemImage: "exclamationmark.shield")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(CNTheme.warning)
+                }
                 if let advice = aiAdvice {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         StatusPill(
@@ -578,6 +956,13 @@ private struct CleanupRow: View {
         return "本机记录"
     }
 
+    private func redactedPath(_ url: URL) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        guard path == home || path.hasPrefix(home + "/") else { return path }
+        return "~" + String(path.dropFirst(home.count))
+    }
+
     private var reviewStatus: (text: String, symbol: String, style: StatusPill.Style) {
         if candidate.duplicateEvidence != nil {
             return ("字节完全相同", "checkmark.seal", .success)
@@ -687,7 +1072,7 @@ private struct LocalAIAdviceCard: View {
         } else if store.localAIServiceState.isBusy {
             ProgressView().controlSize(.small)
         } else {
-            Button("在设置中连接") { store.selection = .settings }
+            Button("在设置中连接") { store.openSettings(.localAI) }
         }
     }
 

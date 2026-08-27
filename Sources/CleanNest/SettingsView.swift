@@ -12,27 +12,20 @@ struct SettingsView: View {
     @State private var showsResetPreferencesConfirmation = false
     @State private var engineAdvancedExpanded = false
     @State private var localAIAdvancedExpanded = false
+    @State private var alertThresholdsExpanded = false
+    @State private var nativeMonitorSample: NativeMonitorSample? = nil
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 PageHeader(
                     title: "设置",
-                    subtitle: "引擎、权限与扫描范围都由你掌控。"
+                    subtitle: "先选分栏，再只看这一类设置；不需要翻过无关卡片。"
                 )
 
+                sectionNavigation
                 readinessDeck
-                menuBarCard
-                localAICard
-
-                LazyVGrid(columns: settingsGridColumns, alignment: .leading, spacing: 16) {
-                    engineCard
-                    permissionCard
-                    metricsCard
-                    scanningCard
-                    mcpCard
-                    aboutCard
-                }
+                selectedSectionContent
             }
             .frame(maxWidth: CNTheme.contentMaxWidth, alignment: .leading)
             .padding(CNTheme.pagePadding)
@@ -40,15 +33,19 @@ struct SettingsView: View {
         .onAppear {
             syncLocalAIDrafts()
             store.refreshLaunchAtLoginStatus()
-            if store.localAIAvailableModels.isEmpty {
-                Task { await store.refreshLocalModelCatalog() }
-            }
             localAIAdvancedExpanded = !store.localAIIsReady
+        }
+        .task(id: store.selectedSettingsSection) {
+            if store.selectedSettingsSection == .localAI {
+                syncLocalAIDrafts()
+            }
+            await store.activateSettingsSection(store.selectedSettingsSection)
         }
         .onChange(of: localAIEndpointDraft) { store.clearLocalAIConfigurationError() }
         .onChange(of: localAIServiceModelIDDraft) { store.clearLocalAIConfigurationError() }
         .onChange(of: localAIModelPathDraft) { store.clearLocalAIConfigurationError() }
         .onChange(of: localAIExecutablePathDraft) { store.clearLocalAIConfigurationError() }
+        .onReceive(store.nativeMonitorSamplePublisher) { nativeMonitorSample = $0 }
         .confirmationDialog(
             "清空所有本机历史指标？",
             isPresented: $showsClearMetricsConfirmation,
@@ -78,8 +75,55 @@ struct SettingsView: View {
         }
     }
 
-    private var settingsGridColumns: [GridItem] {
-        [GridItem(.adaptive(minimum: 360), spacing: 16, alignment: .top)]
+    private var sectionNavigation: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 9) {
+                ForEach(CleanNestSettingsSection.allCases) { section in
+                    SettingsSectionTab(
+                        section: section,
+                        isSelected: store.selectedSettingsSection == section
+                    ) {
+                        store.selectedSettingsSection = section
+                    }
+                }
+            }
+            .padding(.vertical, 2)
+        }
+        .accessibilityLabel("设置分栏")
+    }
+
+    @ViewBuilder
+    private var selectedSectionContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ContentSectionHeader(
+                store.selectedSettingsSection.title,
+                detail: store.selectedSettingsSection.subtitle,
+                symbol: store.selectedSettingsSection.symbol,
+                tint: store.selectedSettingsSection.tint
+            ) {
+                StatusPill(text: "当前分栏", symbol: "checkmark", style: .neutral)
+            }
+
+            switch store.selectedSettingsSection {
+            case .general:
+                engineCard
+            case .menuBar:
+                menuBarCard
+            case .scanAndPrivacy:
+                permissionCard
+                scanningCard
+            case .localAI:
+                localAICard
+            case .historyAndStorage:
+                metricsCard
+                activityStorageCard
+            case .advanced:
+                mcpCard
+            case .about:
+                aboutCard
+            }
+        }
+        .id(store.selectedSettingsSection)
     }
 
     private var readinessDeck: some View {
@@ -90,27 +134,30 @@ struct SettingsView: View {
                     status: store.engine == nil ? "需要连接" : "运行正常",
                     detail: store.engine?.version ?? "Mole CLI",
                     symbol: "gearshape.2",
-                    tint: store.engine == nil ? CNTheme.warning : CNTheme.success
+                    tint: store.engine == nil ? CNTheme.warning : CNTheme.success,
+                    section: .general
                 )
                 readinessItem(
                     title: "本机 AI 分析",
                     status: store.localAIIsReady ? "模型已连接" : "等待设置",
                     detail: store.localAIIsReady ? store.localAIModelDisplayName : "普通扫描仍可继续使用。",
                     symbol: "brain.head.profile",
-                    tint: store.localAIIsReady ? CNTheme.cyan : CNTheme.warning
+                    tint: store.localAIIsReady ? CNTheme.cyan : CNTheme.warning,
+                    section: .localAI
                 )
                 readinessItem(
                     title: "文件访问",
                     status: fullDiskAccessStatusText,
                     detail: "由 CleanNest 自身实测",
                     symbol: "lock.shield",
-                    tint: store.fullDiskAccessProbeResult == .accessible ? CNTheme.success : CNTheme.warning
+                    tint: store.fullDiskAccessProbeResult == .accessible ? CNTheme.success : CNTheme.warning,
+                    section: .scanAndPrivacy
                 )
             }
             VStack(spacing: 10) {
-                readinessItem(title: "本地引擎", status: store.engine == nil ? "需要连接" : "运行正常", detail: store.engine?.version ?? "Mole CLI", symbol: "gearshape.2", tint: store.engine == nil ? CNTheme.warning : CNTheme.success)
-                readinessItem(title: "本机 AI 分析", status: store.localAIIsReady ? "模型已连接" : "等待设置", detail: store.localAIIsReady ? store.localAIModelDisplayName : "普通扫描仍可继续使用。", symbol: "brain.head.profile", tint: store.localAIIsReady ? CNTheme.cyan : CNTheme.warning)
-                readinessItem(title: "文件访问", status: fullDiskAccessStatusText, detail: "由 CleanNest 自身实测", symbol: "lock.shield", tint: store.fullDiskAccessProbeResult == .accessible ? CNTheme.success : CNTheme.warning)
+                readinessItem(title: "本地引擎", status: store.engine == nil ? "需要连接" : "运行正常", detail: store.engine?.version ?? "Mole CLI", symbol: "gearshape.2", tint: store.engine == nil ? CNTheme.warning : CNTheme.success, section: .general)
+                readinessItem(title: "本机 AI 分析", status: store.localAIIsReady ? "模型已连接" : "等待设置", detail: store.localAIIsReady ? store.localAIModelDisplayName : "普通扫描仍可继续使用。", symbol: "brain.head.profile", tint: store.localAIIsReady ? CNTheme.cyan : CNTheme.warning, section: .localAI)
+                readinessItem(title: "文件访问", status: fullDiskAccessStatusText, detail: "由 CleanNest 自身实测", symbol: "lock.shield", tint: store.fullDiskAccessProbeResult == .accessible ? CNTheme.success : CNTheme.warning, section: .scanAndPrivacy)
             }
         }
     }
@@ -120,32 +167,45 @@ struct SettingsView: View {
         status: String,
         detail: String,
         symbol: String,
-        tint: Color
+        tint: Color,
+        section: CleanNestSettingsSection
     ) -> some View {
-        HStack(spacing: 12) {
-            CNIconTile(symbol: symbol, tint: tint, size: 36)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(CNL10n.string(title))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(CNL10n.string(status))
-                    .font(.system(size: 14.5, weight: .semibold))
-                Text(CNL10n.string(detail))
-                    .font(.caption2)
+        Button {
+            store.selectedSettingsSection = section
+        } label: {
+            HStack(spacing: 12) {
+                CNIconTile(symbol: symbol, tint: tint, size: 36)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(CNL10n.string(title))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(CNL10n.string(status))
+                        .font(.system(size: 14.5, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text(CNL10n.string(detail))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 6)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
             }
-            Spacer(minLength: 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 15)
+            .padding(.vertical, 13)
+            .contentShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 15)
-        .padding(.vertical, 13)
+        .buttonStyle(.plain)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 17, style: .continuous)
                 .stroke(Color.white.opacity(0.085), lineWidth: 0.65)
         )
+        .accessibilityLabel(CNL10n.format("%@：%@。%@", title, status, detail))
+        .accessibilityHint("打开" + section.title + "设置")
     }
 
     private var engineCard: some View {
@@ -317,15 +377,15 @@ struct SettingsView: View {
                         Picker("", selection: Binding(
                             get: {
                                 store.menuBarConfiguration.selectedNetworkInterface
-                                    ?? store.nativeMonitorSample?.availableNetworkInterfaces.first
+                                    ?? nativeMonitorSample?.availableNetworkInterfaces.first
                                     ?? ""
                             },
                             set: { store.setMenuBarNetworkInterface($0.isEmpty ? nil : $0) }
                         )) {
-                            if store.nativeMonitorSample?.availableNetworkInterfaces.isEmpty != false {
+                            if nativeMonitorSample?.availableNetworkInterfaces.isEmpty != false {
                                 Text("未找到活动接口").tag("")
                             }
-                            ForEach(store.nativeMonitorSample?.availableNetworkInterfaces ?? [], id: \.self) {
+                            ForEach(nativeMonitorSample?.availableNetworkInterfaces ?? [], id: \.self) {
                                 Text($0).tag($0)
                             }
                         }
@@ -339,8 +399,19 @@ struct SettingsView: View {
                 InlineBanner(
                     title: "菜单栏空间检查",
                     detail: store.menuBarVisibilityDiagnostic,
-                    kind: store.menuBarVisibilityDiagnostic.contains("隐藏") ? .warning : .success
+                    kind: store.menuBarVisibilityDiagnostic.contains("隐藏")
+                        || store.menuBarVisibilityDiagnostic.contains("收进")
+                        ? .warning
+                        : .success
                 )
+
+                InlineBanner(
+                    title: "异常状态会自动高亮",
+                    detail: "橙色与 ! 表示需要留意，红色与 !! 表示严重。判定结合 macOS 热状态、CPU/电池温度、内存压力、磁盘容量、低电量和风扇相对转速；CPU、GPU 或网络繁忙本身不会被当成故障。",
+                    kind: .info
+                )
+
+                alertThresholdSettings
 
                 LazyVGrid(
                     columns: [GridItem(.adaptive(minimum: 230), spacing: 10, alignment: .top)],
@@ -427,6 +498,169 @@ struct SettingsView: View {
         .background(CNTheme.surfaceSubtle, in: RoundedRectangle(cornerRadius: 13))
     }
 
+    private var alertThresholdSettings: some View {
+        DisclosureGroup(isExpanded: $alertThresholdsExpanded) {
+            VStack(alignment: .leading, spacing: 12) {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 260), spacing: 10, alignment: .top)],
+                    spacing: 10
+                ) {
+                    thresholdPair(
+                        title: "CPU 温度",
+                        detail: "传感器值；macOS 热状态仍可独立触发。",
+                        warning: alertThresholdBinding(\.cpuTemperatureWarningCelsius),
+                        critical: alertThresholdBinding(\.cpuTemperatureCriticalCelsius),
+                        range: 60...110,
+                        suffix: "°C"
+                    )
+                    thresholdPair(
+                        title: "电池温度",
+                        detail: "只在硬件返回电池传感器时生效。",
+                        warning: alertThresholdBinding(\.batteryTemperatureWarningCelsius),
+                        critical: alertThresholdBinding(\.batteryTemperatureCriticalCelsius),
+                        range: 30...60,
+                        suffix: "°C"
+                    )
+                    thresholdPair(
+                        title: "磁盘剩余",
+                        detail: "剩余比例低于阈值时提醒。",
+                        warning: alertThresholdBinding(\.diskFreeWarningPercent),
+                        critical: alertThresholdBinding(\.diskFreeCriticalPercent),
+                        range: 1...30,
+                        suffix: "%"
+                    )
+                    thresholdPair(
+                        title: "电池余量",
+                        detail: "连接电源或充电时不告警。",
+                        warning: alertThresholdBinding(\.batteryLowWarningPercent),
+                        critical: alertThresholdBinding(\.batteryLowCriticalPercent),
+                        range: 2...40,
+                        suffix: "%"
+                    )
+                    singleThreshold(
+                        title: "风扇相对负载",
+                        detail: "按该机型报告的最大转速比例，不使用通用 RPM。",
+                        value: alertThresholdBinding(\.fanLoadWarningPercent),
+                        range: 60...100,
+                        suffix: "%"
+                    )
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("内存压力")
+                            .font(.caption.weight(.semibold))
+                        Text("macOS 只提供正常、警告、严重等级，不伪造百分比阈值。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Toggle("警告等级就提醒", isOn: Binding(
+                            get: { store.menuBarConfiguration.alertThresholds.memoryPressureWarningEnabled },
+                            set: { value in
+                                store.updateNativeAlertThresholds {
+                                    $0.memoryPressureWarningEnabled = value
+                                }
+                            }
+                        ))
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(11)
+                    .background(CNTheme.surfaceSubtle, in: RoundedRectangle(cornerRadius: 12))
+                }
+
+                HStack {
+                    Text("菜单栏、弹出面板、系统状态页和告警时间线共用这一份设置。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("恢复保守预设") { store.resetNativeAlertThresholds() }
+                        .controlSize(.small)
+                }
+            }
+            .padding(.top, 12)
+        } label: {
+            HStack(spacing: 10) {
+                CNIconTile(symbol: "gauge.with.dots.needle.67percent", tint: CNTheme.warning, size: 34)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("异常阈值")
+                        .font(.subheadline.weight(.semibold))
+                    Text("保守预设可调整；每次变色都能回到同一条规则。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .stroke(CNTheme.warning.opacity(0.18), lineWidth: 0.7)
+        )
+    }
+
+    private func alertThresholdBinding(
+        _ keyPath: WritableKeyPath<NativeAlertThresholds, Double>
+    ) -> Binding<Double> {
+        Binding(
+            get: { store.menuBarConfiguration.alertThresholds[keyPath: keyPath] },
+            set: { value in
+                store.updateNativeAlertThresholds { $0[keyPath: keyPath] = value }
+            }
+        )
+    }
+
+    private func thresholdPair(
+        title: String,
+        detail: String,
+        warning: Binding<Double>,
+        critical: Binding<Double>,
+        range: ClosedRange<Double>,
+        suffix: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.caption.weight(.semibold))
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Stepper(value: warning, in: range, step: 1) {
+                    Text("提醒 \(Int(warning.wrappedValue.rounded()))\(suffix)")
+                        .font(.caption.monospacedDigit())
+                }
+                Stepper(value: critical, in: range, step: 1) {
+                    Text("严重 \(Int(critical.wrappedValue.rounded()))\(suffix)")
+                        .font(.caption.monospacedDigit())
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(CNTheme.surfaceSubtle, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func singleThreshold(
+        title: String,
+        detail: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        suffix: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.caption.weight(.semibold))
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Stepper(value: value, in: range, step: 1) {
+                Text("提醒 \(Int(value.wrappedValue.rounded()))\(suffix)")
+                    .font(.caption.monospacedDigit())
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(CNTheme.surfaceSubtle, in: RoundedRectangle(cornerRadius: 12))
+    }
+
     private var networkModeDetail: String {
         switch store.menuBarConfiguration.networkMode {
         case .physicalAggregate:
@@ -498,11 +732,11 @@ struct SettingsView: View {
     }
 
     private func menuBarMetricIsAvailable(_ metric: MenuBarMetric) -> Bool {
-        store.nativeMonitorSample?.isAvailable(metric) == true
+        nativeMonitorSample?.isAvailable(metric) == true
     }
 
     private func menuBarMetricAvailability(_ metric: MenuBarMetric) -> String {
-        guard let sample = store.nativeMonitorSample else { return "等待首个样本" }
+        guard let sample = nativeMonitorSample else { return "等待首个样本" }
         if metric == .fan, sample.fanCount == 0 { return "本机为无风扇设计" }
         guard sample.isAvailable(metric) else { return "当前硬件未返回有效值" }
         return sample.detailedValue(metric)
@@ -802,7 +1036,11 @@ struct SettingsView: View {
                 }
                 .disabled(!store.localAIEnabled || store.localAIServiceState.isBusy)
 
-                localAIWorkbench
+                InlineBanner(
+                    title: "启停与运行诊断已经归到本地模型中心",
+                    detail: "设置页只保存 CleanNest 要连接的回环地址、API 短名和自启程序；启动、停止、守护、端口与客户端实连请在运行中心处理。",
+                    kind: .info
+                )
 
                 if let configurationError = store.localAIConfigurationError {
                     Label(configurationError, systemImage: "exclamationmark.triangle.fill")
@@ -817,6 +1055,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 10)
                     Button("打开运行中心") { store.selection = .models }
+                        .buttonStyle(.borderedProminent)
                     Button("诊断详情") { store.showLocalAIDiagnostic() }
                     Button("仅保存并检测") {
                         Task {
@@ -825,166 +1064,9 @@ struct SettingsView: View {
                     }
                     .accessibilityIdentifier("localAI.saveAndProbe")
                     .disabled(!store.localAIEnabled || store.localAIServiceState.isBusy)
-                    if store.localAIProcessOwned {
-                        Button("停止模型") {
-                            Task { await store.stopOwnedLocalModelRuntime() }
-                        }
-                        .disabled(store.localAIServiceState.isBusy)
-                    } else if store.primaryLocalModelRuntime?.supervisor?.canDisableAndStop == true {
-                        Button("管理自动重启…") {
-                            store.selection = .models
-                        }
-                    } else if store.primaryLocalModelRuntime?.supervisor?.canEnable == true {
-                        Button("重新启用守护…") {
-                            store.selection = .models
-                        }
-                    } else if store.primaryLocalModelRuntime?.canRequestExternalStop == true {
-                        Button("管理外部服务…") {
-                            store.selection = .models
-                        }
-                    } else if store.localAIEnabled && (!store.localAIIsReady || localAIDraftIsDirty) {
-                        Button(CNL10n.string(localAIModelSelectionChanged ? "切换并启动" : "启动所选模型")) {
-                            Task {
-                                if await applyLocalAIDrafts(), !store.localAIIsReady {
-                                    await store.startConfiguredLocalModelRuntime()
-                                }
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("localAI.switchAndStart")
-                        .disabled(store.localAIServiceState.isBusy)
-                    }
                 }
             }
         }
-    }
-
-    private var localAIWorkbench: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 10) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Label("模型工作台", systemImage: "gauge.with.dots.needle.67percent")
-                        .font(.subheadline.weight(.semibold))
-                    Text("只对当前短 ID 发出一个“OK”最小请求；不发送扫描或文件元数据。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if store.localAIBenchmarkPhase.isRunning {
-                    ProgressView().controlSize(.small)
-                }
-                Button(store.localAIBenchmarkResult == nil ? "运行最小测速" : "重新测速") {
-                    Task { await store.runLocalAIBenchmark() }
-                }
-                .disabled(!store.localAIIsReady || store.localAIBenchmarkPhase.isRunning || localAIDraftIsDirty)
-            }
-
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    modelFact(
-                        "健康检查",
-                        store.localAIProbeLatencyMilliseconds.map { "\(Int($0.rounded())) ms" } ?? "—",
-                        store.localAIIsReady ? "回环服务可达" : "等待连接"
-                    )
-                    modelFact(
-                        "首字延迟",
-                        store.localAIBenchmarkResult.map { "\(Int($0.firstTokenMilliseconds.rounded())) ms" } ?? "—",
-                        "真实流式首个输出"
-                    )
-                    modelFact(
-                        "完整响应",
-                        benchmarkTotalValue,
-                        benchmarkThroughputDetail
-                    )
-                }
-                VStack(spacing: 10) {
-                    modelFact("健康检查", store.localAIProbeLatencyMilliseconds.map { "\(Int($0.rounded())) ms" } ?? "—", store.localAIIsReady ? "回环服务可达" : "等待连接")
-                    modelFact("首字延迟", store.localAIBenchmarkResult.map { "\(Int($0.firstTokenMilliseconds.rounded())) ms" } ?? "—", "真实流式首个输出")
-                    modelFact("完整响应", benchmarkTotalValue, benchmarkThroughputDetail)
-                }
-            }
-
-            if let model = selectedLocalAIModel {
-                Label(modelMemoryGuidance(model), systemImage: "memorychip")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            switch store.localAIBenchmarkPhase {
-            case .failed(let detail):
-                InlineBanner(
-                    title: "最小推理测速未完成",
-                    detail: detail,
-                    kind: .warning
-                )
-            case .completed:
-                if let result = store.localAIBenchmarkResult {
-                    Text("本次实测对象：\(result.modelID)。结果只代表当前机器、当前负载和这次极短输出，不等同于长文本吞吐。")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .textSelection(.enabled)
-                }
-            case .idle, .running:
-                EmptyView()
-            }
-        }
-        .padding(14)
-        .background(
-            LinearGradient(
-                colors: [CNTheme.violet.opacity(0.12), Color.clear],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: RoundedRectangle(cornerRadius: 17, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 17, style: .continuous)
-                .stroke(CNTheme.violet.opacity(0.16), lineWidth: 0.7)
-        )
-    }
-
-    private func modelFact(_ title: String, _ value: String, _ detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(size: 18, weight: .semibold, design: .rounded))
-                .monospacedMetric()
-            Text(detail).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(11)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-    }
-
-    private var benchmarkTotalValue: String {
-        store.localAIBenchmarkResult.map { "\(Int($0.totalMilliseconds.rounded())) ms" } ?? "—"
-    }
-
-    private var benchmarkThroughputDetail: String {
-        guard let result = store.localAIBenchmarkResult else { return "等待用户主动测速" }
-        if let rate = result.tokensPerSecond {
-            return String(format: "%.1f token/s · %d token", rate, result.outputTokens ?? 0)
-        }
-        return "\(result.outputCharacters) 个输出字符"
-    }
-
-    private func modelMemoryGuidance(_ model: LocalModelDescriptor) -> String {
-        let physical = store.systemSnapshot?.memoryTotalBytes
-            ?? Int64(clamping: ProcessInfo.processInfo.physicalMemory)
-        guard model.weightBytes > 0, physical > 0 else {
-            return "未取得完整权重或物理内存数据；是否可运行仍以实际载入结果为准。"
-        }
-        let ratio = Double(model.weightBytes) / Double(physical)
-        let verdict: String
-        if ratio <= 0.55 {
-            verdict = "权重仍为系统、KV 缓存和其他 App 留有较明显空间"
-        } else if ratio <= 0.75 {
-            verdict = "可用余量有限，长上下文或同时运行多个重型 App 时应观察内存压力"
-        } else {
-            verdict = "权重已接近本机物理内存，实际载入和长上下文可能出现明显压力"
-        }
-        return "模型权重约 \(CleanNestFormatting.bytes(model.weightBytes))，本机物理内存 \(CleanNestFormatting.bytes(physical))：\(verdict)。这不是峰值内存承诺。"
     }
 
     private var localAIStatusTitle: String {
@@ -1032,11 +1114,6 @@ struct SettingsView: View {
             || localAIServiceModelIDDraft != store.localAIServiceModelID
             || localAIModelPathDraft != store.localAIModelPath
             || localAIExecutablePathDraft != store.localAIExecutablePath
-    }
-
-    private var localAIModelSelectionChanged: Bool {
-        localAIServiceModelIDDraft != store.localAIServiceModelID
-            || localAIModelPathDraft != store.localAIModelPath
     }
 
     private var serviceModelAutomaticLabel: String {
@@ -1116,6 +1193,36 @@ struct SettingsView: View {
                     Button("清空…", role: .destructive) {
                         showsClearMetricsConfirmation = true
                     }
+                }
+            }
+        }
+    }
+
+    private var activityStorageCard: some View {
+        SurfaceCard(title: "活动与累计成果", symbol: "clock.arrow.circlepath", tint: CNTheme.mint) {
+            VStack(spacing: 0) {
+                settingsRow(
+                    symbol: "list.bullet.rectangle",
+                    title: "活动明细",
+                    detail: "保留最近 \(store.activities.count) 条，可搜索、筛选、导出或单独清空。"
+                ) {
+                    Button("管理明细") { store.selection = .activity }
+                }
+                Divider().padding(.leading, 43)
+                settingsRow(
+                    symbol: "chart.bar.xaxis",
+                    title: "累计成果",
+                    detail: "已处理 \(CleanNestFormatting.bytes(store.activityLifetimeTotals.processedBytes))；清空活动明细不会让这些计数归零。"
+                ) {
+                    StatusPill(text: "独立保存", symbol: "checkmark", style: .success)
+                }
+                Divider().padding(.leading, 43)
+                settingsRow(
+                    symbol: "folder",
+                    title: "本机存储边界",
+                    detail: "活动明细、累计成果与历史指标分别保存；删除其中一种不会连带删除另外两种。"
+                ) {
+                    StatusPill(text: "只在本机", symbol: "lock.shield", style: .success)
                 }
             }
         }
@@ -1380,5 +1487,93 @@ struct SettingsView: View {
         )
         if applied { syncLocalAIDrafts() }
         return applied
+    }
+}
+
+private struct SettingsSectionTab: View {
+    let section: CleanNestSettingsSection
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: section.symbol)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(section.title)
+                    .font(.caption.weight(.semibold))
+                Image(systemName: "checkmark")
+                    .font(.caption2.weight(.bold))
+                    .opacity(isSelected ? 1 : 0)
+            }
+            .foregroundStyle(isSelected ? section.tint : Color.secondary)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 10)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .background(tabBackground, in: Capsule())
+        .overlay(Capsule().stroke(tabBorder, lineWidth: 0.7))
+        .accessibilityLabel(section.title + "设置")
+        .accessibilityValue(isSelected ? "当前分栏" : "未选中")
+        .accessibilityHint("仅显示" + section.title + "设置")
+    }
+
+    private var tabBackground: Color {
+        isSelected ? section.tint.opacity(0.14) : Color.primary.opacity(0.045)
+    }
+
+    private var tabBorder: Color {
+        isSelected ? section.tint.opacity(0.30) : Color.white.opacity(0.07)
+    }
+}
+
+private extension CleanNestSettingsSection {
+    var title: String {
+        switch self {
+        case .general: return "常规"
+        case .menuBar: return "菜单栏"
+        case .scanAndPrivacy: return "扫描与隐私"
+        case .localAI: return "本机 AI"
+        case .historyAndStorage: return "历史与存储"
+        case .advanced: return "高级"
+        case .about: return "关于"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .general: return "连接可替换的本地引擎；普通使用不需要终端。"
+        case .menuBar: return "控制常驻指标、排版、刷新频率、登录启动和快捷键。"
+        case .scanAndPrivacy: return "明确扫描范围、完全磁盘访问实测与不可关闭的安全保护。"
+        case .localAI: return "保存回环连接和模型短名；日常启停回到本地模型运行中心。"
+        case .historyAndStorage: return "分别管理指标、活动明细和不会随明细清空的累计成果。"
+        case .advanced: return "面向 AI 客户端的只读 MCP 与可审计集成边界。"
+        case .about: return "版本、更新、开源归属和恢复安全默认设置。"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: return "gearshape"
+        case .menuBar: return "menubar.rectangle"
+        case .scanAndPrivacy: return "lock.shield"
+        case .localAI: return "brain.head.profile"
+        case .historyAndStorage: return "externaldrive.badge.clock"
+        case .advanced: return "slider.horizontal.3"
+        case .about: return "info.circle"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .general: return CNTheme.cyan
+        case .menuBar: return CNTheme.accent
+        case .scanAndPrivacy: return CNTheme.success
+        case .localAI: return CNTheme.violet
+        case .historyAndStorage: return CNTheme.mint
+        case .advanced: return CNTheme.warning
+        case .about: return CNTheme.mint
+        }
     }
 }

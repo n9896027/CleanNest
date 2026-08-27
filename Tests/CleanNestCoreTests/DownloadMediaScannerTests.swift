@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import CleanNestCore
@@ -120,6 +121,75 @@ final class DownloadMediaScannerTests: XCTestCase {
         XCTAssertEqual(result.insights.installerCount, 2)
         XCTAssertEqual(result.insights.archiveCount, 1)
         XCTAssertEqual(result.insights.mediaCount, 3)
+    }
+
+    func testDesktopInstallersAreIncludedWithoutTreatingOrdinaryDesktopArchivesAsCleanup() async throws {
+        let home = try makeTemporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let desktop = home.appendingPathComponent("Desktop", isDirectory: true)
+        let downloads = home.appendingPathComponent("Downloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: desktop, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
+
+        let desktopDMG = desktop.appendingPathComponent("Desktop Utility.dmg")
+        let desktopInstallerZIP = desktop.appendingPathComponent("Desktop Utility.zip")
+        let desktopDocumentsZIP = desktop.appendingPathComponent("Unique Documents.zip")
+        let downloadedDocumentsZIP = downloads.appendingPathComponent("Downloaded Documents.zip")
+        try Data(repeating: 0x51, count: 128).write(to: desktopDMG)
+        try centralDirectoryData(entryName: "Utility.app/Contents/Info.plist")
+            .write(to: desktopInstallerZIP)
+        let genericArchive = centralDirectoryData(entryName: "documents/report.pdf")
+        try genericArchive.write(to: desktopDocumentsZIP)
+        try genericArchive.write(to: downloadedDocumentsZIP)
+
+        let result = await DownloadMediaScanner(homeDirectory: home).scan(
+            includeMediaAndDuplicates: false
+        )
+        let byPath = Dictionary(uniqueKeysWithValues: result.candidates.map { ($0.url.path, $0) })
+
+        XCTAssertEqual(byPath[desktopDMG.path]?.kind, .installer)
+        XCTAssertTrue(byPath[desktopDMG.path]?.detail.contains("来自桌面") == true)
+        XCTAssertEqual(byPath[desktopInstallerZIP.path]?.kind, .installer)
+        XCTAssertNil(byPath[desktopDocumentsZIP.path])
+        XCTAssertEqual(byPath[downloadedDocumentsZIP.path]?.kind, .archive)
+        XCTAssertEqual(result.insights.installerCount, 2)
+        XCTAssertEqual(result.insights.archiveCount, 1)
+        XCTAssertEqual(result.roots.map(\.name), ["桌面", "下载"])
+    }
+
+    func testScannerReportsSymlinkPackageAndDepthSkipsWithoutFollowingThem() async throws {
+        let home = try makeTemporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let desktop = home.appendingPathComponent("Desktop", isDirectory: true)
+        let downloads = home.appendingPathComponent("Downloads", isDirectory: true)
+        let outside = home.appendingPathComponent("outside.dmg")
+        try FileManager.default.createDirectory(at: desktop, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
+        try Data(repeating: 0x31, count: 256).write(to: outside)
+        try FileManager.default.createSymbolicLink(
+            at: desktop.appendingPathComponent("linked-installer.dmg"),
+            withDestinationURL: outside
+        )
+
+        let package = downloads.appendingPathComponent("Wrapped.app/Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        try Data(repeating: 0x32, count: 256).write(to: package.appendingPathComponent("inside.dmg"))
+        let deep = downloads.appendingPathComponent("LevelOne/LevelTwo", isDirectory: true)
+        try FileManager.default.createDirectory(at: deep, withIntermediateDirectories: true)
+        try Data(repeating: 0x33, count: 256).write(to: deep.appendingPathComponent("deep.dmg"))
+
+        let result = await DownloadMediaScanner(
+            homeDirectory: home,
+            configuration: DownloadMediaScanConfiguration(maximumDepth: 1)
+        ).scan(includeMediaAndDuplicates: true)
+
+        XCTAssertFalse(result.candidates.contains { $0.url.lastPathComponent == "linked-installer.dmg" })
+        XCTAssertFalse(result.candidates.contains { $0.url.lastPathComponent == "inside.dmg" })
+        XCTAssertFalse(result.candidates.contains { $0.url.lastPathComponent == "deep.dmg" })
+        XCTAssertGreaterThanOrEqual(result.insights.skippedSymbolicLinkCount, 1)
+        XCTAssertGreaterThanOrEqual(result.insights.skippedPackageCount, 1)
+        XCTAssertGreaterThanOrEqual(result.insights.skippedDepthLimitCount, 1)
     }
 
     func testDuplicateDetectionKeepsStableCopyAndRejectsChangedRetainedFile() async throws {
@@ -259,6 +329,54 @@ final class DownloadMediaScannerTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(outcomes.first).succeeded)
         XCTAssertEqual(outcomes.first?.failureKind, .targetChanged)
         XCTAssertTrue(FileManager.default.fileExists(atPath: candidate.url.path))
+    }
+
+    func testRetainedDuplicateFullDigestIsRecomputedEvenWhenIdentityIsRestored() async throws {
+        let home = try makeTemporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let documents = home.appendingPathComponent("Documents", isDirectory: true)
+        let downloads = home.appendingPathComponent("Downloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
+        let retained = documents.appendingPathComponent("original.bin")
+        let duplicate = downloads.appendingPathComponent("copy.bin")
+        let original = Data(repeating: 0x41, count: 1_048_576)
+        try original.write(to: retained)
+        try original.write(to: duplicate)
+        var retainedStat = stat()
+        XCTAssertEqual(retained.path.withCString { lstat($0, &retainedStat) }, 0)
+
+        let result = await DownloadMediaScanner(
+            homeDirectory: home,
+            configuration: DownloadMediaScanConfiguration(
+                maximumDepth: 2,
+                maximumFiles: 1_000,
+                maximumHashCandidates: 100,
+                minimumDuplicateBytes: 1,
+                mediaMinimumAgeDays: 99
+            )
+        ).scan(includeMediaAndDuplicates: true)
+        let candidate = try XCTUnwrap(result.candidates.first { $0.kind == .duplicate })
+        let evidence = try XCTUnwrap(candidate.duplicateEvidence)
+        XCTAssertEqual(evidence.retainedURL, retained)
+
+        let handle = try FileHandle(forWritingTo: retained)
+        try handle.seek(toOffset: 0)
+        try handle.write(contentsOf: Data(repeating: 0x42, count: original.count))
+        try handle.synchronize()
+        try handle.close()
+        let originalTimes = [retainedStat.st_atimespec, retainedStat.st_mtimespec]
+        let timestampStatus = originalTimes.withUnsafeBufferPointer { times in
+            retained.path.withCString {
+                utimensat(AT_FDCWD, $0, times.baseAddress, 0)
+            }
+        }
+        XCTAssertEqual(timestampStatus, 0)
+        XCTAssertEqual(try CleanupFileIdentity.capture(at: retained), evidence.retainedIdentity)
+
+        XCTAssertThrowsError(try CleanupEvidenceValidator.validate(candidate)) { error in
+            XCTAssertEqual(error as? CleanupEvidenceError, .duplicateContentChanged)
+        }
     }
 
     func testZIPCentralDirectoryClassificationDoesNotTreatGenericArchiveAsInstaller() {

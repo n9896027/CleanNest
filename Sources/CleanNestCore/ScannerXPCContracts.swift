@@ -2,7 +2,7 @@ import Foundation
 
 public enum CleanNestScannerService {
     public static let bundleIdentifier = "com.zone.cleannest.scanner"
-    public static let protocolVersion = 1
+    public static let protocolVersion = 6
 }
 
 /// The XPC boundary intentionally transports only JSON `Data`. This keeps the
@@ -12,6 +12,7 @@ public enum CleanNestScannerService {
     func protocolVersion(withReply reply: @escaping (Int) -> Void)
     func scanCleanup(_ requestData: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
     func scanDisk(_ requestData: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
+    func scanAgentWorkspace(_ requestData: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
     func progress(for requestID: String, withReply reply: @escaping (Data?) -> Void)
     func cancel(requestID: String, withReply reply: @escaping () -> Void)
 }
@@ -19,6 +20,7 @@ public enum CleanNestScannerService {
 public enum ScannerOperationKind: String, Codable, Sendable {
     case cleanup
     case disk
+    case agentWorkspace
 }
 
 public enum ScannerProgressStage: String, Codable, Sendable {
@@ -27,7 +29,45 @@ public enum ScannerProgressStage: String, Codable, Sendable {
     case cleanupPersonalFiles
     case diskContents
     case diskEvidence
+    case agentWorkspaceMetadata
     case completed
+}
+
+public struct AgentWorkspaceScannerRequest: Codable, Equatable, Sendable {
+    public let requestID: String
+    public let homeDirectory: URL
+    public let previousObservation: AgentWorkspaceObservation?
+    public let ruleCatalog: AgentRuleCatalog
+    public let providers: [AgentWorkspaceProvider]?
+    public let detailProvider: AgentWorkspaceProvider?
+
+    public init(
+        requestID: String = UUID().uuidString,
+        homeDirectory: URL,
+        previousObservation: AgentWorkspaceObservation?,
+        ruleCatalog: AgentRuleCatalog = .builtIn,
+        providers: [AgentWorkspaceProvider]? = nil,
+        detailProvider: AgentWorkspaceProvider? = nil
+    ) {
+        self.requestID = requestID
+        self.homeDirectory = homeDirectory.standardizedFileURL
+        self.previousObservation = previousObservation
+        self.ruleCatalog = ruleCatalog
+        self.providers = providers
+        self.detailProvider = detailProvider
+    }
+}
+
+public struct AgentWorkspaceScannerResponse: Codable, Equatable, Sendable {
+    public let requestID: String
+    public let result: AgentWorkspaceScanResult
+    public let elapsedSeconds: Double
+
+    public init(requestID: String, result: AgentWorkspaceScanResult, elapsedSeconds: Double) {
+        self.requestID = requestID
+        self.result = result
+        self.elapsedSeconds = elapsedSeconds
+    }
 }
 
 public struct ScannerServiceProgress: Codable, Equatable, Sendable {
@@ -90,17 +130,20 @@ public struct CleanupScannerResponse: Codable, Equatable, Sendable {
     public let requestID: String
     public let candidates: [CleanupCandidate]
     public let insights: CleanupScanInsights
+    public let session: CleanupScanSession
     public let elapsedSeconds: Double
 
     public init(
         requestID: String,
         candidates: [CleanupCandidate],
         insights: CleanupScanInsights,
+        session: CleanupScanSession,
         elapsedSeconds: Double
     ) {
         self.requestID = requestID
         self.candidates = candidates
         self.insights = insights
+        self.session = session
         self.elapsedSeconds = elapsedSeconds
     }
 }

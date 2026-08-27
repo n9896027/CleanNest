@@ -7,6 +7,7 @@ public struct DiskScanCacheEntry: Codable, Equatable, Sendable {
     public let allocatedBytes: Int64
     public let isDirectory: Bool
     public let sampledAt: Date
+    public let traversal: FileTreeTraversalEvidence?
 
     public init(
         id: String,
@@ -14,7 +15,8 @@ public struct DiskScanCacheEntry: Codable, Equatable, Sendable {
         metadataSignature: String,
         allocatedBytes: Int64,
         isDirectory: Bool,
-        sampledAt: Date
+        sampledAt: Date,
+        traversal: FileTreeTraversalEvidence? = nil
     ) {
         self.id = id
         self.name = name
@@ -22,6 +24,7 @@ public struct DiskScanCacheEntry: Codable, Equatable, Sendable {
         self.allocatedBytes = allocatedBytes
         self.isDirectory = isDirectory
         self.sampledAt = sampledAt
+        self.traversal = traversal
     }
 }
 
@@ -40,7 +43,7 @@ public struct DiskScanCacheRoot: Codable, Equatable, Sendable {
 /// A bounded, local-only index used to avoid recomputing unchanged top-level
 /// subtrees. It stores no file contents and no absolute paths.
 public struct DiskScanCacheStore: Codable, Equatable, Sendable {
-    public static let schemaVersion = 1
+    public static let schemaVersion = 2
     public static let maximumRoots = 12
 
     public var schemaVersion: Int
@@ -82,10 +85,14 @@ public enum DiskScanCachePersistence {
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .millisecondsSince1970
-        let cache = try decoder.decode(DiskScanCacheStore.self, from: Data(contentsOf: url))
-        guard cache.schemaVersion == DiskScanCacheStore.schemaVersion else {
+        var cache = try decoder.decode(DiskScanCacheStore.self, from: Data(contentsOf: url))
+        guard (1...DiskScanCacheStore.schemaVersion).contains(cache.schemaVersion) else {
             return DiskScanCacheStore()
         }
+        // 0.6.5 wrote schema 1 without traversal evidence. The new field is
+        // optional, so the index can be upgraded in memory without throwing
+        // away an otherwise valid, privacy-preserving cache.
+        cache.schemaVersion = DiskScanCacheStore.schemaVersion
         return cache
     }
 
