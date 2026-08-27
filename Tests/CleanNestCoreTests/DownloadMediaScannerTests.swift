@@ -122,6 +122,40 @@ final class DownloadMediaScannerTests: XCTestCase {
         XCTAssertEqual(result.insights.mediaCount, 3)
     }
 
+    func testDesktopInstallersAreIncludedWithoutTreatingOrdinaryDesktopArchivesAsCleanup() async throws {
+        let home = try makeTemporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let desktop = home.appendingPathComponent("Desktop", isDirectory: true)
+        let downloads = home.appendingPathComponent("Downloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: desktop, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
+
+        let desktopDMG = desktop.appendingPathComponent("Desktop Utility.dmg")
+        let desktopInstallerZIP = desktop.appendingPathComponent("Desktop Utility.zip")
+        let desktopDocumentsZIP = desktop.appendingPathComponent("Unique Documents.zip")
+        let downloadedDocumentsZIP = downloads.appendingPathComponent("Downloaded Documents.zip")
+        try Data(repeating: 0x51, count: 128).write(to: desktopDMG)
+        try centralDirectoryData(entryName: "Utility.app/Contents/Info.plist")
+            .write(to: desktopInstallerZIP)
+        let genericArchive = centralDirectoryData(entryName: "documents/report.pdf")
+        try genericArchive.write(to: desktopDocumentsZIP)
+        try genericArchive.write(to: downloadedDocumentsZIP)
+
+        let result = await DownloadMediaScanner(homeDirectory: home).scan(
+            includeMediaAndDuplicates: false
+        )
+        let byPath = Dictionary(uniqueKeysWithValues: result.candidates.map { ($0.url.path, $0) })
+
+        XCTAssertEqual(byPath[desktopDMG.path]?.kind, .installer)
+        XCTAssertTrue(byPath[desktopDMG.path]?.detail.contains("来自桌面") == true)
+        XCTAssertEqual(byPath[desktopInstallerZIP.path]?.kind, .installer)
+        XCTAssertNil(byPath[desktopDocumentsZIP.path])
+        XCTAssertEqual(byPath[downloadedDocumentsZIP.path]?.kind, .archive)
+        XCTAssertEqual(result.insights.installerCount, 2)
+        XCTAssertEqual(result.insights.archiveCount, 1)
+    }
+
     func testDuplicateDetectionKeepsStableCopyAndRejectsChangedRetainedFile() async throws {
         let home = try makeTemporaryHome()
         defer { try? FileManager.default.removeItem(at: home) }

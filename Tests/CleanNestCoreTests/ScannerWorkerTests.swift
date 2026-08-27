@@ -101,6 +101,36 @@ final class ScannerWorkerTests: XCTestCase {
         }
     }
 
+    func testAgentWorkspaceWorkerReturnsTransportableReadOnlyResult() async throws {
+        let home = try temporaryDirectory(named: "CleanNestScannerAgentWorkspace")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let sessions = home.appendingPathComponent(".codex/sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        try Data(repeating: 0x7b, count: 8_192)
+            .write(to: sessions.appendingPathComponent("session.jsonl"))
+
+        let request = AgentWorkspaceScannerRequest(
+            requestID: "agent-workspace-test",
+            homeDirectory: home,
+            previousObservation: nil
+        )
+        let recorder = ScannerProgressRecorder()
+        let response = try await ScannerWorker().scanAgentWorkspace(request) {
+            recorder.append($0)
+        }
+
+        XCTAssertEqual(response.requestID, request.requestID)
+        XCTAssertEqual(response.result.snapshot.detectedAgents.map(\.provider), [.codex])
+        XCTAssertEqual(response.result.snapshot.detectedAgents.first?.fileCount, 1)
+        XCTAssertGreaterThanOrEqual(response.elapsedSeconds, 0)
+        XCTAssertTrue(recorder.values.contains { $0.stage == .agentWorkspaceMetadata })
+        XCTAssertEqual(recorder.values.last?.stage, .completed)
+
+        let encoded = try ScannerServiceCodec.encode(response)
+        let decoded = try ScannerServiceCodec.decode(AgentWorkspaceScannerResponse.self, from: encoded)
+        XCTAssertEqual(decoded, response)
+    }
+
     private func temporaryDirectory(named prefix: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)

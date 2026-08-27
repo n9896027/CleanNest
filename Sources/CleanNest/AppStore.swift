@@ -12,6 +12,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     case analyze = "磁盘浏览"
     case status = "系统状态"
     case maintenance = "系统维护"
+    case agentWorkspace = "Agent 工作区"
     case models = "本地模型"
     case evolution = "本机学习"
     case activity = "活动记录"
@@ -28,6 +29,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .analyze: return "chart.pie"
         case .status: return "waveform.path.ecg"
         case .maintenance: return "wrench.and.screwdriver"
+        case .agentWorkspace: return "folder.badge.gearshape"
         case .models: return "rectangle.stack.badge.play"
         case .evolution: return "sparkles.rectangle.stack"
         case .activity: return "clock.arrow.circlepath"
@@ -37,7 +39,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 
     static let spaceItems: [SidebarItem] = [.cleanup, .applications, .analyze]
     static let systemItems: [SidebarItem] = [.status, .maintenance]
-    static let intelligenceItems: [SidebarItem] = [.models, .evolution]
+    static let intelligenceItems: [SidebarItem] = [.agentWorkspace, .models, .evolution]
 }
 
 enum OperationPhase: Equatable {
@@ -114,6 +116,15 @@ enum LocalAIBenchmarkPhase: Equatable {
     var isRunning: Bool { self == .running }
 }
 
+enum AgentWorkspaceScanPhase: Equatable {
+    case idle
+    case scanning
+    case ready
+    case failed(String)
+
+    var isScanning: Bool { self == .scanning }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published var selection: SidebarItem? = .overview
@@ -160,6 +171,10 @@ final class AppStore: ObservableObject {
     @Published var developerMode = true
     @Published var cleanupHasScanned = false
     @Published private(set) var cleanupScanIsActive = false
+    @Published private(set) var mountedInstallerVolumes: [MountedInstallerVolume] = []
+    @Published private(set) var ejectingMountedInstallerID: String?
+    @Published private(set) var mountedInstallerMessage: String?
+    @Published private(set) var mountedInstallerMessageIsWarning = false
     @Published var localAIEnabled = true
     @Published var localAIEndpoint = "http://127.0.0.1:8080/v1"
     @Published var localAIServiceModelID = ""
@@ -219,6 +234,9 @@ final class AppStore: ObservableObject {
 
     @Published var activities: [ActivityEntry] = []
     @Published private(set) var evolutionMemory = EvolutionMemory()
+    @Published private(set) var agentWorkspaceSnapshot: AgentWorkspaceSnapshot?
+    @Published private(set) var agentWorkspacePhase: AgentWorkspaceScanPhase = .idle
+    @Published private(set) var agentWorkspaceDiagnostic = "尚未扫描 Agent 工作痕迹"
     @Published var customEnginePath = ""
     @Published var lastTechnicalDetail = ""
     @Published var showingTechnicalDetail = false
@@ -230,6 +248,7 @@ final class AppStore: ObservableObject {
     private let commandRunner = CommandRunner()
     private let applicationScanner = ApplicationScanner()
     private let scannerServiceClient = ScannerServiceClient()
+    private let agentWorkspaceScannerServiceClient = ScannerServiceClient()
     private let processMemoryInspector = ProcessMemoryInspector()
     private let metricsStore = MetricsStore()
     private let nativeSystemMonitor = NativeSystemMonitor()
@@ -263,6 +282,8 @@ final class AppStore: ObservableObject {
     private var appUpdateCheckID = UUID()
     private var localModelDiscoveryID = UUID()
     private var localModelRuntimeMonitorTask: Task<Void, Never>?
+    private var agentWorkspaceMonitorTask: Task<Void, Never>?
+    private var agentWorkspaceScanID = UUID()
     private var applicationIsActive = true
 
     init() {
@@ -484,6 +505,70 @@ final class AppStore: ObservableObject {
             await probeLocalAI()
         }
         startLocalModelRuntimeMonitoring()
+        await refreshAgentWorkspace()
+        startAgentWorkspaceMonitoring()
+    }
+
+    func refreshAgentWorkspace() async {
+        guard !demoMode, !agentWorkspacePhase.isScanning else { return }
+        let scanID = UUID()
+        agentWorkspaceScanID = scanID
+        agentWorkspacePhase = .scanning
+        agentWorkspaceDiagnostic = "正在统计 Codex 与 Claude 的文件元数据和活跃写入…"
+        let previous = loadAgentWorkspaceObservation()
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        do {
+            let response = try await agentWorkspaceScannerServiceClient.scanAgentWorkspace(
+                AgentWorkspaceScannerRequest(
+                    requestID: scanID.uuidString,
+                    homeDirectory: home,
+                    previousObservation: previous
+                )
+            )
+            let result = response.result
+            guard response.requestID == scanID.uuidString,
+                  agentWorkspaceScanID == scanID else { return }
+            agentWorkspaceSnapshot = result.snapshot
+            agentWorkspaceDiagnostic = "\(result.snapshot.diagnostic) 耗时 \(String(format: "%.1f", response.elapsedSeconds)) 秒。"
+            agentWorkspacePhase = .ready
+            if result.snapshot.isComplete, !result.snapshot.detectedAgents.isEmpty {
+                saveAgentWorkspaceObservation(result.observation)
+            }
+        } catch is CancellationError {
+            guard agentWorkspaceScanID == scanID else { return }
+            agentWorkspacePhase = agentWorkspaceSnapshot == nil ? .idle : .ready
+            agentWorkspaceDiagnostic = "Agent 工作区扫描已取消；上次完整结果仍保留。"
+        } catch {
+            guard agentWorkspaceScanID == scanID else { return }
+            let message = "Agent 工作区扫描没有完成：\(error.localizedDescription)"
+            agentWorkspacePhase = .failed(message)
+            agentWorkspaceDiagnostic = message
+        }
+    }
+
+    private func startAgentWorkspaceMonitoring() {
+        guard !demoMode else { return }
+        agentWorkspaceMonitorTask?.cancel()
+        agentWorkspaceMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let interval: Duration
+                if !self.applicationIsActive {
+                    interval = .seconds(3_600)
+                } else if self.selection == .agentWorkspace {
+                    interval = .seconds(300)
+                } else {
+                    interval = .seconds(900)
+                }
+                do {
+                    try await Task.sleep(for: interval)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                await self.refreshAgentWorkspace()
+            }
+        }
     }
 
     func refreshLocalModelCatalog() async {
@@ -1879,6 +1964,9 @@ final class AppStore: ObservableObject {
         localModelRuntimeMonitorTask?.cancel()
         localModelRuntimeMonitorTask = nil
         localModelDiscoveryIsRunning = false
+        agentWorkspaceScanID = UUID()
+        agentWorkspaceMonitorTask?.cancel()
+        agentWorkspaceMonitorTask = nil
         activeDiskScanTask?.cancel()
         activeDiskScanTask = nil
         invalidateCleanupAI()
@@ -2064,6 +2152,7 @@ final class AppStore: ObservableObject {
             cleanupScanIncludedMediaAndDuplicates = includeMediaAndDuplicates
             selectedCleanupIDs = Set(response.candidates.filter(\.isRecommended).map(\.id))
             cleanupHasScanned = true
+            await refreshMountedInstallerVolumes(reportFailure: true)
             persistCleanupPreview()
             lastTechnicalDetail = "独立扫描服务已完成 \(response.candidates.count) 项结果，耗时 \(String(format: "%.2f", response.elapsedSeconds)) 秒；高成本文件遍历未在 CleanNest 主进程内执行。"
             phase = .idle
@@ -2109,6 +2198,100 @@ final class AppStore: ObservableObject {
 
     func clearCleanupSelection() {
         selectedCleanupIDs.removeAll()
+    }
+
+    func refreshMountedInstallerVolumes(reportFailure: Bool = false) async {
+        guard !demoMode else {
+            mountedInstallerVolumes = []
+            return
+        }
+        do {
+            mountedInstallerVolumes = try await MountedInstallerProbe().discover(using: commandRunner)
+            mountedInstallerMessage = nil
+            mountedInstallerMessageIsWarning = false
+        } catch {
+            mountedInstallerVolumes = []
+            if reportFailure {
+                mountedInstallerMessage = CNL10n.format(
+                    "已完成文件扫描，但没有读到已挂载的安装介质：%@",
+                    error.localizedDescription
+                )
+                mountedInstallerMessageIsWarning = true
+                lastTechnicalDetail += "\n挂载安装介质检测：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func ejectMountedInstaller(_ candidate: MountedInstallerVolume) async {
+        guard !demoMode, ejectingMountedInstallerID == nil else { return }
+        ejectingMountedInstallerID = candidate.id
+        mountedInstallerMessage = nil
+        mountedInstallerMessageIsWarning = false
+        phase = .executing(CNL10n.format("正在安全推出 %@…", candidate.displayName))
+        defer { ejectingMountedInstallerID = nil }
+
+        do {
+            let liveVolumes = try await MountedInstallerProbe().discover(using: commandRunner)
+            guard let live = liveVolumes.first(where: {
+                MountedInstallerProbe.hasSameLiveIdentity(candidate, $0)
+            }) else {
+                mountedInstallerVolumes = liveVolumes
+                mountedInstallerMessage = CNL10n.string("挂载卷已经消失或身份发生变化，CleanNest 没有发送推出命令。")
+                mountedInstallerMessageIsWarning = true
+                phase = .failed(CNL10n.string("安装介质状态已变化"))
+                return
+            }
+            guard MountedInstallerProbe.isSafeEjectTarget(live) else {
+                mountedInstallerMessage = CNL10n.string("安全校验未通过：目标不是 /Volumes 下的当前用户磁盘映像。")
+                mountedInstallerMessageIsWarning = true
+                phase = .failed(CNL10n.string("没有推出安装介质"))
+                return
+            }
+
+            let result = try await commandRunner.run(
+                executable: MountedInstallerProbe.hdiutilURL,
+                arguments: ["detach", live.mountURL.path],
+                timeout: 20
+            )
+            guard result.exitCode == 0 else {
+                let detail = result.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+                mountedInstallerVolumes = liveVolumes
+                mountedInstallerMessage = detail.isEmpty
+                    ? CNL10n.string("系统没有接受推出请求，可能仍有安装程序正在使用该卷。")
+                    : CNL10n.format("未能推出：%@", detail)
+                mountedInstallerMessageIsWarning = true
+                phase = .failed(CNL10n.string("未能推出安装介质"))
+                return
+            }
+
+            let remaining = try await MountedInstallerProbe().discover(using: commandRunner)
+            mountedInstallerVolumes = remaining
+            if remaining.contains(where: {
+                MountedInstallerProbe.hasSameLiveIdentity(candidate, $0)
+            }) {
+                mountedInstallerMessage = CNL10n.string("系统返回成功，但该挂载卷仍然存在；请重新扫描后再试。")
+                mountedInstallerMessageIsWarning = true
+                phase = .failed(CNL10n.string("安装介质仍然存在"))
+                return
+            }
+
+            mountedInstallerMessage = CNL10n.format(
+                "已安全推出“%@”；没有删除或移动任何文件。",
+                candidate.displayName
+            )
+            mountedInstallerMessageIsWarning = false
+            phase = .success(CNL10n.format("已安全推出 %@", candidate.displayName))
+        } catch is CancellationError {
+            phase = .idle
+        } catch {
+            mountedInstallerMessage = CNL10n.format(
+                "没有推出“%@”：%@",
+                candidate.displayName,
+                error.localizedDescription
+            )
+            mountedInstallerMessageIsWarning = true
+            phase = .failed(CNL10n.string("未能推出安装介质"))
+        }
     }
 
     func trashSelectedCleanup() async {
@@ -2526,6 +2709,10 @@ final class AppStore: ObservableObject {
                 currentName: progress.currentName
             )
             phase = .scanning("独立服务正在生成磁盘证据…")
+        case .agentWorkspaceMetadata:
+            // Agent 工作区使用独立客户端和独立界面状态，
+            // 不覆盖用户正在查看的清理或磁盘扫描进度。
+            break
         case .completed:
             break
         }
@@ -3229,6 +3416,29 @@ final class AppStore: ObservableObject {
         }
     }
 
+    private func loadAgentWorkspaceObservation() -> AgentWorkspaceObservation? {
+        let url = CleanNestDataPaths.agentWorkspaceObservation()
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(AgentWorkspaceObservation.self, from: data)
+    }
+
+    private func saveAgentWorkspaceObservation(_ observation: AgentWorkspaceObservation) {
+        guard !demoMode else { return }
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(observation)
+            let url = CleanNestDataPaths.agentWorkspaceObservation()
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: url, options: .atomic)
+        } catch {
+            lastTechnicalDetail = "Agent 工作区基线未能保存：\(error.localizedDescription)"
+        }
+    }
+
     private func loadDiskManualDecisions() {
         do {
             diskManualDecisions = try DiskManualDecisionPersistence.load(
@@ -3314,7 +3524,182 @@ final class AppStore: ObservableObject {
         try? data.write(to: url, options: .atomic)
     }
 
+    private func seedDemoAgentWorkspace(home: URL) {
+        let now = Date()
+        func artifact(
+            provider: AgentWorkspaceProvider,
+            kind: AgentArtifactKind,
+            path: String,
+            bytes: Int64,
+            files: Int,
+            active: Int = 0,
+            recent: Int = 0,
+            old: Int = 0,
+            preview: Int64 = 0,
+            largest: Int64,
+            disposition: AgentArtifactDisposition,
+            protections: [String] = []
+        ) -> AgentWorkspaceArtifact {
+            AgentWorkspaceArtifact(
+                id: "\(provider.rawValue):\(kind.rawValue)",
+                provider: provider,
+                kind: kind,
+                sourcePaths: [home.appendingPathComponent(path).path],
+                allocatedBytes: bytes,
+                logicalBytes: bytes,
+                fileCount: files,
+                directoryCount: max(1, files / 8),
+                activeFileCount: active,
+                recentlyModifiedFileCount: recent,
+                oldFileCount: old,
+                previewBytes: preview,
+                largestFileBytes: largest,
+                largestFilePath: home.appendingPathComponent(path).appendingPathComponent("example.jsonl").path,
+                latestModificationDate: now.addingTimeInterval(recent > 0 ? -80 : -5 * 86_400),
+                disposition: disposition,
+                protectionReasons: protections,
+                isComplete: true,
+                diagnostic: nil
+            )
+        }
+
+        let codex = AgentWorkspaceAgentSnapshot(
+            provider: .codex,
+            detected: true,
+            artifacts: [
+                artifact(
+                    provider: .codex,
+                    kind: .activeSessions,
+                    path: ".codex/sessions",
+                    bytes: 13_548_000_000,
+                    files: 903,
+                    active: 3,
+                    recent: 7,
+                    old: 368,
+                    preview: 2_362_000_000,
+                    largest: 655_000_000,
+                    disposition: .protected,
+                    protections: ["3 个会话文件正被 Codex 打开", "近 15 分钟仍有写入"]
+                ),
+                artifact(
+                    provider: .codex,
+                    kind: .backups,
+                    path: ".codex/backups",
+                    bytes: 1_746_000_000,
+                    files: 44,
+                    old: 18,
+                    preview: 740_000_000,
+                    largest: 210_000_000,
+                    disposition: .review
+                ),
+                artifact(
+                    provider: .codex,
+                    kind: .generatedMedia,
+                    path: ".codex/generated_images",
+                    bytes: 424_000_000,
+                    files: 86,
+                    old: 21,
+                    preview: 118_000_000,
+                    largest: 38_000_000,
+                    disposition: .review
+                ),
+                artifact(
+                    provider: .codex,
+                    kind: .stateAndIndexes,
+                    path: ".codex/state_5.sqlite",
+                    bytes: 162_000_000,
+                    files: 19,
+                    active: 4,
+                    recent: 4,
+                    largest: 92_000_000,
+                    disposition: .protected,
+                    protections: ["状态数据库正在使用", "直接删除会造成索引不一致"]
+                )
+            ]
+        )
+        let claude = AgentWorkspaceAgentSnapshot(
+            provider: .claude,
+            detected: true,
+            artifacts: [
+                artifact(
+                    provider: .claude,
+                    kind: .virtualMachines,
+                    path: "Library/Application Support/Claude/vm_bundles",
+                    bytes: 7_451_000_000,
+                    files: 2_190,
+                    largest: 1_180_000_000,
+                    disposition: .keep,
+                    protections: ["这是 Claude 的隔离运行环境，删除后可能需要重新下载"]
+                ),
+                artifact(
+                    provider: .claude,
+                    kind: .backups,
+                    path: "Library/Application Support/Claude/cache-backup-20260605_002356",
+                    bytes: 1_461_000_000,
+                    files: 6_840,
+                    old: 6_840,
+                    preview: 1_461_000_000,
+                    largest: 164_000_000,
+                    disposition: .review
+                ),
+                artifact(
+                    provider: .claude,
+                    kind: .caches,
+                    path: "Library/Application Support/Claude/Cache",
+                    bytes: 552_000_000,
+                    files: 4_620,
+                    old: 2_410,
+                    preview: 504_000_000,
+                    largest: 58_000_000,
+                    disposition: .regenerable
+                ),
+                artifact(
+                    provider: .claude,
+                    kind: .activeSessions,
+                    path: ".claude/projects",
+                    bytes: 318_000_000,
+                    files: 412,
+                    active: 1,
+                    recent: 3,
+                    old: 94,
+                    preview: 82_000_000,
+                    largest: 71_000_000,
+                    disposition: .protected,
+                    protections: ["1 个会话文件正被 Claude 打开"]
+                )
+            ]
+        )
+        agentWorkspaceSnapshot = AgentWorkspaceSnapshot(
+            capturedAt: now,
+            previousCapturedAt: now.addingTimeInterval(-3600),
+            agents: [codex, claude],
+            alerts: [
+                AgentWorkspaceAlert(
+                    id: "codex:large-file",
+                    level: .warning,
+                    provider: .codex,
+                    title: "Codex 出现超大单文件",
+                    detail: "会话与工具输出中最大文件约 655 MB；已确认当前活跃会话并锁定。"
+                ),
+                AgentWorkspaceAlert(
+                    id: "codex:active",
+                    level: .info,
+                    provider: .codex,
+                    title: "Codex 存在正在使用的文件",
+                    detail: "已确认 7 个文件被本机进程打开，相关项目不会进入回收执行。"
+                )
+            ],
+            openFileProbeSucceeded: true,
+            diagnostic: "演示模式：只展示合成的 Agent 元数据，不读取本机文件。"
+        )
+        agentWorkspacePhase = .ready
+        agentWorkspaceDiagnostic = agentWorkspaceSnapshot?.diagnostic ?? "演示 Agent 工作区已就绪"
+    }
+
     private func seedDemoData() {
+        let demoHealthState = ProcessInfo.processInfo.environment["CLEANNEST_DEMO_HEALTH"]
+        let demoShowsCriticalHealth = demoHealthState == "critical"
+        let demoShowsWarningHealth = demoHealthState == "warning"
         let home = URL(fileURLWithPath: "/Users/demo", isDirectory: true)
         diskRoot = home
         fullDiskAccessProbeResult = .accessible
@@ -3440,17 +3825,28 @@ final class AppStore: ObservableObject {
                 gpuUsage: 22 + cos(phase) * 15,
                 gpuRendererUsage: 18,
                 gpuTilerUsage: 12,
-                temperatureCelsius: 58 + sin(phase * 0.5) * 4,
+                temperatureCelsius: demoShowsCriticalHealth
+                    ? 97 + sin(phase * 0.5)
+                    : (demoShowsWarningHealth ? 87 + sin(phase * 0.5) : 58 + sin(phase * 0.5) * 4),
                 temperatureSource: "演示 CPU 核心",
                 batteryTemperatureCelsius: 31 + sin(phase * 0.2),
                 batteryTemperatureSource: "演示电池传感器",
-                fanRPM: 1_850 + sin(phase) * 220,
-                fanCount: 2
+                fanRPM: demoShowsCriticalHealth
+                    ? 5_800 + sin(phase) * 80
+                    : (demoShowsWarningHealth ? 4_900 + sin(phase) * 80 : 1_850 + sin(phase) * 220),
+                fanCount: 2,
+                fanLoadPercent: demoShowsCriticalHealth
+                    ? 96 + sin(phase)
+                    : (demoShowsWarningHealth ? 88 + sin(phase) : 31 + sin(phase) * 4),
+                thermalState: demoShowsCriticalHealth
+                    ? .critical
+                    : (demoShowsWarningHealth ? .fair : .nominal)
             )
         }
         nativeMonitorSample = nativeMonitorHistory.last
         diskTotalBytes = 494_000_000_000
         diskFreeBytes = 148_000_000_000
+        seedDemoAgentWorkspace(home: home)
 
         cleanupCandidates = [
             CleanupCandidate(name: "DerivedData", url: home.appendingPathComponent("Library/Developer/Xcode/DerivedData/Demo"), kind: .developer, allocatedBytes: 4_820_000_000, modifiedAt: Date().addingTimeInterval(-1_900_000), isRecommended: true, detail: "Xcode 会在需要时重新生成"),

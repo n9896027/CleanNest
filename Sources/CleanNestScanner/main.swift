@@ -98,6 +98,42 @@ private final class ScannerServiceSession: NSObject, CleanNestScannerXPCProtocol
         install(task, for: request.requestID)
     }
 
+    func scanAgentWorkspace(
+        _ requestData: Data,
+        withReply reply: @escaping (Data?, NSError?) -> Void
+    ) {
+        let request: AgentWorkspaceScannerRequest
+        do {
+            request = try ScannerServiceCodec.decode(AgentWorkspaceScannerRequest.self, from: requestData)
+        } catch {
+            reply(nil, ScannerServiceFailure.error(30, "Agent 工作区扫描请求无法解析。"))
+            return
+        }
+        guard begin(requestID: request.requestID, operation: .agentWorkspace) else {
+            reply(nil, ScannerServiceFailure.error(31, "扫描服务正在处理另一个任务。"))
+            return
+        }
+
+        let task = Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await self.worker.scanAgentWorkspace(request) { [weak self] progress in
+                    self?.store(progress)
+                }
+                let data = try ScannerServiceCodec.encode(response)
+                self.finish(requestID: request.requestID)
+                reply(data, nil)
+            } catch is CancellationError {
+                self.finish(requestID: request.requestID)
+                reply(nil, ScannerServiceFailure.error(32, "Agent 工作区扫描已取消。"))
+            } catch {
+                self.finish(requestID: request.requestID)
+                reply(nil, ScannerServiceFailure.error(33, "Agent 工作区扫描失败：\(error.localizedDescription)"))
+            }
+        }
+        install(task, for: request.requestID)
+    }
+
     func progress(for requestID: String, withReply reply: @escaping (Data?) -> Void) {
         lock.lock()
         let data = progressData[requestID]

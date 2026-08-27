@@ -5,6 +5,8 @@ struct CleanupView: View {
     @EnvironmentObject private var store: AppStore
     @State private var searchText = ""
     @State private var confirmingTrash = false
+    @State private var confirmingMountedInstallerEject = false
+    @State private var mountedInstallerPendingEject: MountedInstallerVolume?
 
     private var filteredCandidates: [CleanupCandidate] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -45,7 +47,7 @@ struct CleanupView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     PageHeader(
                         title: "清理空间",
-                        subtitle: "把可重建缓存、下载文件、个人媒体与重复副本分开判断。"
+                        subtitle: "把可重建缓存、桌面/下载安装包、个人媒体与重复副本分开判断。"
                     ) {
                         HStack(spacing: 8) {
                             Button("推荐项") {
@@ -83,6 +85,26 @@ struct CleanupView: View {
                         )
                     }
 
+                    if store.cleanupHasScanned, !store.mountedInstallerVolumes.isEmpty {
+                        MountedInstallerVolumesCard(
+                            volumes: store.mountedInstallerVolumes,
+                            ejectingID: store.ejectingMountedInstallerID
+                        ) { volume in
+                            mountedInstallerPendingEject = volume
+                            confirmingMountedInstallerEject = true
+                        }
+                    }
+
+                    if let mountedInstallerMessage = store.mountedInstallerMessage {
+                        InlineBanner(
+                            title: store.mountedInstallerMessageIsWarning
+                                ? "安装介质需要处理"
+                                : "安装介质已更新",
+                            detail: mountedInstallerMessage,
+                            kind: store.mountedInstallerMessageIsWarning ? .warning : .success
+                        )
+                    }
+
                     if !store.cleanupCandidates.isEmpty {
                         LocalAIAdviceCard()
                     }
@@ -102,7 +124,7 @@ struct CleanupView: View {
                         EmptyPanel(
                             symbol: "sparkle.magnifyingglass",
                             title: "先扫描，再做决定",
-                            detail: "CleanNest 会检查缓存、下载归档和大型媒体；启用媒体分析时还会用本机 SHA-256 查找字节完全相同的副本。扫描不会改动文件。",
+                            detail: "CleanNest 会检查缓存、桌面/下载安装包、已挂载安装介质和大型媒体；启用媒体分析时还会用本机 SHA-256 查找字节完全相同的副本。扫描不会改动文件。",
                             actionTitle: "扫描可清理内容"
                         ) {
                             Task { await store.scanCleanup() }
@@ -155,6 +177,25 @@ struct CleanupView: View {
             }
         } message: {
             Text(confirmationDetail)
+        }
+        .confirmationDialog(
+            mountedInstallerPendingEject.map {
+                CNL10n.format("推出“%@”？", $0.displayName)
+            } ?? CNL10n.string("推出安装介质？"),
+            isPresented: $confirmingMountedInstallerEject,
+            titleVisibility: .visible,
+            presenting: mountedInstallerPendingEject
+        ) { volume in
+            Button("安全推出") {
+                Task { await store.ejectMountedInstaller(volume) }
+            }
+            Button("取消", role: .cancel) { }
+        } message: { volume in
+            if volume.sourceExists {
+                Text("只会卸载当前磁盘映像，不会删除或移动原始安装包。请先关闭从该卷打开的安装程序。")
+            } else {
+                Text("原始安装包路径已不存在。推出后桌面图标会消失；若要再次打开，需要重新下载安装包。")
+            }
         }
     }
 
@@ -235,9 +276,9 @@ private struct CleanupEvidenceOverview: View {
 
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
                     EvidenceMetric(
-                        label: "下载文件",
+                        label: "安装包与归档",
                         value: CNL10n.format("%d 项", insights.installerCount + insights.archiveCount),
-                        detail: CNL10n.format("%d 个安装包 · %d 个归档", insights.installerCount, insights.archiveCount),
+                        detail: CNL10n.format("桌面/下载：%d 个安装包 · %d 个归档", insights.installerCount, insights.archiveCount),
                         symbol: "arrow.down.doc",
                         tint: CNTheme.warning
                     )
@@ -293,6 +334,107 @@ private struct CleanupEvidenceOverview: View {
             messages.append(CNL10n.format("跳过 %d 个尚未完整下载的云端占位文件，避免触发下载。", insights.skippedCloudItemCount))
         }
         return messages.joined(separator: " ")
+    }
+}
+
+private struct MountedInstallerVolumesCard: View {
+    let volumes: [MountedInstallerVolume]
+    let ejectingID: String?
+    let onEject: (MountedInstallerVolume) -> Void
+
+    var body: some View {
+        SurfaceCard {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    Image(systemName: "externaldrive.badge.checkmark")
+                        .foregroundStyle(CNTheme.warning)
+                        .frame(width: 32, height: 32)
+                        .background(CNTheme.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("已挂载安装介质")
+                            .font(.headline)
+                        Text("与可删除的安装包分开管理；不会把 /Volumes 内容加入清理清单。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    StatusPill(text: CNL10n.format("%d 个", volumes.count), symbol: "externaldrive")
+                }
+
+                Divider()
+
+                VStack(spacing: 0) {
+                    ForEach(Array(volumes.enumerated()), id: \.element.id) { index, volume in
+                        mountedVolumeRow(volume)
+                        if index < volumes.count - 1 {
+                            Divider().padding(.leading, 42)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func mountedVolumeRow(_ volume: MountedInstallerVolume) -> some View {
+        HStack(spacing: 11) {
+            CNIconTile(symbol: "externaldrive.fill", tint: CNTheme.warning, size: 32)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 7) {
+                    Text(volume.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    StatusPill(
+                        text: volume.sourceExists ? "原始包仍在" : "仅剩挂载卷",
+                        symbol: volume.sourceExists ? "checkmark.circle" : "exclamationmark.triangle",
+                        style: volume.sourceExists ? .success : .warning
+                    )
+                }
+                Text(volume.mountURL.path)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(sourceDetail(volume))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 10)
+
+            if let imageBytes = volume.imageBytes {
+                Text(CleanNestFormatting.bytes(imageBytes))
+                    .font(.caption.weight(.semibold))
+                    .monospacedMetric()
+                    .foregroundStyle(.secondary)
+            }
+
+            Button {
+                onEject(volume)
+            } label: {
+                if ejectingID == volume.id {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("推出…", systemImage: "eject")
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(ejectingID != nil)
+            .help("不删除原始安装包，只安全卸载当前磁盘映像")
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func sourceDetail(_ volume: MountedInstallerVolume) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let source = volume.sourceURL.path.replacingOccurrences(of: home, with: "~")
+        if volume.sourceExists {
+            return CNL10n.format("原始安装包：%@；推出不会删除它。", source)
+        }
+        return CNL10n.format("原始路径已不存在：%@；推出后需重新下载才能再打开。", source)
     }
 }
 

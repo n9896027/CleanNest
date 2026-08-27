@@ -60,6 +60,7 @@ struct CleanNestApp: App {
                         case .applications: await store.scanApplications()
                         case .analyze: await store.analyze()
                         case .status: await store.refreshSystemStatus()
+                        case .agentWorkspace: await store.refreshAgentWorkspace()
                         default: await store.refreshEngine()
                         }
                     }

@@ -17,6 +17,32 @@ public enum MenuBarMetric: String, CaseIterable, Codable, Identifiable, Sendable
     public var id: String { rawValue }
 }
 
+public enum NativeMetricHealthLevel: Int, Comparable, Codable, Sendable {
+    case normal
+    case warning
+    case critical
+
+    public static func < (lhs: NativeMetricHealthLevel, rhs: NativeMetricHealthLevel) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+}
+
+public enum NativeThermalState: String, Codable, Sendable {
+    case nominal
+    case fair
+    case serious
+    case critical
+    case unknown
+
+    var healthLevel: NativeMetricHealthLevel {
+        switch self {
+        case .nominal, .unknown: return .normal
+        case .fair: return .warning
+        case .serious, .critical: return .critical
+        }
+    }
+}
+
 public enum MenuBarMetricStyle: String, CaseIterable, Codable, Sendable {
     case text
     case graph
@@ -242,10 +268,12 @@ public struct NativeMonitorSample: Equatable, Sendable {
     public let fanRPM: Double?
     public let fanCount: Int?
     public let fanSpeedsRPM: [Double]
+    public let fanLoadPercent: Double?
     public let batteryLevel: Double?
     public let batteryStatus: String?
     public let batteryIsCharging: Bool?
     public let batteryTimeRemainingMinutes: Int?
+    public let thermalState: NativeThermalState
 
     public init(
         sampledAt: Date,
@@ -275,10 +303,12 @@ public struct NativeMonitorSample: Equatable, Sendable {
         fanRPM: Double?,
         fanCount: Int?,
         fanSpeedsRPM: [Double] = [],
+        fanLoadPercent: Double? = nil,
         batteryLevel: Double? = nil,
         batteryStatus: String? = nil,
         batteryIsCharging: Bool? = nil,
-        batteryTimeRemainingMinutes: Int? = nil
+        batteryTimeRemainingMinutes: Int? = nil,
+        thermalState: NativeThermalState = .unknown
     ) {
         self.sampledAt = sampledAt
         self.cpuUsage = cpuUsage
@@ -307,10 +337,12 @@ public struct NativeMonitorSample: Equatable, Sendable {
         self.fanRPM = fanRPM
         self.fanCount = fanCount
         self.fanSpeedsRPM = fanSpeedsRPM
+        self.fanLoadPercent = fanLoadPercent
         self.batteryLevel = batteryLevel
         self.batteryStatus = batteryStatus
         self.batteryIsCharging = batteryIsCharging
         self.batteryTimeRemainingMinutes = batteryTimeRemainingMinutes
+        self.thermalState = thermalState
     }
 
     public func value(for metric: MenuBarMetric) -> Double? {
@@ -328,6 +360,63 @@ public struct NativeMonitorSample: Equatable, Sendable {
         case .fan: return fanRPM
         case .battery: return batteryLevel
         }
+    }
+
+    public func healthLevel(for metric: MenuBarMetric) -> NativeMetricHealthLevel {
+        switch metric {
+        case .memory:
+            switch memoryPressureLevel {
+            case .normal, .unknown: return .normal
+            case .warning: return .warning
+            case .critical: return .critical
+            }
+        case .temperature:
+            return temperatureHealthLevel()
+        case .disk:
+            guard let diskUsedPercent else { return .normal }
+            if diskUsedPercent >= 97 { return .critical }
+            if diskUsedPercent >= 90 { return .warning }
+            return .normal
+        case .fan:
+            guard fanCount.map({ $0 > 0 }) == true, fanRPM != nil else { return .normal }
+            let temperatureLevel = temperatureHealthLevel()
+            if temperatureLevel == .critical { return .critical }
+            if temperatureLevel == .warning { return .warning }
+            // Match the rounded whole-percent value shown in the UI so a visible
+            // "85%" never remains unmarked because the sensor returned 84.x%.
+            if let fanLoadPercent, fanLoadPercent.rounded() >= 85 { return .warning }
+            if fanLoadPercent == nil, let fanRPM, fanRPM >= 5_500 { return .warning }
+            return .normal
+        case .battery:
+            guard batteryIsCharging != true,
+                  batteryStatus != "连接电源",
+                  let batteryLevel else { return .normal }
+            if batteryLevel <= 10 { return .critical }
+            if batteryLevel <= 20 { return .warning }
+            return .normal
+        case .cpu, .network, .gpu:
+            // High utilization or throughput is workload, not evidence of a hardware problem.
+            return .normal
+        }
+    }
+
+    private func temperatureHealthLevel() -> NativeMetricHealthLevel {
+        var level = thermalState.healthLevel
+        if let temperatureCelsius {
+            if temperatureCelsius >= 95 {
+                level = max(level, .critical)
+            } else if temperatureCelsius >= 85 {
+                level = max(level, .warning)
+            }
+        }
+        if let batteryTemperatureCelsius {
+            if batteryTemperatureCelsius >= 45 {
+                level = max(level, .critical)
+            } else if batteryTemperatureCelsius >= 40 {
+                level = max(level, .warning)
+            }
+        }
+        return level
     }
 }
 
@@ -442,6 +531,7 @@ public actor NativeSystemMonitor {
         let batteryTemperature = Self.batteryTemperatureSample()
         let fan = fanSample()
         let battery = Self.batterySample()
+        let thermalState = Self.thermalState()
 
         return NativeMonitorSample(
             sampledAt: sampledAt,
@@ -471,11 +561,23 @@ public actor NativeSystemMonitor {
             fanRPM: fan.rpm,
             fanCount: fan.count,
             fanSpeedsRPM: fan.speeds,
+            fanLoadPercent: fan.loadPercent,
             batteryLevel: battery.level,
             batteryStatus: battery.status,
             batteryIsCharging: battery.isCharging,
-            batteryTimeRemainingMinutes: battery.timeRemainingMinutes
+            batteryTimeRemainingMinutes: battery.timeRemainingMinutes,
+            thermalState: thermalState
         )
+    }
+
+    private static func thermalState() -> NativeThermalState {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: return .nominal
+        case .fair: return .fair
+        case .serious: return .serious
+        case .critical: return .critical
+        @unknown default: return .unknown
+        }
     }
 
     private static func cpuTicks() -> NativeCPUTicks? {
@@ -822,8 +924,13 @@ public actor NativeSystemMonitor {
         )
     }
 
-    private func fanSample() -> (rpm: Double?, count: Int?, speeds: [Double]) {
-        guard let smc else { return (nil, nil, []) }
+    private func fanSample() -> (
+        rpm: Double?,
+        count: Int?,
+        speeds: [Double],
+        loadPercent: Double?
+    ) {
+        guard let smc else { return (nil, nil, [], nil) }
         let count: Int
         if let cachedFanCount {
             count = cachedFanCount
@@ -832,14 +939,23 @@ public actor NativeSystemMonitor {
             cachedFanCount = count
         } else {
             let probed = (0..<4).filter { smc.value(for: "F\($0)Ac") != nil }.count
-            guard probed > 0 else { return (nil, nil, []) }
+            guard probed > 0 else { return (nil, nil, [], nil) }
             count = probed
             cachedFanCount = count
         }
-        guard count > 0 else { return (nil, 0, []) }
-        let speeds = (0..<count).compactMap { smc.value(for: "F\($0)Ac") }
-            .filter { $0 >= 0 && $0 < 20_000 }
-        return (speeds.max(), count, speeds)
+        guard count > 0 else { return (nil, 0, [], nil) }
+        var speeds: [Double] = []
+        var loads: [Double] = []
+        for index in 0..<count {
+            guard let actual = smc.value(for: "F\(index)Ac"),
+                  actual >= 0,
+                  actual < 20_000 else { continue }
+            speeds.append(actual)
+            if let maximum = smc.value(for: "F\(index)Mx"), maximum > 0, maximum < 20_000 {
+                loads.append(min(100, max(0, actual / maximum * 100)))
+            }
+        }
+        return (speeds.max(), count, speeds, loads.max())
     }
 
     private static func batterySample() -> (

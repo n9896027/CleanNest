@@ -93,6 +93,16 @@ final class ScannerServiceClient: @unchecked Sendable {
         }
     }
 
+    func scanAgentWorkspace(
+        _ request: AgentWorkspaceScannerRequest,
+        progress: ProgressHandler? = nil
+    ) async throws -> AgentWorkspaceScannerResponse {
+        let requestData = try ScannerServiceCodec.encode(request)
+        return try await run(requestID: request.requestID, progress: progress) { proxy, reply in
+            proxy.scanAgentWorkspace(requestData, withReply: reply)
+        }
+    }
+
     private func run<Response: Decodable & Sendable>(
         requestID: String,
         progress: ProgressHandler?,
@@ -164,7 +174,7 @@ final class ScannerServiceClient: @unchecked Sendable {
                 invoke(proxy) { data, error in
                     if let error {
                         if error.domain == "com.zone.cleannest.scanner",
-                           error.code == 12 || error.code == 22 {
+                           error.code == 12 || error.code == 22 || error.code == 32 {
                             gate.finish(.failure(CancellationError()))
                         } else {
                             gate.finish(.failure(ScannerServiceClientError.remote(error.localizedDescription)))

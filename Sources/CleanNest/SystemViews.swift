@@ -179,18 +179,29 @@ struct SystemStatusView: View {
         _ metric: MenuBarMetric,
         sample: NativeMonitorSample
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let healthLevel = sample.healthLevel(for: metric)
+        let tint = healthLevel.highlightColor ?? metric.tint
+
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: metric.symbol)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(metric.tint)
+                    .foregroundStyle(tint)
                 Text(metric.displayName)
                     .font(.caption.weight(.semibold))
+                if let badgeText = healthLevel.badgeText {
+                    HStack(spacing: 3) {
+                        Image(systemName: healthLevel.badgeSymbol ?? "exclamationmark")
+                        Text(CNL10n.string(badgeText))
+                    }
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(tint)
+                }
                 Spacer()
                 MiniTrend(
                     values: store.nativeMonitorHistory.compactMap { $0.value(for: metric) },
                     range: metric.normalizedGraphRange,
-                    tint: metric.tint
+                    tint: tint
                 )
                 .frame(width: 50, height: 19)
             }
@@ -201,6 +212,7 @@ struct SystemStatusView: View {
                 ),
                 font: .system(size: 17, weight: .semibold, design: .rounded)
             )
+            .foregroundStyle(healthLevel.highlightColor ?? Color.primary)
             Text(sample.sourceDescription(metric))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -211,7 +223,14 @@ struct SystemStatusView: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(metric.tint.opacity(sample.isAvailable(metric) ? 0.16 : 0.05), lineWidth: 0.7)
+                .stroke(
+                    tint.opacity(
+                        healthLevel == .normal
+                            ? (sample.isAvailable(metric) ? 0.16 : 0.05)
+                            : 0.48
+                    ),
+                    lineWidth: healthLevel == .normal ? 0.7 : 1
+                )
         )
         .accessibilityElement(children: .combine)
     }

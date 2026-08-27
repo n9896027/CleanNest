@@ -342,6 +342,12 @@ struct SettingsView: View {
                     kind: store.menuBarVisibilityDiagnostic.contains("隐藏") ? .warning : .success
                 )
 
+                InlineBanner(
+                    title: "异常状态会自动高亮",
+                    detail: "橙色与 ! 表示需要留意，红色与 !! 表示严重。判定结合 macOS 热状态、CPU/电池温度、内存压力、磁盘容量、低电量和风扇相对转速；CPU、GPU 或网络繁忙本身不会被当成故障。",
+                    kind: .info
+                )
+
                 LazyVGrid(
                     columns: [GridItem(.adaptive(minimum: 230), spacing: 10, alignment: .top)],
                     spacing: 10

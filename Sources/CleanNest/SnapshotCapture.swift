@@ -62,6 +62,7 @@ enum SnapshotCapture {
         case "disk", "analyze": return .analyze
         case "status": return .status
         case "maintenance": return .maintenance
+        case "agents", "agent", "workspace": return .agentWorkspace
         case "evolution", "learning": return .evolution
         case "activity": return .activity
         case "settings": return .settings

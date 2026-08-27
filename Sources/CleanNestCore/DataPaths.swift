@@ -49,4 +49,9 @@ public enum CleanNestDataPaths {
         applicationSupportDirectory(fileManager: fileManager)
             .appendingPathComponent("evolution-memory.json", isDirectory: false)
     }
+
+    public static func agentWorkspaceObservation(fileManager: FileManager = .default) -> URL {
+        applicationSupportDirectory(fileManager: fileManager)
+            .appendingPathComponent("agent-workspace-observation.json", isDirectory: false)
+    }
 }

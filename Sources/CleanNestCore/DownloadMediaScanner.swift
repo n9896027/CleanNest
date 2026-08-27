@@ -506,8 +506,9 @@ public struct DownloadMediaScanner: Sendable {
             let collection = Self.collectFiles(homeDirectory: homeDirectory, configuration: configuration)
             var candidatesByPath: [String: CleanupCandidate] = [:]
 
-            for record in collection.records where record.rootRole == .downloads {
-                if let candidate = Self.downloadCandidate(for: record, now: now) {
+            for record in collection.records
+            where record.rootRole == .desktop || record.rootRole == .downloads {
+                if let candidate = Self.installerOrArchiveCandidate(for: record, now: now) {
                     candidatesByPath[record.url.standardizedFileURL.path] = candidate
                 }
             }
@@ -666,29 +667,36 @@ public struct DownloadMediaScanner: Sendable {
         )
     }
 
-    private static func downloadCandidate(for record: FileRecord, now: Date) -> CleanupCandidate? {
+    private static func installerOrArchiveCandidate(
+        for record: FileRecord,
+        now: Date
+    ) -> CleanupCandidate? {
         let ext = record.url.pathExtension.lowercased()
         let ageDetail = ageDescription(record.modifiedAt, now: now)
+        let sourceDetail = "来自\(record.rootRole.displayName)"
         let kind: CleanupKind
         let detail: String
 
         switch ext {
         case "dmg", "pkg", "xip", "iso":
             kind = .installer
-            detail = "下载的安装介质 · \(ageDetail) · 个人文件，默认不勾选"
+            detail = "安装介质 · \(sourceDetail) · \(ageDetail) · 个人文件，默认不勾选"
         case "zip":
             switch ZIPCentralDirectoryInspector.classify(record.url) {
             case .installerLike:
                 kind = .installer
-                detail = "ZIP 内含 App 或安装器；只读取了归档目录，未解压 · \(ageDetail)"
+                detail = "ZIP 内含 App 或安装器；只读取了归档目录，未解压 · \(sourceDetail) · \(ageDetail)"
             case .generic:
+                guard record.rootRole == .downloads else { return nil }
                 kind = .archive
                 detail = "普通 ZIP 资料归档；不能仅凭扩展名判断可删除 · \(ageDetail)"
             case .unreadable:
+                guard record.rootRole == .downloads else { return nil }
                 kind = .archive
                 detail = "ZIP 目录无法读取，可能已损坏或加密；需要手动确认 · \(ageDetail)"
             }
         case "tar", "tgz", "gz", "bz2", "xz", "7z", "rar":
+            guard record.rootRole == .downloads else { return nil }
             kind = .archive
             detail = "下载的压缩归档；可能包含唯一资料，默认不勾选 · \(ageDetail)"
         default:

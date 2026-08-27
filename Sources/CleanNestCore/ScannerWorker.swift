@@ -6,13 +6,16 @@ import Foundation
 public struct ScannerWorker: Sendable {
     private let diskAnalyzer: NativeDiskAnalyzer
     private let diskEvidenceIndexer: DiskEvidenceIndexer
+    private let agentWorkspaceScanner: AgentWorkspaceScanner
 
     public init(
         diskAnalyzer: NativeDiskAnalyzer = NativeDiskAnalyzer(),
-        diskEvidenceIndexer: DiskEvidenceIndexer = DiskEvidenceIndexer()
+        diskEvidenceIndexer: DiskEvidenceIndexer = DiskEvidenceIndexer(),
+        agentWorkspaceScanner: AgentWorkspaceScanner = AgentWorkspaceScanner()
     ) {
         self.diskAnalyzer = diskAnalyzer
         self.diskEvidenceIndexer = diskEvidenceIndexer
+        self.agentWorkspaceScanner = agentWorkspaceScanner
     }
 
     public func scanCleanup(
@@ -150,6 +153,42 @@ public struct ScannerWorker: Sendable {
             requestID: request.requestID,
             outcome: outcome,
             evidence: evidence
+        )
+    }
+
+    public func scanAgentWorkspace(
+        _ request: AgentWorkspaceScannerRequest,
+        progress: (@Sendable (ScannerServiceProgress) -> Void)? = nil
+    ) async throws -> AgentWorkspaceScannerResponse {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        try Task.checkCancellation()
+        progress?(
+            ScannerServiceProgress(
+                requestID: request.requestID,
+                operation: .agentWorkspace,
+                stage: .agentWorkspaceMetadata,
+                currentName: "Codex · Claude"
+            )
+        )
+        let result = try await agentWorkspaceScanner.scan(
+            homeDirectory: request.homeDirectory,
+            previous: request.previousObservation
+        )
+        try Task.checkCancellation()
+        let endedAt = DispatchTime.now().uptimeNanoseconds
+        progress?(
+            ScannerServiceProgress(
+                requestID: request.requestID,
+                operation: .agentWorkspace,
+                stage: .completed,
+                completed: result.snapshot.detectedAgents.count,
+                total: AgentWorkspaceProvider.allCases.count
+            )
+        )
+        return AgentWorkspaceScannerResponse(
+            requestID: request.requestID,
+            result: result,
+            elapsedSeconds: Double(endedAt - startedAt) / 1_000_000_000
         )
     }
 }

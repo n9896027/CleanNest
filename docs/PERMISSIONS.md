@@ -18,6 +18,8 @@ macOS 没有公开 API 能直接读取完全磁盘访问开关。CleanNest 只�
 
 电池状态来自系统电源接口，不依赖完全磁盘访问。Mac mini、Mac Studio、Mac Pro 与 iMac 没有内置电池时，CleanNest 会明确显示“没有内置电池”；只有命令或解析真正失败时才显示“读取失败”。
 
+Agent 工作区默认检查当前用户的 `~/.codex`、`~/.claude` 和 Claude Application Support。这些路径通常不需要单独授权；如果 macOS 或文件 ACL 拒绝某个子目录，CleanNest 会标记扫描不完整并禁止它进入回收预览，不会循环弹出授权窗口。
+
 ## App 卸载与管理员认证
 
 完全磁盘访问只解决受保护数据的读取问题，不会自动赋予 root 权限。CleanNest 卸载 App 时先复核目标仍是标准 Applications 目录中的同一 App，并检查当前账户对来源目录和废纸篓的真实写入权限。
