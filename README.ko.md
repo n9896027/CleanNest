@@ -146,6 +146,6 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-현재 개발 마일스톤은 **0.7.2(Build 29)** 이며, 0.6 시리즈의 봉인 기준은 계속 0.6.5입니다. CI는 Apple Silicon 및 Intel runner에서 빌드와 테스트를 수행합니다. 재현 가능한 버그와 기능 제안은 [Issues](https://github.com/n9896027/CleanNest/issues)에 남기고, 보안 취약점은 비공개로 신고해 주세요.
+현재 개발 마일스톤은 **0.7.3(Build 30)** 이며, 0.6 시리즈의 봉인 기준은 계속 0.6.5입니다. CI는 Apple Silicon 및 Intel runner에서 빌드와 테스트를 수행합니다. 재현 가능한 버그와 기능 제안은 [Issues](https://github.com/n9896027/CleanNest/issues)에 남기고, 보안 취약점은 비공개로 신고해 주세요.
 
 앱 UI와 상세 유지 관리자 문서는 현재 주로 중국어 간체로 제공됩니다. 이 한국어 README는 프로젝트 범위를 정확히 설명하기 위한 것이며, 전체 UI 한국어 현지화가 완료되었다는 의미는 아닙니다.

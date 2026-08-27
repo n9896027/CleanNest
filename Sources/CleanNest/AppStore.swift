@@ -245,6 +245,10 @@ final class AppStore: ObservableObject {
     @Published var applicationSearch = ""
     @Published var selectedApplication: InstalledApplication?
     @Published var selectedApplicationLeftovers: [CleanupCandidate] = []
+    @Published var selectedApplicationDependencyIDs: Set<String> = []
+    @Published private(set) var selectedApplicationDependencyGraph: ApplicationDependencyGraph?
+    @Published private(set) var applicationDependencyGraphIsLoading = false
+    @Published private(set) var applicationUninstallSession: ApplicationUninstallSession?
     @Published var applicationsHaveScanned = false
 
     @Published var diskReport: DiskReport?
@@ -387,6 +391,7 @@ final class AppStore: ObservableObject {
     )
     private let settings = UserDefaults.standard
     private var leftoverRequestID = UUID()
+    private var applicationUninstallRetryNodes: [ApplicationDependencyNode] = []
     private var localAIProbeID = UUID()
     private var activeAIRequestID = UUID()
     private var cleanupRevision = 0
@@ -3066,12 +3071,21 @@ final class AppStore: ObservableObject {
         applications = await applicationScanner.scan()
         applicationsHaveScanned = true
         phase = .idle
-        if selectedApplication == nil { selectedApplication = applications.first }
+        if let selectedApplication,
+           let refreshed = applications.first(where: { $0.id == selectedApplication.id }) {
+            self.selectedApplication = refreshed
+        } else {
+            selectedApplication = applications.first
+        }
         if let selectedApplication { await loadLeftovers(for: selectedApplication) }
     }
 
     func chooseApplication(_ application: InstalledApplication) async {
         selectedApplication = application
+        if applicationUninstallSession?.applicationID != application.id {
+            applicationUninstallSession = nil
+            applicationUninstallRetryNodes = []
+        }
         await loadLeftovers(for: application)
     }
 
@@ -3080,12 +3094,32 @@ final class AppStore: ObservableObject {
         let requestID = UUID()
         leftoverRequestID = requestID
         selectedApplicationLeftovers = []
-        let results = await applicationScanner.leftovers(
+        selectedApplicationDependencyIDs = []
+        selectedApplicationDependencyGraph = nil
+        applicationDependencyGraphIsLoading = true
+        defer {
+            if leftoverRequestID == requestID {
+                applicationDependencyGraphIsLoading = false
+            }
+        }
+        let graph = await applicationScanner.dependencyGraph(
             for: application,
             includeProtectedAppData: fullDiskAccessProbePassed
         )
         guard leftoverRequestID == requestID, selectedApplication?.id == application.id else { return }
-        selectedApplicationLeftovers = results
+        selectedApplicationDependencyGraph = graph
+        selectedApplicationDependencyIDs = Set(graph.separatelyRemovableNodes.map(\.id))
+        selectedApplicationLeftovers = graph.separatelyRemovableNodes.map { node in
+            CleanupCandidate(
+                name: node.name,
+                url: node.url,
+                kind: .leftover,
+                allocatedBytes: node.allocatedBytes,
+                modifiedAt: node.identity?.modifiedAt,
+                isRecommended: true,
+                detail: node.evidence.joined(separator: " · ")
+            )
+        }
     }
 
     func applicationIsRunning(_ application: InstalledApplication) -> Bool {
@@ -3118,13 +3152,37 @@ final class AppStore: ObservableObject {
             phase = .success("演示模式不会卸载 App")
             return
         }
-        guard !applicationIsRunning(application) else {
-            phase = .failed("请先退出 \(application.name)")
+        guard let dependencyGraph = selectedApplicationDependencyGraph,
+              dependencyGraph.applicationID == application.id else {
+            phase = .failed("依赖检查尚未完成，请稍后再试")
             return
         }
+
+        applicationUninstallSession = ApplicationUninstallSession(
+            applicationID: application.id,
+            applicationName: application.name
+        )
+        applicationUninstallRetryNodes = []
+        updateApplicationUninstallStep(.quitApplication, .running)
+        guard !applicationIsRunning(application) else {
+            phase = .failed("请先退出 \(application.name)")
+            updateApplicationUninstallStep(.quitApplication, .failed("App 仍在运行；没有改动文件"))
+            closeApplicationUninstallAfterFailure(
+                skippedReason: "App 尚未退出，后续步骤未执行",
+                review: "确认 App 和相关文件均未改动"
+            )
+            return
+        }
+        updateApplicationUninstallStep(.quitApplication, .succeeded("已确认 App 当前未运行"))
+        updateApplicationUninstallStep(.revalidateIdentity, .running)
         guard let expectedIdentity = application.fileIdentity else {
             phase = .failed("\(application.name) 缺少扫描身份，请重新扫描后再试")
             lastTechnicalDetail = "扫描时未能记录 App 的设备号、文件号与所有者；为避免卸载错误目标，本次操作已停止。"
+            updateApplicationUninstallStep(.revalidateIdentity, .failed("缺少稳定文件身份"))
+            closeApplicationUninstallAfterFailure(
+                skippedReason: "身份无法复核，未请求系统认证",
+                review: "确认相关文件零变更"
+            )
             addActivity(
                 title: "卸载 \(application.name)",
                 detail: "缺少可复核的扫描身份，未改动任何文件。",
@@ -3135,7 +3193,31 @@ final class AppStore: ObservableObject {
         }
 
         lastTechnicalDetail = ""
-        let removalRequirement = applicationRemovalRequirement(for: application)
+        guard let removalRequirement = applicationRemovalRequirement(for: application) else {
+            phase = .failed("\(application.name) 已发生变化，请重新扫描后再试")
+            updateApplicationUninstallStep(.revalidateIdentity, .failed("路径、Bundle ID 或稳定身份已经变化"))
+            closeApplicationUninstallAfterFailure(
+                skippedReason: "身份复核失败，未请求系统认证",
+                review: "确认相关文件零变更"
+            )
+            addActivity(
+                title: "卸载 \(application.name)",
+                detail: "App 身份已经变化，未改动任何文件。",
+                outcome: .failed,
+                category: .applicationUninstall
+            )
+            return
+        }
+        updateApplicationUninstallStep(
+            .revalidateIdentity,
+            .succeeded("设备号、文件号、所有者和 Bundle ID 一致")
+        )
+        if removalRequirement == .administratorAuthentication {
+            updateApplicationUninstallStep(.authenticate, .running)
+        } else {
+            updateApplicationUninstallStep(.authenticate, .skipped("当前账户可直接移动，无需管理员认证"))
+        }
+        updateApplicationUninstallStep(.confirmApplicationTrash, .running)
         phase = .executing("正在将 \(application.name) 移到废纸篓…")
         let appOutcome = await trashService.trashApplication(
             application.url,
@@ -3145,11 +3227,32 @@ final class AppStore: ObservableObject {
         guard appOutcome.succeeded else {
             if appOutcome.failureKind == .authorizationCancelled {
                 phase = .failed("已取消卸载 \(application.name)，没有改动任何文件")
+                updateApplicationUninstallStep(.authenticate, .failed("你取消了 macOS 管理员认证"))
+            } else if appOutcome.failureKind == .authorizationDenied {
+                phase = .failed("管理员认证未通过，没有改动任何文件")
+                updateApplicationUninstallStep(.authenticate, .failed("macOS 未批准管理员认证"))
             } else if appOutcome.failureKind == .targetChanged {
                 phase = .failed("\(application.name) 已发生变化，请重新扫描后再试")
+                updateApplicationUninstallStep(.revalidateIdentity, .failed("执行前身份复核发现变化"))
+            } else if appOutcome.failureKind == .automationDenied {
+                phase = .failed("Finder 自动化权限被拒绝，没有改动任何文件")
+                updateApplicationUninstallStep(.confirmApplicationTrash, .failed("macOS 阻止 CleanNest 控制 Finder"))
             } else {
                 phase = .failed("未能卸载 \(application.name)，没有处理相关文件")
+                updateApplicationUninstallStep(
+                    .confirmApplicationTrash,
+                    .failed(appOutcome.errorDescription ?? "macOS 没有确认 App 已进入废纸篓")
+                )
             }
+            if removalRequirement == .administratorAuthentication,
+               appOutcome.failureKind != .authorizationCancelled,
+               appOutcome.failureKind != .authorizationDenied {
+                updateApplicationUninstallStep(.authenticate, .skipped("认证结果无法独立确认"))
+            }
+            closeApplicationUninstallAfterFailure(
+                skippedReason: "App 本体未确认进入废纸篓，相关文件强制保持零变更",
+                review: "已复核：相关文件没有执行任何移动"
+            )
             let userMessage = appOutcome.errorDescription ?? "未知错误"
             lastTechnicalDetail = [userMessage, appOutcome.technicalDescription]
                 .compactMap { $0 }
@@ -3163,11 +3266,64 @@ final class AppStore: ObservableObject {
             return
         }
 
+        if removalRequirement == .administratorAuthentication {
+            updateApplicationUninstallStep(.authenticate, .succeeded("macOS 已完成认证"))
+        }
+        updateApplicationUninstallStep(
+            .confirmApplicationTrash,
+            .succeeded(appOutcome.trashedURL?.path ?? "已确认 App 离开原位置并进入废纸篓")
+        )
+        if var session = applicationUninstallSession {
+            session.applicationTrashURL = appOutcome.trashedURL
+            applicationUninstallSession = session
+        }
+
         var leftoverOutcomes: [TrashOutcome] = []
         if includeLeftovers {
-            leftoverOutcomes = await trashService.trashCleanupTargets(selectedApplicationLeftovers.map(\.url))
+            let approved = ApplicationUninstallSafetyPolicy.approvedDependencies(
+                from: dependencyGraph.nodes,
+                after: appOutcome
+            ).filter { selectedApplicationDependencyIDs.contains($0.id) }
+            if approved.isEmpty {
+                updateApplicationUninstallStep(.removeRelatedFiles, .skipped("没有可单独处理的 App 私有项目"))
+            } else {
+                updateApplicationUninstallStep(.removeRelatedFiles, .running)
+                leftoverOutcomes = await trashService.trashApplicationDependencies(approved)
+            }
+        } else {
+            updateApplicationUninstallStep(.removeRelatedFiles, .skipped("你选择保留全部相关文件"))
         }
         let failedLeftovers = leftoverOutcomes.filter { !$0.succeeded }
+        let successfulLeftovers = leftoverOutcomes.filter(\.succeeded)
+        if includeLeftovers, !leftoverOutcomes.isEmpty {
+            if failedLeftovers.isEmpty {
+                updateApplicationUninstallStep(
+                    .removeRelatedFiles,
+                    .succeeded("\(successfulLeftovers.count) 项已移到废纸篓")
+                )
+            } else {
+                updateApplicationUninstallStep(
+                    .removeRelatedFiles,
+                    .failed("\(successfulLeftovers.count) 项完成，\(failedLeftovers.count) 项保留")
+                )
+            }
+        }
+        let failedPaths = Set(failedLeftovers.map { $0.source.standardizedFileURL.path })
+        applicationUninstallRetryNodes = dependencyGraph.separatelyRemovableNodes.filter {
+            failedPaths.contains($0.url.standardizedFileURL.path)
+        }
+        if var session = applicationUninstallSession {
+            session.relatedTrashURLs = successfulLeftovers.compactMap(\.trashedURL)
+            session.failedRelatedPaths = failedLeftovers.map { $0.source.path }
+            session.set(
+                .finalReview,
+                .succeeded(failedLeftovers.isEmpty
+                    ? "App 与所选私有项目均已复核"
+                    : "App 已在废纸篓；未完成项目保持原位，可重试")
+            )
+            session.finish()
+            applicationUninstallSession = session
+        }
         let removedBytes = application.allocatedBytes + selectedApplicationLeftovers
             .filter { item in
                 leftoverOutcomes.contains { $0.source.standardizedFileURL == item.url.standardizedFileURL && $0.succeeded }
@@ -3175,8 +3331,10 @@ final class AppStore: ObservableObject {
             .reduce(0) { $0 + $1.allocatedBytes }
 
         applications.removeAll { $0.id == application.id }
-        selectedApplication = applications.first
+        selectedApplication = nil
         selectedApplicationLeftovers = []
+        selectedApplicationDependencyIDs = []
+        selectedApplicationDependencyGraph = nil
         refreshDiskCapacity()
 
         if failedLeftovers.isEmpty {
@@ -3206,6 +3364,92 @@ final class AppStore: ObservableObject {
                 category: .applicationUninstall
             )
         }
+    }
+
+    var canRetryApplicationUninstallRelatedFiles: Bool {
+        !applicationUninstallRetryNodes.isEmpty && applicationUninstallSession?.applicationTrashURL != nil
+    }
+
+    func setApplicationDependencySelected(_ id: String, selected: Bool) {
+        guard selectedApplicationDependencyGraph?.separatelyRemovableNodes.contains(where: { $0.id == id }) == true else {
+            return
+        }
+        if selected {
+            selectedApplicationDependencyIDs.insert(id)
+        } else {
+            selectedApplicationDependencyIDs.remove(id)
+        }
+    }
+
+    func retryApplicationUninstallRelatedFiles() async {
+        guard canRetryApplicationUninstallRelatedFiles,
+              var session = applicationUninstallSession,
+              !isWorking else { return }
+        let requested = applicationUninstallRetryNodes
+        session.set(.removeRelatedFiles, .running)
+        session.set(.finalReview, .running)
+        applicationUninstallSession = session
+        phase = .executing("正在重试未完成的相关文件…")
+
+        let outcomes = await trashService.trashApplicationDependencies(requested)
+        let failed = outcomes.filter { !$0.succeeded }
+        let succeeded = outcomes.filter(\.succeeded)
+        let failedPaths = Set(failed.map { $0.source.standardizedFileURL.path })
+        applicationUninstallRetryNodes = requested.filter {
+            failedPaths.contains($0.url.standardizedFileURL.path)
+        }
+        session.relatedTrashURLs += succeeded.compactMap(\.trashedURL)
+        session.failedRelatedPaths = failed.map { $0.source.path }
+        session.set(
+            .removeRelatedFiles,
+            failed.isEmpty
+                ? .succeeded("重试完成；\(succeeded.count) 项已移到废纸篓")
+                : .failed("仍有 \(failed.count) 项保持原位")
+        )
+        session.set(
+            .finalReview,
+            .succeeded(failed.isEmpty ? "所有已确认项目均有废纸篓恢复位置" : "未完成项目保持原位，可再次重试")
+        )
+        session.finish()
+        applicationUninstallSession = session
+        if failed.isEmpty {
+            phase = .success("未完成的相关文件已补充移到废纸篓")
+        } else {
+            phase = .failed("仍有 \(failed.count) 个相关文件未处理")
+            lastTechnicalDetail = failed.compactMap(\.technicalDescription).joined(separator: "\n\n")
+        }
+    }
+
+    private func updateApplicationUninstallStep(
+        _ stage: ApplicationUninstallStage,
+        _ state: ApplicationUninstallStageState
+    ) {
+        guard var session = applicationUninstallSession else { return }
+        session.set(stage, state)
+        applicationUninstallSession = session
+    }
+
+    private func closeApplicationUninstallAfterFailure(
+        skippedReason: String,
+        review: String
+    ) {
+        guard var session = applicationUninstallSession else { return }
+        for stage in [
+            ApplicationUninstallStage.authenticate,
+            .confirmApplicationTrash,
+            .removeRelatedFiles
+        ] {
+            guard let state = session.steps.first(where: { $0.stage == stage })?.state else { continue }
+            switch state {
+            case .pending, .running:
+                session.set(stage, .skipped(skippedReason))
+            case .succeeded, .skipped, .failed:
+                break
+            }
+        }
+        session.set(.finalReview, .succeeded(review))
+        session.finish()
+        applicationUninstallSession = session
     }
 
     func analyze(_ root: URL? = nil, deepRefresh: Bool = false) async {
@@ -4647,6 +4891,7 @@ final class AppStore: ObservableObject {
     }
 
     private func seedDemoData() {
+        let now = Date()
         let demoHealthState = ProcessInfo.processInfo.environment["CLEANNEST_DEMO_HEALTH"]
         let demoShowsCriticalHealth = demoHealthState == "critical"
         let demoShowsWarningHealth = demoHealthState == "warning"
@@ -4958,6 +5203,114 @@ final class AppStore: ObservableObject {
             CleanupCandidate(name: "com.figma.Desktop", url: home.appendingPathComponent("Library/Caches/com.figma.Desktop"), kind: .leftover, allocatedBytes: 310_000_000, modifiedAt: Date().addingTimeInterval(-172_800), isRecommended: true, detail: "按 Bundle ID 精确匹配"),
             CleanupCandidate(name: "com.figma.Desktop.plist", url: home.appendingPathComponent("Library/Preferences/com.figma.Desktop.plist"), kind: .leftover, allocatedBytes: 42_000, modifiedAt: Date().addingTimeInterval(-172_800), isRecommended: true, detail: "偏好设置")
         ]
+        let demoDependencyIdentity = ApplicationDependencyIdentity(
+            deviceID: 1,
+            fileID: 8_201,
+            ownerUserID: 501,
+            itemType: .directory,
+            modifiedAt: now.addingTimeInterval(-172_800)
+        )
+        let demoApplicationURL = applications[1].url
+        let demoDependencyNodes = [
+            ApplicationDependencyNode(
+                name: "Figma",
+                url: demoApplicationURL,
+                kind: .applicationBundle,
+                ownership: .applicationOwned,
+                action: .applicationBundle,
+                allocatedBytes: 440_000_000,
+                evidence: ["Bundle ID：com.figma.Desktop", "稳定路径：/Applications/Figma.app"],
+                identity: nil
+            ),
+            ApplicationDependencyNode(
+                name: "com.figma.Desktop",
+                url: home.appendingPathComponent("Library/Caches/com.figma.Desktop"),
+                kind: .relatedFile,
+                ownership: .applicationOwned,
+                action: .removeAfterApplication,
+                allocatedBytes: 310_000_000,
+                evidence: ["Bundle ID 精确匹配：com.figma.Desktop", "App 本体进入废纸篓后才处理"],
+                identity: demoDependencyIdentity
+            ),
+            ApplicationDependencyNode(
+                name: "com.figma.Desktop.plist",
+                url: home.appendingPathComponent("Library/Preferences/com.figma.Desktop.plist"),
+                kind: .relatedFile,
+                ownership: .applicationOwned,
+                action: .removeAfterApplication,
+                allocatedBytes: 42_000,
+                evidence: ["Bundle ID 精确匹配：com.figma.Desktop"],
+                identity: ApplicationDependencyIdentity(
+                    deviceID: 1,
+                    fileID: 8_202,
+                    ownerUserID: 501,
+                    itemType: .regularFile,
+                    modifiedAt: now.addingTimeInterval(-172_800)
+                )
+            ),
+            ApplicationDependencyNode(
+                name: "FigmaAgent.app",
+                url: demoApplicationURL.appendingPathComponent("Contents/Library/LoginItems/FigmaAgent.app"),
+                kind: .loginItem,
+                ownership: .applicationOwned,
+                action: .includedInApplication,
+                allocatedBytes: 12_000_000,
+                evidence: ["位于 App 包内；随 App 本体一起进入废纸篓"],
+                identity: nil
+            ),
+            ApplicationDependencyNode(
+                name: "com.figma.Desktop.agent.plist",
+                url: home.appendingPathComponent("Library/LaunchAgents/com.figma.Desktop.agent.plist"),
+                kind: .userDaemon,
+                ownership: .applicationOwned,
+                action: .readOnly,
+                allocatedBytes: 4_096,
+                evidence: ["launchd 标签与 Bundle ID 匹配", "KeepAlive 会在退出后尝试重启；配置保持只读"],
+                identity: nil
+            ),
+            ApplicationDependencyNode(
+                name: "group.com.figma.shared",
+                url: home.appendingPathComponent("Library/Group Containers/group.com.figma.shared"),
+                kind: .sharedContainer,
+                ownership: .sharedGroup,
+                action: .readOnly,
+                allocatedBytes: 84_000_000,
+                evidence: ["代码签名声明共享组：group.com.figma.shared", "可能被同一开发者的其他 App 使用"],
+                identity: nil
+            ),
+            ApplicationDependencyNode(
+                name: "com.figma.Desktop",
+                url: home.appendingPathComponent("Library/Containers/com.figma.Desktop"),
+                kind: .managedContainer,
+                ownership: .systemManaged,
+                action: .readOnly,
+                allocatedBytes: 46_000_000,
+                evidence: ["Bundle ID 精确匹配", "容器生命周期由 macOS 管理，CleanNest 只读"],
+                identity: nil
+            )
+        ]
+        selectedApplicationDependencyGraph = ApplicationDependencyGraph(
+            applicationID: applications[1].id,
+            capturedAt: now,
+            codeSignature: ApplicationCodeSignatureEvidence(
+                status: .valid,
+                signingIdentifier: "com.figma.Desktop",
+                teamIdentifier: "T8RA8NE3B7",
+                applicationGroups: ["group.com.figma.shared"],
+                diagnostic: "演示数据：macOS 代码签名校验通过。"
+            ),
+            registration: ApplicationRegistrationEvidence(
+                bundleIdentifier: "com.figma.Desktop",
+                registeredURLs: [demoApplicationURL],
+                scannedPathIsRegistered: true,
+                diagnostic: "演示数据：Launch Services 已登记当前扫描路径。"
+            ),
+            nodes: demoDependencyNodes,
+            diagnostic: "演示数据：确认 2 个可单独处理项目；其余依赖保持随本体或只读。"
+        )
+        selectedApplicationDependencyIDs = Set(
+            selectedApplicationDependencyGraph?.separatelyRemovableNodes.map(\.id) ?? []
+        )
         applicationsHaveScanned = true
 
         diskReport = DiskReport(

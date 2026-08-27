@@ -235,10 +235,12 @@ public struct SafePathPolicy: Sendable {
 public struct TrashService: Sendable {
     public typealias ApplicationRecycler = @Sendable (ApplicationTrashRequest) async throws -> URL?
     public typealias ApplicationMovePermissionProbe = @Sendable (URL, URL) -> Bool
+    typealias DependencyRecycler = @Sendable (URL) throws -> URL?
 
     private let policy: SafePathPolicy
     private let applicationRecycler: ApplicationRecycler
     private let applicationMovePermissionProbe: ApplicationMovePermissionProbe
+    private let dependencyRecycler: DependencyRecycler
 
     public init(
         policy: SafePathPolicy = SafePathPolicy(),
@@ -252,6 +254,7 @@ public struct TrashService: Sendable {
                 trashDirectory: $1
             )
         }
+        self.dependencyRecycler = Self.recycleDependencyThroughFileManager
     }
 
     public init(
@@ -262,6 +265,23 @@ public struct TrashService: Sendable {
         self.policy = policy
         self.applicationRecycler = applicationRecycler
         self.applicationMovePermissionProbe = applicationMovePermissionProbe
+        self.dependencyRecycler = Self.recycleDependencyThroughFileManager
+    }
+
+    init(
+        policy: SafePathPolicy,
+        applicationRecycler: @escaping ApplicationRecycler,
+        dependencyRecycler: @escaping DependencyRecycler
+    ) {
+        self.policy = policy
+        self.applicationRecycler = applicationRecycler
+        self.applicationMovePermissionProbe = {
+            ApplicationMovePermissionProbeSystem.canMoveWithoutAuthorization(
+                source: $0,
+                trashDirectory: $1
+            )
+        }
+        self.dependencyRecycler = dependencyRecycler
     }
 
     public func applicationRemovalRequirement(
@@ -312,6 +332,66 @@ public struct TrashService: Sendable {
             try policy.validateCleanupCandidate(candidate)
             try CleanupEvidenceValidator.validate(candidate)
         }
+    }
+
+    /// Moves only dependency nodes that were proven App-owned and explicitly
+    /// approved for post-App removal. Every path is revalidated against its
+    /// scan-time filesystem identity immediately before mutation.
+    public func trashApplicationDependencies(
+        _ nodes: [ApplicationDependencyNode]
+    ) async -> [TrashOutcome] {
+        let policy = self.policy
+        let dependencyRecycler = self.dependencyRecycler
+        return await Task.detached(priority: .userInitiated) {
+            nodes.map { node in
+                let source = node.url.standardizedFileURL
+                do {
+                    guard node.ownership == .applicationOwned,
+                          node.action == .removeAfterApplication,
+                          let expectedIdentity = node.identity else {
+                        throw SafePathError.protectedPath
+                    }
+                    try policy.validateCleanupTarget(source)
+                    guard try ApplicationDependencyIdentity.capture(at: source) == expectedIdentity else {
+                        throw SafePathError.applicationChanged
+                    }
+                    let resultingURL = try dependencyRecycler(source)
+                    guard !FileManager.default.fileExists(atPath: source.path),
+                          let destination = resultingURL,
+                          FileManager.default.fileExists(atPath: destination.path) else {
+                        throw WorkspaceRecycleError.missingResult
+                    }
+                    return TrashOutcome(
+                        source: source,
+                        trashedURL: destination,
+                        errorDescription: nil
+                    )
+                } catch {
+                    let nsError = error as NSError
+                    let kind: TrashFailureKind
+                    if error as? SafePathError == .applicationChanged {
+                        kind = .targetChanged
+                    } else if error is SafePathError {
+                        kind = .validation
+                    } else {
+                        kind = .operationFailed
+                    }
+                    return TrashOutcome(
+                        source: source,
+                        trashedURL: nil,
+                        errorDescription: error.localizedDescription,
+                        failureKind: kind,
+                        technicalDescription: "错误域：\(nsError.domain)\n错误码：\(nsError.code)\n目标：\(source.path)\n系统说明：\(nsError.localizedDescription)"
+                    )
+                }
+            }
+        }.value
+    }
+
+    private static let recycleDependencyThroughFileManager: DependencyRecycler = { source in
+        var resultingURL: NSURL?
+        try FileManager.default.trashItem(at: source, resultingItemURL: &resultingURL)
+        return resultingURL as URL?
     }
 
     public func trashApplication(
@@ -435,6 +515,12 @@ public struct TrashService: Sendable {
         } else if Self.isAuthorizationCancellation(nsError) {
             failureKind = .authorizationCancelled
             message = "已取消 macOS 管理员认证；App 和相关文件均未改动。"
+        } else if Self.isAuthorizationDenial(nsError) {
+            failureKind = .authorizationDenied
+            message = "macOS 管理员认证没有通过；App 和相关文件均未改动。"
+        } else if Self.isAutomationDenial(nsError) {
+            failureKind = .automationDenied
+            message = "macOS 已阻止 CleanNest 控制 Finder；App 和相关文件均未改动。可在“隐私与安全性 → 自动化”中检查权限。"
         } else if Self.isPermissionFailure(nsError) {
             failureKind = .permissionDenied
             message = "macOS 未授予移动此 App 所需的权限；App 和相关文件均未改动。"
@@ -480,8 +566,15 @@ public struct TrashService: Sendable {
         if error.domain == NSPOSIXErrorDomain {
             return error.code == Int(EACCES) || error.code == Int(EPERM)
         }
-        return error.domain == NSOSStatusErrorDomain
-            && (error.code == Int(errAuthorizationDenied) || error.code == -1743)
+        return false
+    }
+
+    private static func isAuthorizationDenial(_ error: NSError) -> Bool {
+        error.domain == NSOSStatusErrorDomain && error.code == Int(errAuthorizationDenied)
+    }
+
+    private static func isAutomationDenial(_ error: NSError) -> Bool {
+        error.domain == NSOSStatusErrorDomain && error.code == -1743
     }
 }
 

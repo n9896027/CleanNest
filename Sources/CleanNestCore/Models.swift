@@ -354,6 +354,8 @@ public enum TrashFailureKind: String, Equatable, Sendable {
     case validation
     case targetChanged
     case authorizationCancelled
+    case authorizationDenied
+    case automationDenied
     case permissionDenied
     case operationFailed
     case missingResult
