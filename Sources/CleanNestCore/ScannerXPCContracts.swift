@@ -2,7 +2,7 @@ import Foundation
 
 public enum CleanNestScannerService {
     public static let bundleIdentifier = "com.zone.cleannest.scanner"
-    public static let protocolVersion = 2
+    public static let protocolVersion = 3
 }
 
 /// The XPC boundary intentionally transports only JSON `Data`. This keeps the
@@ -37,15 +37,18 @@ public struct AgentWorkspaceScannerRequest: Codable, Equatable, Sendable {
     public let requestID: String
     public let homeDirectory: URL
     public let previousObservation: AgentWorkspaceObservation?
+    public let ruleCatalog: AgentRuleCatalog
 
     public init(
         requestID: String = UUID().uuidString,
         homeDirectory: URL,
-        previousObservation: AgentWorkspaceObservation?
+        previousObservation: AgentWorkspaceObservation?,
+        ruleCatalog: AgentRuleCatalog = .builtIn
     ) {
         self.requestID = requestID
         self.homeDirectory = homeDirectory.standardizedFileURL
         self.previousObservation = previousObservation
+        self.ruleCatalog = ruleCatalog
     }
 }
 

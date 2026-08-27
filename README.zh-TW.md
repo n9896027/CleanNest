@@ -44,7 +44,7 @@ CleanNest 希望把「清理 Mac」從黑盒按鈕變成可理解、可復原的
 - **空間清理**：掃描開發快取、記錄檔、安裝檔等候選項目，逐項選擇後移入 macOS 垃圾桶。
 - **桌面與掛載安裝媒體**：桌面及下載目錄中的 DMG、PKG、XIP、ISO 與安裝器 ZIP 會進入人工複核；已掛載的安裝映像會單獨顯示來源及安全推出入口，`/Volumes` 內容絕不會進入刪除清單。
 - **獨立掃描隔離**：清理、磁碟容量與證據建立由內嵌且獨立簽章的 XPC 服務執行。取消、中斷或掃描器異常不會拖垮主介面，也不會用半成品取代上一次完整結果。
-- **Agent 工作區**：為 Codex 與 Claude 建立唯讀佔用帳本，保護開啟中與近期寫入的檔案。0.6.3 可由使用者逐項選擇已靜置的快取、暫存檔與日誌；執行前會再次核對身分與開啟狀態，先建立並校驗本機 ZIP，再處理原檔。還原時不會覆蓋 Agent 後來建立的同名檔案；會話、索引、記憶、憑證與執行時仍維持唯讀。
+- **Agent 工作區**：為 Codex、Claude、Pi Agent、Kimi、WorkBuddy、Hermes、OpenClaw、Trae 與 MiniMax Hub 建立有界帳本；小雲雀沒有可靠樣本時維持待驗證，不猜測路徑。已安裝 Agent 直接使用本機 App Bundle 的真實圖示；純 CLI 或未安裝項目使用中性替代，CleanNest 不重新散布第三方圖示。0.6.4 會呈現應用程式、資料、程序、launchd、連接埠與本機模型的證據關係，只有已建立 TCP 連線才標示模型實連。安全處置仍硬性限制於 Codex/Claude 的靜置快取、暫存檔與日誌，其他 Agent、會話、索引、記憶、憑證與執行時維持唯讀。
 - **開發工具原生帳本**：使用 Git、Docker、Hugging Face、npm 與 pip 的官方檢視介面；只有具備 dry-run 的 Git 與 Hugging Face 會在再次預演後開放確認執行。
 - **下載、截圖、媒體與精確重複檔案**：常見 `ScreenShot`、`Screenshot`、`Screen Shot`、`ScreenCapture`、截屏及截圖檔名會直接進入獨立分組，可一鍵全選或取消全選；其他媒體仍按大小與時間篩選，重複內容以完整 SHA-256 確認。個人檔案不會預先勾選，執行前會再次核對檔案身分與保留副本。
 - **增量磁碟瀏覽**：掃描時持續顯示部分結果；15 分鐘內只重用中繼資料簽章未變的項目，並明確顯示快取命中、實際掃描與深度重新整理。
@@ -147,6 +147,6 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-目前開發版本為 **0.6.3（Build 24）**。CI 會在 Apple Silicon 與 Intel runner 上建置並執行測試。歡迎透過 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可重現問題或功能建議；安全漏洞請私密回報。
+目前封存開發版本為 **0.6.5（Build 26）**。CI 會在 Apple Silicon 與 Intel runner 上建置並執行測試。歡迎透過 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可重現問題或功能建議；安全漏洞請私密回報。
 
 目前 App 介面與詳細維護文件仍以簡體中文為主。本繁體中文 README 用於正確說明專案範圍，不代表介面本地化已完成。

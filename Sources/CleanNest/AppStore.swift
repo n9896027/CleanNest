@@ -257,6 +257,11 @@ final class AppStore: ObservableObject {
     @Published private(set) var agentWorkspaceRecoveryPhase: AgentWorkspaceRecoveryPhase = .idle
     @Published private(set) var agentWorkspaceRecoveryMessage: String?
     @Published private(set) var agentWorkspaceRecoveryMessageIsWarning = false
+    @Published private(set) var agentRuleCatalog = AgentRuleCatalog.builtIn
+    @Published private(set) var agentRuleCatalogSource: AgentRuleCatalogSource = .builtIn
+    @Published private(set) var agentRuleCatalogDiagnostic = "正在使用内置规则。"
+    @Published private(set) var agentDependencyGraph = AgentDependencyGraphSnapshot.empty
+    @Published private(set) var agentDependencyGraphIsRefreshing = false
     @Published private(set) var nativeDeveloperStorageSnapshot: NativeDeveloperStorageSnapshot?
     @Published private(set) var nativeDeveloperStorageIsRefreshing = false
     @Published private(set) var nativeDeveloperStorageActionTool: NativeDeveloperStorageTool?
@@ -276,6 +281,8 @@ final class AppStore: ObservableObject {
     private let scannerServiceClient = ScannerServiceClient()
     private let agentWorkspaceScannerServiceClient = ScannerServiceClient()
     private let agentWorkspaceRecoveryService = AgentWorkspaceRecoveryService()
+    private let agentRuleCatalogStore = AgentRuleCatalogStore()
+    private let agentDependencyGraphBuilder = AgentDependencyGraphBuilder()
     private let nativeDeveloperStorageInspector = NativeDeveloperStorageInspector()
     private let processMemoryInspector = ProcessMemoryInspector()
     private let metricsStore = MetricsStore()
@@ -316,6 +323,10 @@ final class AppStore: ObservableObject {
 
     init() {
         demoMode = ProcessInfo.processInfo.environment["CLEANNEST_DEMO"] == "1"
+        let ruleState = agentRuleCatalogStore.load()
+        agentRuleCatalog = ruleState.0
+        agentRuleCatalogSource = ruleState.1
+        agentRuleCatalogDiagnostic = ruleState.2
         customEnginePath = settings.string(forKey: "customEnginePath") ?? ""
         if settings.object(forKey: "developerMode") != nil {
             developerMode = settings.bool(forKey: "developerMode")
@@ -555,7 +566,7 @@ final class AppStore: ObservableObject {
         let scanID = UUID()
         agentWorkspaceScanID = scanID
         agentWorkspacePhase = .scanning
-        agentWorkspaceDiagnostic = "正在统计 Codex 与 Claude 的文件元数据和活跃写入…"
+        agentWorkspaceDiagnostic = "正在按 \(agentRuleCatalog.providers.count) 个有界适配器统计文件元数据和活跃写入…"
         let previous = loadAgentWorkspaceObservation()
         let home = FileManager.default.homeDirectoryForCurrentUser
         do {
@@ -563,7 +574,8 @@ final class AppStore: ObservableObject {
                 AgentWorkspaceScannerRequest(
                     requestID: scanID.uuidString,
                     homeDirectory: home,
-                    previousObservation: previous
+                    previousObservation: previous,
+                    ruleCatalog: agentRuleCatalog
                 )
             )
             let result = response.result
@@ -578,6 +590,8 @@ final class AppStore: ObservableObject {
             if result.snapshot.isComplete, !result.snapshot.detectedAgents.isEmpty {
                 saveAgentWorkspaceObservation(result.observation)
             }
+            await refreshAgentDependencyGraph()
+            scheduleAgentWorkspaceAllocatorRelief()
         } catch is CancellationError {
             guard agentWorkspaceScanID == scanID else { return }
             agentWorkspacePhase = agentWorkspaceSnapshot == nil ? .idle : .ready
@@ -587,6 +601,57 @@ final class AppStore: ObservableObject {
             let message = "Agent 工作区扫描没有完成：\(error.localizedDescription)"
             agentWorkspacePhase = .failed(message)
             agentWorkspaceDiagnostic = message
+        }
+    }
+
+    private func scheduleAgentWorkspaceAllocatorRelief() {
+        Task.detached(priority: .utility) {
+            try? await Task.sleep(for: .seconds(1))
+            _ = malloc_zone_pressure_relief(nil, 0)
+        }
+    }
+
+    func refreshAgentDependencyGraph() async {
+        guard !demoMode, !agentDependencyGraphIsRefreshing else { return }
+        agentDependencyGraphIsRefreshing = true
+        let builder = agentDependencyGraphBuilder
+        let workspace = agentWorkspaceSnapshot
+        let catalog = agentRuleCatalog
+        let models = localModelRuntimeSnapshot
+        let graph = await builder.build(
+            workspace: workspace,
+            catalog: catalog,
+            localModels: models
+        )
+        agentDependencyGraph = graph
+        agentDependencyGraphIsRefreshing = false
+    }
+
+    func importAgentRuleCatalog(from url: URL) async {
+        do {
+            let catalog = try agentRuleCatalogStore.install(from: url)
+            agentRuleCatalog = catalog
+            agentRuleCatalogSource = .signedBundle(agentRuleCatalogStore.installedBundleURL)
+            agentRuleCatalogDiagnostic = "规则 \(catalog.revision) 的代码签名、签名者和内容边界均已通过校验。"
+            agentWorkspaceSnapshot = nil
+            selectedAgentWorkspaceCandidateIDs.removeAll()
+            await refreshAgentWorkspace()
+        } catch {
+            agentRuleCatalogDiagnostic = "规则没有导入：\(error.localizedDescription)"
+        }
+    }
+
+    func resetAgentRuleCatalog() async {
+        do {
+            try agentRuleCatalogStore.reset()
+            agentRuleCatalog = .builtIn
+            agentRuleCatalogSource = .builtIn
+            agentRuleCatalogDiagnostic = "已恢复随 App 发布并经过测试的内置规则。"
+            agentWorkspaceSnapshot = nil
+            selectedAgentWorkspaceCandidateIDs.removeAll()
+            await refreshAgentWorkspace()
+        } catch {
+            agentRuleCatalogDiagnostic = "未能恢复内置规则：\(error.localizedDescription)"
         }
     }
 
@@ -900,6 +965,9 @@ final class AppStore: ObservableObject {
         localModelDiscoveryPhase = verified.phase
         localModelRuntimeDiagnostic = verified.diagnostic
         localModelDiscoveryIsRunning = false
+        if selection == .agentWorkspace {
+            await refreshAgentDependencyGraph()
+        }
     }
 
     func setLocalModelMenuBarEnabled(_ enabled: Bool) {
@@ -4044,6 +4112,41 @@ final class AppStore: ObservableObject {
             apfsFreeAfter: 147_978_000_000,
             diagnostic: "演示记录：备份已校验，可恢复。"
         )]
+        var demoGraphNodes = AgentWorkspaceProvider.allCases.map { provider in
+            AgentDependencyNode(
+                id: "agent:\(provider.rawValue)",
+                provider: provider,
+                kind: .agent,
+                title: provider.displayName,
+                detail: provider == .xiaoyunque ? "仅检测·规则待验证" : "已验证只读适配",
+                state: provider == .codex ? .running
+                    : provider == .xiaoyunque ? .unverified
+                    : [.claude, .kimi, .workBuddy, .openClaw].contains(provider) ? .detected : .notDetected
+            )
+        }
+        demoGraphNodes += [
+            AgentDependencyNode(id: "process:4242", provider: .codex, kind: .process, title: "Codex · PID 4242", detail: "内存 286 MB", state: .running),
+            AgentDependencyNode(id: "data:codex", provider: .codex, kind: .data, title: "7 类本机数据", detail: "15.3 GB", state: .detected),
+            AgentDependencyNode(id: "data:claude", provider: .claude, kind: .data, title: "4 类本机数据", detail: "9.8 GB", state: .detected),
+            AgentDependencyNode(id: "app:kimi", provider: .kimi, kind: .application, title: "Kimi", detail: "com.moonshot.kimichat", state: .detected),
+            AgentDependencyNode(id: "app:workbuddy", provider: .workBuddy, kind: .application, title: "WorkBuddy", detail: "com.workbuddy.workbuddy", state: .detected),
+            AgentDependencyNode(id: "supervisor:openclaw", provider: .openClaw, kind: .supervisor, title: "ai.openclaw.gateway", detail: "用户 launchd 服务", state: .running),
+            AgentDependencyNode(id: "model:qwen", provider: nil, kind: .localModel, title: "Qwen3.8-27B-Uncensored-8bit", detail: "oMLX", state: .running)
+        ]
+        agentDependencyGraph = AgentDependencyGraphSnapshot(
+            capturedAt: now,
+            nodes: demoGraphNodes,
+            edges: [
+                AgentDependencyEdge(sourceID: "agent:codex", destinationID: "process:4242", relation: .runsAs, evidence: .exactProcess),
+                AgentDependencyEdge(sourceID: "agent:codex", destinationID: "data:codex", relation: .storesDataIn, evidence: .verifiedDataRoot),
+                AgentDependencyEdge(sourceID: "agent:claude", destinationID: "data:claude", relation: .storesDataIn, evidence: .verifiedDataRoot),
+                AgentDependencyEdge(sourceID: "agent:kimi", destinationID: "app:kimi", relation: .installedAs, evidence: .exactBundleIdentifier),
+                AgentDependencyEdge(sourceID: "agent:workBuddy", destinationID: "app:workbuddy", relation: .installedAs, evidence: .exactBundleIdentifier),
+                AgentDependencyEdge(sourceID: "agent:openClaw", destinationID: "supervisor:openclaw", relation: .keptAliveBy, evidence: .launchdLabel),
+                AgentDependencyEdge(sourceID: "process:4242", destinationID: "model:qwen", relation: .connectsToModel, evidence: .establishedTCPConnection)
+            ],
+            diagnostic: "演示模式：1 条 Agent 到本地模型关系由已建立 TCP 连接确认。"
+        )
         nativeDeveloperStorageSnapshot = NativeDeveloperStorageSnapshot(
             capturedAt: now,
             entries: [

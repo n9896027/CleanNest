@@ -10,6 +10,7 @@ let package = Package(
         .executable(name: "CleanNest", targets: ["CleanNest"]),
         .executable(name: "CleanNestLoginItem", targets: ["CleanNestLoginItem"]),
         .executable(name: "CleanNestSelfTest", targets: ["CleanNestSelfTest"]),
+        .executable(name: "CleanNestRuleBundleTool", targets: ["CleanNestRuleBundleTool"]),
         .executable(name: "CleanNestMCP", targets: ["CleanNestMCP"]),
         .executable(name: "CleanNestScanner", targets: ["CleanNestScanner"])
     ],
@@ -31,11 +32,16 @@ let package = Package(
             dependencies: ["CleanNestCore", "CleanNestMutation"],
             linkerSettings: [
                 .linkedFramework("Carbon"),
-                .linkedFramework("ServiceManagement")
+                .linkedFramework("ServiceManagement"),
+                .linkedFramework("Security")
             ]
         ),
         .executableTarget(
             name: "CleanNestSelfTest",
+            dependencies: ["CleanNestCore"]
+        ),
+        .executableTarget(
+            name: "CleanNestRuleBundleTool",
             dependencies: ["CleanNestCore"]
         ),
         .executableTarget(

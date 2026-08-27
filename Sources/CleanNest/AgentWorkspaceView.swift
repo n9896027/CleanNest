@@ -6,6 +6,7 @@ import CleanNestMutation
 struct AgentWorkspaceView: View {
     @EnvironmentObject private var store: AppStore
     @State private var showingRecoveryConfirmation = false
+    @State private var showingArchiveSuggestions = false
     @State private var nativeCleanupRequest: NativeDeveloperStorageEntry?
 
     var body: some View {
@@ -13,8 +14,8 @@ struct AgentWorkspaceView: View {
             VStack(alignment: .leading, spacing: 22) {
                 PageHeader(
                     title: "Agent 工作区",
-                    subtitle: "看清 Codex 与 Claude 的本机占用；扫描只读元数据，安全处置仅限已静置的可再生文件。",
-                    eyebrow: "占用账本 · 只在本机"
+                    subtitle: "看清多个编程 Agent 的本机占用与运行依赖；没有进程、端口或连接证据，就不会宣称它正在使用本地模型。",
+                    eyebrow: "占用账本 · 运行关系 · 只在本机"
                 ) {
                     headerActions
                 }
@@ -31,11 +32,12 @@ struct AgentWorkspaceView: View {
                 }
 
                 if let snapshot = store.agentWorkspaceSnapshot {
+                    dependencyGraphPanel
                     if snapshot.detectedAgents.isEmpty {
                         EmptyPanel(
                             symbol: "folder.badge.questionmark",
-                            title: "没有发现 Codex 或 Claude 工作痕迹",
-                            detail: "CleanNest 只检查它们的默认本机目录；本次没有扫描其他 Agent，也没有遍历你的项目文件。"
+                            title: "没有发现已验证的 Agent 数据根",
+                            detail: "CleanNest 没有猜测目录，也没有遍历你的项目文件；应用、进程与守护服务证据仍会显示在上方运行关系中。"
                         )
                     } else {
                         storageLedger(snapshot)
@@ -78,9 +80,21 @@ struct AgentWorkspaceView: View {
         .sheet(isPresented: $showingRecoveryConfirmation) {
             AgentWorkspaceRecoveryConfirmation(
                 candidates: store.selectedAgentWorkspaceCandidates,
+                runningProviders: Set(store.agentDependencyGraph.nodes.compactMap { node in
+                    guard node.kind == .process, node.state == .running else { return nil }
+                    return node.provider
+                }),
                 isBusy: store.agentWorkspaceRecoveryPhase.isBusy
             ) {
                 Task { await store.createAgentWorkspaceRecovery() }
+            }
+        }
+        .sheet(isPresented: $showingArchiveSuggestions) {
+            if let snapshot = store.agentWorkspaceSnapshot {
+                AgentArchiveSuggestionsSheet(
+                    artifacts: archiveSuggestionArtifacts(snapshot),
+                    ruleCatalog: store.agentRuleCatalog
+                )
             }
         }
         .sheet(item: $nativeCleanupRequest) { entry in
@@ -155,9 +169,12 @@ struct AgentWorkspaceView: View {
             VStack(spacing: 8) {
                 ForEach(snapshot.detectedAgents) { agent in
                     HStack(spacing: 10) {
-                        Circle()
-                            .fill(providerTint(agent.provider))
-                            .frame(width: 8, height: 8)
+                        AgentProviderIcon(
+                            provider: agent.provider,
+                            rule: store.agentRuleCatalog.rule(for: agent.provider),
+                            size: 19,
+                            fallbackTint: providerTint(agent.provider)
+                        )
                         Text(agent.provider.displayName)
                             .font(.subheadline.weight(.semibold))
                         Text(CleanNestFormatting.bytes(agent.allocatedBytes))
@@ -242,6 +259,133 @@ struct AgentWorkspaceView: View {
         }
     }
 
+    private var dependencyGraphPanel: some View {
+        let graph = store.agentDependencyGraph
+        return SurfaceCard(prominence: .prominent, tint: CNTheme.violet) {
+            ContentSectionHeader(
+                "本机运行关系",
+                detail: "像电路追踪板一样，只点亮有系统证据的节点和连接",
+                symbol: "point.3.connected.trianglepath.dotted",
+                tint: CNTheme.violet
+            ) {
+                StatusPill(
+                    text: store.agentDependencyGraphIsRefreshing
+                        ? "正在核对"
+                        : "\(graph.runningProviderCount) 个运行中",
+                    symbol: store.agentDependencyGraphIsRefreshing ? "arrow.triangle.2.circlepath" : "dot.radiowaves.left.and.right",
+                    style: graph.runningProviderCount > 0 ? .success : .neutral
+                )
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 18) {
+                    graphMetric(
+                        value: graph.confirmedModelConnectionCount.formatted(),
+                        label: "模型实连",
+                        detail: "已建立 TCP"
+                    )
+                    graphMetric(
+                        value: store.agentRuleCatalog.providers.count.formatted(),
+                        label: "有界适配器",
+                        detail: "未验证不猜测"
+                    )
+                    Spacer(minLength: 12)
+                    ruleCatalogActions
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 18) {
+                        graphMetric(
+                            value: graph.confirmedModelConnectionCount.formatted(),
+                            label: "模型实连",
+                            detail: "已建立 TCP"
+                        )
+                        graphMetric(
+                            value: store.agentRuleCatalog.providers.count.formatted(),
+                            label: "有界适配器",
+                            detail: "未验证不猜测"
+                        )
+                    }
+                    ruleCatalogActions
+                }
+            }
+
+            VStack(spacing: 0) {
+                ForEach(AgentWorkspaceProvider.allCases) { provider in
+                    AgentDependencyLane(
+                        provider: provider,
+                        graph: graph,
+                        rule: store.agentRuleCatalog.rule(for: provider)
+                    )
+                    if provider != AgentWorkspaceProvider.allCases.last {
+                        Divider().padding(.leading, 38)
+                    }
+                }
+            }
+            .background(Color.primary.opacity(0.018), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: "checkmark.seal")
+                    .foregroundStyle(CNTheme.mint)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(graph.diagnostic)
+                    Text("规则 \(store.agentRuleCatalog.revision) · \(store.agentRuleCatalogSource.displayName)。\(store.agentRuleCatalogDiagnostic)")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func graphMetric(value: String, label: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.system(size: 21, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+            Text(label).font(.caption.weight(.semibold))
+            Text(detail).font(.caption2).foregroundStyle(.secondary)
+        }
+        .frame(minWidth: 88, alignment: .leading)
+    }
+
+    private var ruleCatalogActions: some View {
+        HStack(spacing: 8) {
+            Button {
+                chooseAgentRuleBundle()
+            } label: {
+                Label("导入签名规则…", systemImage: "checkmark.shield")
+            }
+            .help("只接受与当前 CleanNest 同一签名者签署、且通过严格路径校验的规则包")
+            if store.agentRuleCatalogSource.isExternal {
+                Button("恢复内置") {
+                    Task { await store.resetAgentRuleCatalog() }
+                }
+            }
+            Button {
+                Task { await store.refreshAgentDependencyGraph() }
+            } label: {
+                Label("复核关系", systemImage: "arrow.clockwise")
+            }
+            .disabled(store.agentDependencyGraphIsRefreshing)
+        }
+        .controlSize(.small)
+    }
+
+    private func chooseAgentRuleBundle() {
+        let panel = NSOpenPanel()
+        panel.title = "选择由 CleanNest 维护者签名的 Agent 规则包"
+        panel.prompt = "验证并导入"
+        // Finder presents signed .bundle packages as files even though their
+        // contents are directories. The verifier below still requires a real,
+        // non-symlink directory bundle and rejects ordinary files.
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.resolvesAliases = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await store.importAgentRuleCatalog(from: url) }
+    }
+
     private func agentInventory(_ agents: [AgentWorkspaceAgentSnapshot]) -> some View {
         VStack(alignment: .leading, spacing: 13) {
             ContentSectionHeader(
@@ -251,7 +395,10 @@ struct AgentWorkspaceView: View {
                 tint: CNTheme.cyan
             )
             ForEach(agents) { agent in
-                AgentLedgerPanel(agent: agent)
+                AgentLedgerPanel(
+                    agent: agent,
+                    rule: store.agentRuleCatalog.rule(for: agent.provider)
+                )
             }
         }
     }
@@ -261,9 +408,11 @@ struct AgentWorkspaceView: View {
         let candidateGroups = AgentWorkspaceCandidateGroup.make(from: candidates)
         let allSelected = !candidates.isEmpty
             && candidates.allSatisfy { store.selectedAgentWorkspaceCandidateIDs.contains($0.id) }
-        let archive = snapshot.detectedAgents.flatMap(\.artifacts)
-            .filter { $0.disposition == .review || $0.disposition == .protected }
-            .reduce(Int64(0)) { $0 + $1.previewBytes }
+        let archiveSuggestions = archiveSuggestionArtifacts(snapshot)
+        let archive = archiveSuggestions.reduce(Int64(0)) { partial, artifact in
+            let bytes = max(0, artifact.previewBytes)
+            return partial > Int64.max - bytes ? Int64.max : partial + bytes
+        }
         return SurfaceCard(
             title: "安全处置与恢复",
             symbol: "archivebox.circle",
@@ -281,10 +430,13 @@ struct AgentWorkspaceView: View {
                     previewLane(
                         title: "会话归档建议",
                         value: CleanNestFormatting.bytes(archive),
-                        detail: "会话、备份与生成资源仍只读；未验证索引协议前不执行。",
+                        detail: "这不是已选垃圾。点开查看由哪些旧会话、备份和生成资源组成。",
                         symbol: "lock.doc",
-                        tint: CNTheme.violet
-                    )
+                        tint: CNTheme.violet,
+                        actionLabel: "查看详情"
+                    ) {
+                        showingArchiveSuggestions = true
+                    }
                 }
                 VStack(spacing: 12) {
                     previewLane(
@@ -297,10 +449,13 @@ struct AgentWorkspaceView: View {
                     previewLane(
                         title: "会话归档建议",
                         value: CleanNestFormatting.bytes(archive),
-                        detail: "会话、备份与生成资源仍只读；未验证索引协议前不执行。",
+                        detail: "这不是已选垃圾。点开查看由哪些旧会话、备份和生成资源组成。",
                         symbol: "lock.doc",
-                        tint: CNTheme.violet
-                    )
+                        tint: CNTheme.violet,
+                        actionLabel: "查看详情"
+                    ) {
+                        showingArchiveSuggestions = true
+                    }
                 }
             }
 
@@ -383,6 +538,25 @@ struct AgentWorkspaceView: View {
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private func archiveSuggestionArtifacts(_ snapshot: AgentWorkspaceSnapshot) -> [AgentWorkspaceArtifact] {
+        snapshot.detectedAgents
+            .flatMap(\.artifacts)
+            .filter { artifact in
+                artifact.previewBytes > 0
+                    && [.activeSessions, .archivedSessions, .backups, .generatedMedia].contains(artifact.kind)
+                    && (artifact.disposition == .review || artifact.disposition == .protected)
+            }
+            .sorted {
+                if $0.previewBytes == $1.previewBytes {
+                    if $0.provider == $1.provider { return $0.kind.rawValue < $1.kind.rawValue }
+                    let lhs = AgentWorkspaceProvider.allCases.firstIndex(of: $0.provider) ?? Int.max
+                    let rhs = AgentWorkspaceProvider.allCases.firstIndex(of: $1.provider) ?? Int.max
+                    return lhs < rhs
+                }
+                return $0.previewBytes > $1.previewBytes
+            }
     }
 
     @ViewBuilder
@@ -500,12 +674,50 @@ struct AgentWorkspaceView: View {
         Task { await store.setNativeGitRepository(url) }
     }
 
+    @ViewBuilder
     private func previewLane(
         title: String,
         value: String,
         detail: String,
         symbol: String,
-        tint: Color
+        tint: Color,
+        actionLabel: String? = nil,
+        action: (() -> Void)? = nil
+    ) -> some View {
+        if let action {
+            Button(action: action) {
+                previewLaneContent(
+                    title: title,
+                    value: value,
+                    detail: detail,
+                    symbol: symbol,
+                    tint: tint,
+                    actionLabel: actionLabel
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text("\(actionLabel ?? "查看详情")\(title)"))
+            .accessibilityValue(Text(value))
+            .accessibilityHint(Text("打开只读明细，不会移动或删除文件"))
+        } else {
+            previewLaneContent(
+                title: title,
+                value: value,
+                detail: detail,
+                symbol: symbol,
+                tint: tint,
+                actionLabel: nil
+            )
+        }
+    }
+
+    private func previewLaneContent(
+        title: String,
+        value: String,
+        detail: String,
+        symbol: String,
+        tint: Color,
+        actionLabel: String?
     ) -> some View {
         HStack(alignment: .top, spacing: 12) {
             CNIconTile(symbol: symbol, tint: tint, size: 34)
@@ -513,7 +725,18 @@ struct AgentWorkspaceView: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text(title).font(.subheadline.weight(.semibold))
                     Spacer()
-                    Text(value).font(.headline).monospacedDigit()
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text(value).font(.headline).monospacedDigit()
+                        if let actionLabel {
+                            HStack(spacing: 4) {
+                                Text(actionLabel)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2.weight(.bold))
+                            }
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(tint)
+                        }
+                    }
                 }
                 Text(detail)
                     .font(.caption)
@@ -537,6 +760,148 @@ struct AgentWorkspaceView: View {
             return "\(current) 建立首个基线；之后才能比较增长"
         }
         return "\(current) 采样 · 上次基线 \(previous.formatted(date: .abbreviated, time: .shortened))"
+    }
+}
+
+private struct AgentArchiveSuggestionsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let artifacts: [AgentWorkspaceArtifact]
+    let ruleCatalog: AgentRuleCatalog
+
+    private var totalPreviewBytes: Int64 {
+        artifacts.reduce(Int64(0)) { partial, artifact in
+            let bytes = max(0, artifact.previewBytes)
+            return partial > Int64.max - bytes ? Int64.max : partial + bytes
+        }
+    }
+
+    private var totalOldFileCount: Int {
+        artifacts.reduce(0) { partial, artifact in
+            let count = max(0, artifact.oldFileCount)
+            return partial > Int.max - count ? Int.max : partial + count
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 14) {
+                CNIconTile(symbol: "lock.doc.fill", tint: CNTheme.violet, size: 44)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("会话归档建议")
+                        .font(.title2.weight(.semibold))
+                    Text("\(artifacts.count.formatted()) 类数据 · \(totalOldFileCount.formatted()) 个旧文件 · \(CleanNestFormatting.bytes(totalPreviewBytes))")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Spacer()
+                StatusPill(text: "只读建议", symbol: "eye", style: .neutral)
+            }
+
+            InlineBanner(
+                title: "这些不是“已选垃圾”",
+                detail: "CleanNest 只是根据时间找到旧会话、备份和生成资源。它们可能仍然是你的工作记录，所以当前不会自动移动或删除。",
+                kind: .warning
+            )
+
+            VStack(alignment: .leading, spacing: 6) {
+                Label("为什么暂时不能一键归档？", systemImage: "questionmark.circle")
+                    .font(.subheadline.weight(.semibold))
+                Text("绕过 Agent 自己的会话索引直接搬文件，可能让历史会话消失、恢复时对不上记录。CleanNest 还没有验证这些私有索引的安全修改方式，因此只让你查看位置和组成。")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            .background(Color.secondary.opacity(0.055), in: RoundedRectangle(cornerRadius: 14))
+
+            if artifacts.isEmpty {
+                EmptyPanel(
+                    symbol: "archivebox",
+                    title: "暂时没有归档建议",
+                    detail: "重新扫描后，只有时间较旧且允许只读复核的会话类数据会显示在这里。"
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(artifacts.enumerated()), id: \.element.id) { index, artifact in
+                            archiveSuggestionRow(artifact)
+                            if index < artifacts.count - 1 {
+                                Divider().padding(.leading, 51)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .background(Color.secondary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
+                }
+                .frame(maxHeight: 300)
+            }
+
+            HStack(spacing: 12) {
+                Label("“显示位置”只会打开 Finder，不会改动文件。", systemImage: "checkmark.shield")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(CNTheme.mint)
+                Spacer()
+                Button("完成") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 660)
+        .frame(minHeight: 520)
+    }
+
+    private func archiveSuggestionRow(_ artifact: AgentWorkspaceArtifact) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            AgentProviderIcon(
+                provider: artifact.provider,
+                rule: ruleCatalog.rule(for: artifact.provider),
+                size: 36,
+                fallbackTint: providerTint(artifact.provider)
+            )
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text("\(artifact.provider.displayName) · \(artifact.kind.displayName)")
+                        .font(.subheadline.weight(.semibold))
+                    StatusPill(
+                        text: artifact.disposition == .protected ? "当前锁定" : "人工复核",
+                        symbol: artifact.disposition == .protected ? "lock.fill" : "eye",
+                        style: artifact.disposition == .protected ? .warning : .neutral
+                    )
+                }
+                Text(pathSummary(artifact.sourcePaths))
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                Text("\(artifact.oldFileCount.formatted()) 个旧文件只进入建议；该分组共 \(artifact.fileCount.formatted()) 个文件。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 10)
+            VStack(alignment: .trailing, spacing: 7) {
+                Text(CleanNestFormatting.bytes(artifact.previewBytes))
+                    .font(.headline)
+                    .monospacedDigit()
+                Button("显示位置") {
+                    revealInFinder(artifact)
+                }
+                .controlSize(.small)
+                .disabled(firstExistingPath(for: artifact) == nil)
+                .accessibilityHint("在 Finder 中显示该分组的第一个已验证位置")
+            }
+        }
+        .padding(.vertical, 12)
+    }
+
+    private func firstExistingPath(for artifact: AgentWorkspaceArtifact) -> String? {
+        artifact.sourcePaths.first { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    private func revealInFinder(_ artifact: AgentWorkspaceArtifact) {
+        guard let path = firstExistingPath(for: artifact) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 }
 
@@ -746,9 +1111,11 @@ private struct AgentWorkspaceRecoveryRecordRow: View {
 private struct AgentWorkspaceRecoveryConfirmation: View {
     @Environment(\.dismiss) private var dismiss
     let candidates: [AgentWorkspaceActionCandidate]
+    let runningProviders: Set<AgentWorkspaceProvider>
     let isBusy: Bool
     let onConfirm: () -> Void
     @State private var acknowledged = false
+    @State private var showsTechnicalDetails = false
 
     private var allocatedBytes: Int64 {
         candidates.reduce(0) { partial, candidate in
@@ -762,6 +1129,34 @@ private struct AgentWorkspaceRecoveryConfirmation: View {
             let bytes = max(0, candidate.identity.logicalBytes)
             return partial > Int64.max - bytes ? Int64.max : partial + bytes
         }
+    }
+
+    private var providerBreakdown: [(provider: AgentWorkspaceProvider, bytes: Int64)] {
+        Dictionary(grouping: candidates, by: \.provider)
+            .map { provider, items in
+                let bytes = items.reduce(Int64(0)) { partial, candidate in
+                    let value = max(0, candidate.identity.allocatedBytes)
+                    return partial > Int64.max - value ? Int64.max : partial + value
+                }
+                return (provider, bytes)
+            }
+            .sorted {
+                let lhs = AgentWorkspaceProvider.allCases.firstIndex(of: $0.provider) ?? Int.max
+                let rhs = AgentWorkspaceProvider.allCases.firstIndex(of: $1.provider) ?? Int.max
+                return lhs < rhs
+            }
+    }
+
+    private var selectedProviderNames: String {
+        providerBreakdown.map(\.provider.displayName).joined(separator: "、")
+    }
+
+    private var runningSelectedProviders: [AgentWorkspaceProvider] {
+        providerBreakdown.map(\.provider).filter(runningProviders.contains)
+    }
+
+    private var runningProviderNames: String {
+        runningSelectedProviders.map(\.displayName).joined(separator: "、")
     }
 
     var body: some View {
@@ -778,14 +1173,7 @@ private struct AgentWorkspaceRecoveryConfirmation: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 11) {
-                confirmationStep(1, "再次读取打开文件表并核对设备号、文件号、大小与修改时间。")
-                confirmationStep(2, "在本机恢复区创建 ZIP，并用 CRC 完整性检查确认备份可读。")
-                confirmationStep(3, "只有备份通过后才处理缓存、临时文件和日志；会话、索引、记忆与凭据不动。")
-                confirmationStep(4, "完成后对比 APFS 可用空间；结果可能小于候选体积，甚至因压缩率低而不增加。")
-            }
-            .padding(14)
-            .background(CNTheme.mint.opacity(0.055), in: RoundedRectangle(cornerRadius: 14))
+            impactSummary
 
             InlineBanner(
                 title: "恢复包包含所选文件的真实内容",
@@ -793,18 +1181,57 @@ private struct AgentWorkspaceRecoveryConfirmation: View {
                 kind: .warning
             )
 
-            Toggle("我已确认范围和恢复方式", isOn: $acknowledged)
+            VStack(alignment: .leading, spacing: 0) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        showsTechnicalDetails.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .rotationEffect(.degrees(showsTechnicalDetails ? 90 : 0))
+                        Label("查看技术保护步骤", systemImage: "lock.doc")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Text(showsTechnicalDetails ? "收起" : "展开")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityValue(showsTechnicalDetails ? "已展开" : "已折叠")
+
+                if showsTechnicalDetails {
+                    VStack(alignment: .leading, spacing: 11) {
+                        confirmationStep(1, "再次读取打开文件表并核对设备号、文件号、大小与修改时间。")
+                        confirmationStep(2, "在本机恢复区创建 ZIP，并用 CRC 完整性检查确认备份可读。")
+                        confirmationStep(3, "只有备份通过后才处理缓存、临时文件和日志；会话、索引、记忆与凭据不动。")
+                        confirmationStep(4, "完成后对比 APFS 可用空间；结果可能小于候选体积，甚至因压缩率低而不增加。")
+                    }
+                    .padding(.top, 12)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            .padding(14)
+            .background(Color.secondary.opacity(0.055), in: RoundedRectangle(cornerRadius: 14))
+
+            Toggle("我知道这不会让模型变快，并确认范围和恢复方式", isOn: $acknowledged)
                 .toggleStyle(.checkbox)
 
             HStack {
-                Button("取消", role: .cancel) { dismiss() }
+                Button(runningSelectedProviders.isEmpty ? "取消" : "等任务结束再处理", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button {
                     onConfirm()
                     dismiss()
                 } label: {
-                    Label("创建备份并处理", systemImage: "archivebox")
+                    Label(
+                        runningSelectedProviders.isEmpty ? "创建备份并处理" : "仍要创建备份并处理",
+                        systemImage: "archivebox"
+                    )
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!acknowledged || candidates.isEmpty || isBusy)
@@ -814,6 +1241,71 @@ private struct AgentWorkspaceRecoveryConfirmation: View {
         .padding(24)
         .frame(width: 590)
         .interactiveDismissDisabled(isBusy)
+    }
+
+    private var impactSummary: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("不会让 \(selectedProviderNames) 的模型回复更快", systemImage: "speedometer")
+                .font(.headline)
+                .foregroundStyle(CNTheme.warning)
+
+            Text("这次只是把旧缓存、临时文件和日志移出原位置。它不会降低当前进程内存、减少 Token，或改善模型能力；下次用到相关缓存时可能会重新生成，第一次打开反而可能稍慢。")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 9) { providerImpactChips }
+                VStack(alignment: .leading, spacing: 8) { providerImpactChips }
+            }
+
+            Label(
+                "候选分配块是 \(CleanNestFormatting.bytes(allocatedBytes))，但恢复 ZIP 也占空间，所以实际腾出的空间会更少，并以完成后的 APFS 实测为准。",
+                systemImage: "internaldrive"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if !runningSelectedProviders.isEmpty {
+                Label(
+                    "\(runningProviderNames) 现在仍在运行。最稳妥的做法是先完成当前任务并退出；若继续，CleanNest 仍会复核打开文件和身份，发生变化就停止。",
+                    systemImage: "pause.circle.fill"
+                )
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(CNTheme.warning)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Label("会话历史、登录状态、记忆、配置和生成媒体不会被处理。", systemImage: "checkmark.shield")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(CNTheme.mint)
+        }
+        .padding(15)
+        .background(CNTheme.warning.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    @ViewBuilder
+    private var providerImpactChips: some View {
+        ForEach(providerBreakdown, id: \.provider) { item in
+            HStack(spacing: 7) {
+                AgentProviderIcon(
+                    provider: item.provider,
+                    rule: AgentRuleCatalog.builtIn.rule(for: item.provider),
+                    size: 23,
+                    fallbackTint: providerTint(item.provider)
+                )
+                Text(item.provider.displayName)
+                    .font(.caption.weight(.semibold))
+                Text(CleanNestFormatting.bytes(item.bytes))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(Color.primary.opacity(0.045), in: Capsule())
+        }
     }
 
     private func confirmationStep(_ number: Int, _ text: String) -> some View {
@@ -1024,7 +1516,14 @@ private struct AgentWorkspaceAlertRow: View {
 
 private struct AgentLedgerPanel: View {
     let agent: AgentWorkspaceAgentSnapshot
-    @State private var isExpanded = true
+    let rule: AgentProviderRule?
+    @State private var isExpanded: Bool
+
+    init(agent: AgentWorkspaceAgentSnapshot, rule: AgentProviderRule?) {
+        self.agent = agent
+        self.rule = rule
+        _isExpanded = State(initialValue: agent.provider.supportsBackupFirstRecovery)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1032,10 +1531,11 @@ private struct AgentLedgerPanel: View {
                 withAnimation(.easeInOut(duration: 0.18)) { isExpanded.toggle() }
             } label: {
                 HStack(spacing: 12) {
-                    CNIconTile(
-                        symbol: agent.provider == .codex ? "chevron.left.forwardslash.chevron.right" : "command",
-                        tint: providerTint(agent.provider),
-                        size: 36
+                    AgentProviderIcon(
+                        provider: agent.provider,
+                        rule: rule,
+                        size: 36,
+                        fallbackTint: providerTint(agent.provider)
                     )
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 8) {
@@ -1174,6 +1674,14 @@ private func providerTint(_ provider: AgentWorkspaceProvider) -> Color {
     switch provider {
     case .codex: return CNTheme.cyan
     case .claude: return Color(red: 0.86, green: 0.52, blue: 0.32)
+    case .piAgent: return Color(red: 0.38, green: 0.72, blue: 0.98)
+    case .kimi: return Color(red: 0.30, green: 0.55, blue: 0.98)
+    case .workBuddy: return CNTheme.mint
+    case .hermes: return CNTheme.violet
+    case .openClaw: return Color(red: 0.95, green: 0.38, blue: 0.42)
+    case .trae: return Color(red: 0.42, green: 0.73, blue: 0.98)
+    case .miniMaxHub: return Color(red: 0.94, green: 0.60, blue: 0.24)
+    case .xiaoyunque: return Color.secondary
     }
 }
 

@@ -142,7 +142,7 @@ public enum AgentWorkspaceRecoveryError: LocalizedError, Equatable {
         case .emptySelection: return "还没有选择可处理的 Agent 文件。"
         case .selectionTooLarge(let count): return "一次最多处理 2,000 个文件；当前选择了 \(count) 个。"
         case .dataTooLarge(let bytes): return "单次安全备份上限为 50 GB；当前逻辑体积为 \(CleanNestFormatting.bytes(bytes))。"
-        case .unsupportedCategory: return "0.6.3 只处理可再生缓存、临时文件和日志。会话、索引、记忆与凭据继续只读。"
+        case .unsupportedCategory: return "只处理 Codex/Claude 的可再生缓存、临时文件和日志。其他 Agent、会话、索引、记忆与凭据继续只读。"
         case .outsideAllowedRoot: return "候选路径已经离开已验证的 Codex/Claude 默认目录。"
         case .symbolicLinkBoundary: return "候选路径包含符号链接边界，操作已停止。"
         case .fileChanged: return "文件在扫描后发生了变化；没有处理任何未确认目标。"
@@ -266,7 +266,8 @@ public struct AgentWorkspaceRecoveryService: Sendable {
         }
         var identities = Set<String>()
         for candidate in sorted {
-            guard [.caches, .temporaryFiles, .logs].contains(candidate.kind) else {
+            guard candidate.provider.supportsBackupFirstRecovery,
+                  [.caches, .temporaryFiles, .logs].contains(candidate.kind) else {
                 throw AgentWorkspaceRecoveryError.unsupportedCategory
             }
             let key = "\(candidate.identity.deviceID):\(candidate.identity.fileID)"
@@ -688,6 +689,8 @@ public struct AgentWorkspaceRecoveryService: Sendable {
                 homeDirectory.appendingPathComponent(".claude", isDirectory: true),
                 homeDirectory.appendingPathComponent("Library/Application Support/Claude", isDirectory: true)
             ]
+        case .piAgent, .kimi, .workBuddy, .hermes, .openClaw, .trae, .miniMaxHub, .xiaoyunque:
+            return []
         }
     }
 

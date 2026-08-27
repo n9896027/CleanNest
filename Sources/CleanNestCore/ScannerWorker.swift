@@ -167,12 +167,13 @@ public struct ScannerWorker: Sendable {
                 requestID: request.requestID,
                 operation: .agentWorkspace,
                 stage: .agentWorkspaceMetadata,
-                currentName: "Codex · Claude"
+                currentName: "\(request.ruleCatalog.providers.count) 个 Agent 适配器"
             )
         )
         let result = try await agentWorkspaceScanner.scan(
             homeDirectory: request.homeDirectory,
-            previous: request.previousObservation
+            previous: request.previousObservation,
+            catalog: request.ruleCatalog
         )
         try Task.checkCancellation()
         let endedAt = DispatchTime.now().uptimeNanoseconds

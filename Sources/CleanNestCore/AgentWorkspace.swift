@@ -4,6 +4,14 @@ import Foundation
 public enum AgentWorkspaceProvider: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
     case codex
     case claude
+    case piAgent
+    case kimi
+    case workBuddy
+    case hermes
+    case openClaw
+    case trae
+    case miniMaxHub
+    case xiaoyunque
 
     public var id: String { rawValue }
 
@@ -11,7 +19,20 @@ public enum AgentWorkspaceProvider: String, CaseIterable, Codable, Hashable, Ide
         switch self {
         case .codex: return "Codex"
         case .claude: return "Claude"
+        case .piAgent: return "Pi Agent"
+        case .kimi: return "Kimi"
+        case .workBuddy: return "WorkBuddy"
+        case .hermes: return "Hermes"
+        case .openClaw: return "OpenClaw"
+        case .trae: return "Trae"
+        case .miniMaxHub: return "MiniMax Hub"
+        case .xiaoyunque: return "小云雀"
         }
+    }
+
+    /// A downloadable metadata catalog can never broaden this boundary.
+    public var supportsBackupFirstRecovery: Bool {
+        self == .codex || self == .claude
     }
 }
 
@@ -486,8 +507,10 @@ public struct AgentWorkspaceScanner: Sendable {
         previous: AgentWorkspaceObservation? = nil,
         openFiles suppliedOpenFiles: [AgentWorkspaceOpenFile]? = nil,
         suppliedOpenFileProbeSucceeded: Bool = true,
+        catalog: AgentRuleCatalog = .builtIn,
         now: Date = Date()
     ) async throws -> AgentWorkspaceScanResult {
+        try catalog.validate()
         let probe: AgentWorkspaceOpenFileProbe.Result
         if let suppliedOpenFiles {
             probe = .init(
@@ -506,7 +529,8 @@ public struct AgentWorkspaceScanner: Sendable {
             previous: previous,
             openFileProbe: probe,
             now: now,
-            configuration: configuration
+            configuration: configuration,
+            catalog: catalog
         )
     }
 
@@ -515,19 +539,16 @@ public struct AgentWorkspaceScanner: Sendable {
         previous: AgentWorkspaceObservation?,
         openFileProbe: AgentWorkspaceOpenFileProbe.Result,
         now: Date,
-        configuration: Configuration
+        configuration: Configuration,
+        catalog: AgentRuleCatalog
     ) -> AgentWorkspaceScanResult {
         let normalizedHome = homeDirectory.standardizedFileURL
-        let roots: [AgentWorkspaceProvider: [URL]] = [
-            .codex: [normalizedHome.appendingPathComponent(".codex", isDirectory: true)],
-            .claude: [
-                normalizedHome.appendingPathComponent(".claude", isDirectory: true),
-                normalizedHome.appendingPathComponent("Library/Application Support/Claude", isDirectory: true)
-            ]
-        ]
+        let roots = Dictionary(uniqueKeysWithValues: catalog.providers.map { rule in
+            (rule.provider, rule.resolvedRoots(homeDirectory: normalizedHome))
+        })
         let openFiles = openFileProbe.records.filter { record in
             roots.values.flatMap { $0 }.contains { root in
-                Self.path(record.path, isInside: root.path)
+                Self.path(record.path, isInside: root.url.path)
             }
         }
         let openPathSet = Set(openFiles.map { URL(fileURLWithPath: $0.path).standardizedFileURL.path })
@@ -536,6 +557,7 @@ public struct AgentWorkspaceScanner: Sendable {
             scanAgent(
                 provider: provider,
                 roots: roots[provider] ?? [],
+                rule: catalog.rule(for: provider),
                 openPaths: openPathSet,
                 activityProbeSucceeded: openFileProbe.succeeded,
                 now: now,
@@ -573,7 +595,7 @@ public struct AgentWorkspaceScanner: Sendable {
         let partialCount = agents.filter { $0.detected && !$0.isComplete }.count
         let diagnostic: String
         if detectedCount == 0 {
-            diagnostic = "未在默认位置发现 Codex 或 Claude 的本机数据。"
+            diagnostic = "未在已验证默认位置发现 Agent 本机数据；未验证适配器不会猜测路径。"
         } else if partialCount > 0 {
             diagnostic = "已识别 \(detectedCount) 个 Agent，其中 \(partialCount) 个扫描不完整；不完整数据不会进入回收预览。"
         } else {
@@ -594,7 +616,8 @@ public struct AgentWorkspaceScanner: Sendable {
 
     private static func scanAgent(
         provider: AgentWorkspaceProvider,
-        roots: [URL],
+        roots: [(url: URL, defaultKind: AgentArtifactKind)],
+        rule: AgentProviderRule?,
         openPaths: Set<String>,
         activityProbeSucceeded: Bool,
         now: Date,
@@ -603,7 +626,7 @@ public struct AgentWorkspaceScanner: Sendable {
         let fileManager = FileManager.default
         let existingRoots = roots.filter { root in
             var isDirectory = ObjCBool(false)
-            return fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory)
+            return fileManager.fileExists(atPath: root.url.path, isDirectory: &isDirectory)
                 && isDirectory.boolValue
         }
         guard !existingRoots.isEmpty else {
@@ -615,20 +638,23 @@ public struct AgentWorkspaceScanner: Sendable {
         for root in existingRoots {
             do {
                 let children = try fileManager.contentsOfDirectory(
-                    at: root,
+                    at: root.url,
                     includingPropertiesForKeys: nil,
                     options: []
                 )
                 if children.isEmpty {
-                    groupedURLs[.unknown, default: []].append(root)
+                    groupedURLs[root.defaultKind, default: []].append(root.url)
                 } else {
                     for child in children {
-                        let kind = classify(provider: provider, name: child.lastPathComponent, parent: root)
+                        let kind = rule?.classify(
+                            name: child.lastPathComponent,
+                            defaultKind: root.defaultKind
+                        ) ?? root.defaultKind
                         groupedURLs[kind, default: []].append(child)
                     }
                 }
             } catch {
-                diagnostics.append("无法列出 \(abbreviatedPath(root.path, home: roots.first?.deletingLastPathComponent().path))：\(error.localizedDescription)")
+                diagnostics.append("无法列出 \(root.url.path)：\(error.localizedDescription)")
             }
         }
 
@@ -666,7 +692,7 @@ public struct AgentWorkspaceScanner: Sendable {
                 isComplete: combined.isComplete
             )
             let previewBytes: Int64
-            if !combined.isComplete || !activityProbeSucceeded {
+            if !combined.isComplete || !activityProbeSucceeded || !provider.supportsBackupFirstRecovery {
                 previewBytes = 0
             } else {
                 switch kind {
@@ -697,7 +723,12 @@ public struct AgentWorkspaceScanner: Sendable {
             if !combined.isComplete {
                 protectionReasons.append("扫描不完整，默认禁止进入回收预览")
             }
-            let actionCandidates = combined.isComplete && activityProbeSucceeded
+            if !provider.supportsBackupFirstRecovery {
+                protectionReasons.append("当前版本为只读适配：不会修改该 Agent 的文件或私有索引")
+            }
+            let actionCandidates = combined.isComplete
+                && activityProbeSucceeded
+                && provider.supportsBackupFirstRecovery
                 ? combined.actionCandidates
                 : []
             return AgentWorkspaceArtifact(
@@ -866,7 +897,8 @@ public struct AgentWorkspaceScanner: Sendable {
         result.largestFileBytes = logical
         result.largestFilePath = normalizedPath
         result.latestModificationDate = modified
-        if !isActive,
+        if provider.supportsBackupFirstRecovery,
+           !isActive,
            age > configuration.recentInterval,
            [.caches, .temporaryFiles, .logs].contains(kind) {
             if remainingActionCandidates > 0 {
@@ -885,51 +917,6 @@ public struct AgentWorkspaceScanner: Sendable {
             }
         }
         return result
-    }
-
-    private static func classify(
-        provider: AgentWorkspaceProvider,
-        name rawName: String,
-        parent: URL
-    ) -> AgentArtifactKind {
-        let name = rawName.lowercased()
-        switch provider {
-        case .codex:
-            if name == "sessions" { return .activeSessions }
-            if name == "archived_sessions" { return .archivedSessions }
-            if name == "backups" { return .backups }
-            if ["generated_images", "computer-use"].contains(name) { return .generatedMedia }
-            if name == ".tmp" || name == "tmp" { return .temporaryFiles }
-            if name.contains("cache") { return .caches }
-            if name == "plugins" { return .runtime }
-            if name == "logs" || name.hasPrefix("logs_") { return .logs }
-            if name == "memories" || name == "plans" { return .memoryAndPlans }
-            if name == "auth.json" || name.contains("credential") || name.contains("token") { return .credentials }
-            if name.contains("sqlite") || name.contains("state") || name.contains("queue")
-                || name == "thread-writer-locks" { return .stateAndIndexes }
-        case .claude:
-            if name == "projects" || name == "local-agent-mode-sessions" || name == "session-env"
-                || name == "shell-snapshots" || name == "todos" || name == "history.jsonl" {
-                return .activeSessions
-            }
-            if name.contains("archive") { return .archivedSessions }
-            if name.contains("backup") { return .backups }
-            if name == "file-history" || name == "plans" || name == "memory" { return .memoryAndPlans }
-            if name.contains("cache") || name == "blob_storage" || name == "gpucache"
-                || name.hasPrefix("dawn") || name == "service worker" { return .caches }
-            if name.contains("tmp") || name == "temp" { return .temporaryFiles }
-            if name == "logs" || name.hasSuffix(".log") { return .logs }
-            if name == "vm_bundles" || name == "claude-code-vm" { return .virtualMachines }
-            if name == "claude-code" || name.contains("runtime") { return .runtime }
-            if name.contains("cookie") || name.contains("credential") || name.contains("token")
-                || name == "local storage" || name == "web data" { return .credentials }
-            if name.contains("state") || name.contains("index") || name.contains("database")
-                || name.contains("storage") { return .stateAndIndexes }
-        }
-        if parent.lastPathComponent.lowercased() == "claude", name.hasSuffix(".jsonl") {
-            return .activeSessions
-        }
-        return .unknown
     }
 
     private static func disposition(

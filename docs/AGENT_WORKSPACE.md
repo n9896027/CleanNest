@@ -1,6 +1,6 @@
 # Agent 工作区
 
-CleanNest 0.6.3 把 Codex 与 Claude 留在本机的会话、备份、生成资源、缓存、日志、运行时、虚拟机和状态索引整理为一本占用账本，并在严格边界内增加备份优先的安全处置。
+CleanNest 0.6.4 把多个编程 Agent 留在本机的会话、备份、生成资源、缓存、日志、运行时、虚拟机和状态索引整理为占用账本，并把应用、进程、守护服务、监听端口和本地模型组织成有证据的运行关系图。
 
 它先回答四个问题：哪个 Agent 占用空间、空间花在哪里、哪些文件仍活跃、哪些变化值得复核。只有这些证据完整后，用户才可以手动选择静置的缓存、临时文件与日志。
 
@@ -11,7 +11,26 @@ CleanNest 0.6.3 把 Codex 与 Claude 留在本机的会话、备份、生成资�
 - 不跟随符号链接；每个 Agent 最多遍历 600,000 个目录项，最多传回 5,000 个文件级执行令牌。
 - 读取失败、取消或达到上限的分组不进入执行；上一次完整基线不会被半成品覆盖。
 
-## 0.6.3 可以处理什么
+## 0.6.4 适配器边界
+
+| Agent | 本机验证范围 | 0.6.4 权限 |
+| --- | --- | --- |
+| Codex | `~/.codex`、应用/进程标记 | 只允许备份优先处理已静置缓存、临时文件和日志 |
+| Claude | `~/.claude`、Claude Application Support、应用/进程标记 | 与 Codex 相同 |
+| Pi Agent | `~/.pi/agent`、专属 Application Support / Caches / Logs、`com.abcwyc.pi-agent` | 只读元数据 |
+| Kimi | `~/.kimi`、kimi-desktop、kimi-code 缓存/日志、Bundle ID | 只读元数据 |
+| WorkBuddy | `~/.workbuddy`、WorkBuddy/@genie 数据根、Bundle ID | 只读元数据 |
+| Hermes | `~/.hermes`、hermes-studio、应用/进程标记 | 只读元数据 |
+| OpenClaw | `~/.openclaw`、进程/守护标记 | 只读元数据 |
+| Trae | Trae CN / TRAE SOLO CN Application Support、Bundle ID | 只读元数据 |
+| MiniMax Hub | 已验证的应用 Bundle ID 与日志根 | 只读元数据 |
+| 小云雀 | 当前没有可复现的本机安装样本 | 仅显示适配器待验证；没有扫描路径 |
+
+“已验证”只表示本机元数据位置或运行身份可复现，不表示供应方授权 CleanNest 改写其私有格式。新增适配器没有执行令牌，外部规则也无法改变这一点。
+
+Agent 卡片优先通过精确 Bundle ID 读取本机已安装 App 的图标。图标只在本机运行时获取，不复制到 CleanNest 仓库或安装包；没有可验证 App 的 CLI/服务使用中性系统图标，避免伪造品牌身份。
+
+## 可以处理什么
 
 执行候选必须同时满足：
 
@@ -43,20 +62,43 @@ CleanNest 0.6.3 把 Codex 与 Claude 留在本机的会话、备份、生成资�
 
 ## 会话和索引为什么继续只读
 
-Codex 与 Claude 没有公开、稳定、统一且可验证的会话索引事务接口。直接改写私有 SQLite、JSONL 或状态文件可能让会话列表与磁盘文件分离。因此 0.6.3 不处理：
+当前适配的 Agent 没有一套公开、稳定、统一且可验证的会话索引事务接口。直接改写私有 SQLite、JSONL 或状态文件可能让会话列表与磁盘文件分离。因此 0.6.4 不处理：
 
 - 活跃或已归档会话；
 - 状态数据库、队列、索引和锁；
 - 记忆、计划、项目资料、凭据、运行时和虚拟机；
-- 尚未验证的其他 Agent 目录。
+- 新增 Agent 的任何文件，即便分类为缓存或日志；
+- 未经验证的自定义目录。
 
 这些分组仍可显示占用与归档建议，但没有执行令牌。未来版本只有在存在供应方原生接口或可验证事务契约后才会增加动作。
+
+## 运行关系图
+
+- App 安装证据来自精确 Bundle ID 或规则中列出的应用名。
+- Agent 进程必须匹配应用包内可执行路径或有界进程名；不会因为命令参数里偶然出现品牌词就认领进程。
+- 用户 launchd 标签只作为守护证据，不自动赋予停止或卸载能力。
+- 本地模型节点复用“本地模型”功能栏的进程、监听端口和平台 API 证据。
+- 只有 Agent 进程 PID 的已建立 TCP 连接，其对端端口又精确属于已发现模型监听器时，才建立“Agent → 本地模型”关系。只安装 Agent、只启动模型或只配置相同端口都不够。
+
+## 签名可更新规则
+
+用户可以手动导入 `.bundle` 或 `.cleannestrules` 目录包。导入链会：
+
+1. 让 macOS 严格校验整个包的代码签名；
+2. 比较规则包与当前 CleanNest 的叶签名证书；
+3. 限制 JSON 为 1 MB，验证 schema、修订号、供应方唯一性、规则数量与字符串长度；
+4. 拒绝绝对路径、`..`、`file://`、符号链接和直接指向 Library/Caches/Documents/Desktop/Downloads 等宽根的规则；
+5. 复制到 CleanNest 数据目录后再次完成签名和内容校验，再启用。
+
+外部规则只描述只读检测根、Bundle ID、进程/守护标记和元数据分类；规则格式没有清理授权字段。任何失败都会回退内置规则，用户可从界面恢复内置基线。
+
+仓库维护者可用 `CleanNestRuleBundleTool <绝对输出.bundle> --sign <身份>` 从当前内置目录生成候选规则包。工具拒绝覆盖现有路径，且不保存或读取私钥；签名仍由 macOS Keychain 中明确指定的身份完成。普通用户只需要在 App 内选择规则包，不需要使用终端。
 
 ## 开发工具原生接口
 
 CleanNest 不把所有开发工具缓存都当普通目录删除：
 
-| 工具 | 0.6.3 预览 | 执行边界 |
+| 工具 | 0.6.4 预览 | 执行边界 |
 | --- | --- | --- |
 | Git worktree | 用户选择仓库后运行 `worktree list --porcelain` 与 `worktree prune --dry-run --verbose` | 每次执行前重新 dry-run；仅调用 `worktree prune --verbose`，不删除仍存在的工作树目录 |
 | Docker | `docker system df --format json` | `system prune` 没有官方 dry-run，保持只读 |
