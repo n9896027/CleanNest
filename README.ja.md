@@ -146,6 +146,6 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-現在の開発候補は **0.7.9（Build 36）** です。移行・ロールバック・安定性・来歴確認のゲートを追加しましたが、実時間 48 時間テスト、完全な 3 言語 UI、Developer ID、Apple 公証は未完了のため、正式インストーラではありません。0.6 系列のシール済み基準は 0.6.5 のままです。CI は Apple Silicon と Intel の runner でビルドおよびテストを行います。再現可能な不具合や機能提案は [Issues](https://github.com/n9896027/CleanNest/issues) へ、セキュリティ脆弱性は非公開で報告してください。
+現在のソース正式版は **0.7.9（Build 37）** です。移行・ロールバック・安定性・来歴確認のゲートとディスクの複数ビュー台帳を追加しました。GitHub Release はソースのみで App は含みません。実時間 48 時間テスト、完全な 3 言語 UI、Developer ID、Apple 公証は未完了のため、一般ユーザー向けの信頼済み macOS インストーラではありません。CI は Apple Silicon と Intel の runner でビルドおよびテストを行います。再現可能な不具合や機能提案は [Issues](https://github.com/n9896027/CleanNest/issues) へ、セキュリティ脆弱性は非公開で報告してください。
 
 アプリ UI と詳細なメンテナ向け文書は現在、主に簡体字中国語です。この日本語 README はプロジェクトの範囲を正確に説明するものであり、UI の完全な日本語化を意味しません。
