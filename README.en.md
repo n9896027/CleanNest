@@ -133,6 +133,7 @@ Detailed maintainer documentation is currently written primarily in Simplified C
 | [0.6.3 verification report](docs/VERIFICATION-0.6.3.md) | Agent decisions, verified backups, conflict-safe restore, native-tool boundaries, and local build evidence |
 | [0.6.5 verification report](docs/VERIFICATION-0.6.5.md) | Sealed version, full-section audit, multi-Agent boundaries, tests, and local build evidence |
 | [0.7.0 verification report](docs/VERIFICATION-0.7.0.md) | Cold start, page lifecycle, measured memory gates, lazy lists, and accessibility evidence |
+| [0.7.1 verification report](docs/VERIFICATION-0.7.1.md) | Task-first overview, segmented settings, activity traceability, independent totals, and memory gates |
 | [0.7 series roadmap](docs/ROADMAP-0.7.md) | Product, architecture, acceptance gates, and explicit non-goals for 0.7.0–0.7.9 |
 | [0.6.5 section audit](docs/AUDIT-0.6.5.md) | Current behavior, gaps, performance, and accessibility evidence for every primary surface |
 | [0.6.0 verification report](docs/VERIFICATION-0.6.0.md) | XPC isolation, cancellation rollback, injected scanner failure, recovery, and cold-start memory evidence |
@@ -172,6 +173,6 @@ Preview the UI with synthetic data only:
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-The current development milestone is **0.7.0 (Build 27)**; the sealed 0.6-series baseline remains 0.6.5. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
+The current development milestone is **0.7.1 (Build 28)**; the sealed 0.6-series baseline remains 0.6.5. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
 
 Core navigation and the main overview, disk, status, and settings surfaces now include English, Simplified Chinese, and Traditional Chinese resources. Some runtime diagnostics and path-dependent copy can still fall back to the source language; Japanese and Korean currently have localized project overviews rather than full UI resources.

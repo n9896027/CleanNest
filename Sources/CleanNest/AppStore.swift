@@ -162,6 +162,7 @@ final class AppStore: ObservableObject {
     @Published var phase: OperationPhase = .idle
     @Published var engine: EngineInstallation?
     @Published var engineDiagnostic = "尚未检查"
+    @Published private(set) var engineLastCheckedAt: Date?
     @Published var systemSnapshot: SystemSnapshot?
     @Published private(set) var memoryAnalysis: MemoryAnalysis?
     @Published private(set) var memoryProcesses: [MemoryProcessSnapshot] = []
@@ -201,6 +202,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var cleanupScanIncludedMediaAndDuplicates = false
     @Published var developerMode = true
     @Published var cleanupHasScanned = false
+    @Published private(set) var cleanupScanCompletedAt: Date?
     @Published private(set) var cleanupScanIsActive = false
     @Published private(set) var mountedInstallerVolumes: [MountedInstallerVolume] = []
     @Published private(set) var ejectingMountedInstallerID: String?
@@ -260,10 +262,14 @@ final class AppStore: ObservableObject {
     @Published private(set) var diskAIChildContexts: [String: DiskAIChildContext] = [:]
     @Published private(set) var fullDiskAccessProbeResult: FullDiskAccessProbeResult = .indeterminate
     @Published private(set) var fullDiskAccessProbeIsRunning = false
+    @Published private(set) var fullDiskAccessProbeCompletedAt: Date?
     @Published private(set) var waitingForFullDiskAccessReturn = false
     @Published private(set) var diskPrivacyBlockMessage: String?
 
     @Published var activities: [ActivityEntry] = []
+    @Published private(set) var activityLifetimeTotals = ActivityLifetimeTotals()
+    @Published var requestedActivityDetailID: UUID?
+    @Published var selectedSettingsSection: CleanNestSettingsSection = .general
     @Published private(set) var evolutionMemory = EvolutionMemory()
     let agentWorkspaceState = AgentWorkspacePresentationState()
 
@@ -466,11 +472,13 @@ final class AppStore: ObservableObject {
             activities = []
             evolutionMemory = EvolutionMemory()
             seedDemoData()
+            activityLifetimeTotals = ActivityLifetimeTotals(entries: activities)
             hasLoadedEvolutionMemory = true
             hasLoadedDiskManualDecisions = true
             hasLoadedAgentWorkspaceRecoveryRecords = true
         } else {
             loadActivities()
+            loadActivityLifetimeTotals()
             loadAgentWorkspaceSummary()
             refreshDiskCapacity()
         }
@@ -712,14 +720,42 @@ final class AppStore: ObservableObject {
         case .learning:
             ensureEvolutionMemoryLoaded()
         case .settings:
-            if workloads.contains(.fullDiskAccessProbe) {
-                await refreshFullDiskAccessProbe()
-            }
-            guard !Task.isCancelled else { return }
-            if workloads.contains(.localModelCatalog) {
-                await refreshLocalModelCatalog()
-            }
+            break
         }
+    }
+
+    func activateSettingsSection(_ section: CleanNestSettingsSection) async {
+        guard selection == .settings else { return }
+        selectedSettingsSection = section
+        let workloads = AppLifecyclePolicy.foregroundWorkloads(forSettingsSection: section)
+        if workloads.contains(.fullDiskAccessProbe) {
+            await refreshFullDiskAccessProbe()
+        }
+        guard !Task.isCancelled, selection == .settings,
+              selectedSettingsSection == section else { return }
+        if workloads.contains(.localModelCatalog) {
+            await refreshLocalModelCatalog()
+        }
+        guard !Task.isCancelled, selection == .settings,
+              selectedSettingsSection == section else { return }
+        if workloads.contains(.localModelRuntimeDiscovery) {
+            await refreshLocalModelRuntimes(force: true)
+        }
+        guard !Task.isCancelled, selection == .settings,
+              selectedSettingsSection == section else { return }
+        if workloads.contains(.localAIProbe), localAIEnabled {
+            await probeLocalAI()
+        }
+    }
+
+    func openSettings(_ section: CleanNestSettingsSection) {
+        selectedSettingsSection = section
+        selection = .settings
+    }
+
+    func openActivityDetail(_ id: UUID) {
+        requestedActivityDetailID = id
+        selection = .activity
     }
 
     private func deactivatePage(_ page: SidebarItem?) {
@@ -1973,6 +2009,7 @@ final class AppStore: ObservableObject {
         guard !demoMode else {
             fullDiskAccessProbeResult = .accessible
             fullDiskAccessProbeIsRunning = false
+            fullDiskAccessProbeCompletedAt = Date()
             return
         }
 
@@ -1987,6 +2024,7 @@ final class AppStore: ObservableObject {
 
         fullDiskAccessProbeResult = result
         fullDiskAccessProbeIsRunning = false
+        fullDiskAccessProbeCompletedAt = Date()
         if result == .accessible {
             diskPrivacyBlockMessage = nil
         }
@@ -2044,6 +2082,7 @@ final class AppStore: ObservableObject {
 
     func refreshEngine() async {
         phase = .checking
+        defer { engineLastCheckedAt = Date() }
         guard let executable = EngineLocator.locate(customPath: customEnginePath) else {
             engine = nil
             engineDiagnostic = EngineLocator.locateHomebrew() == nil
@@ -2777,6 +2816,7 @@ final class AppStore: ObservableObject {
             cleanupScanIncludedMediaAndDuplicates = includeMediaAndDuplicates
             selectedCleanupIDs = Set(response.candidates.filter(\.isRecommended).map(\.id))
             cleanupHasScanned = true
+            cleanupScanCompletedAt = Date()
             await refreshMountedInstallerVolumes(reportFailure: true)
             persistCleanupPreview()
             lastTechnicalDetail = "独立扫描服务已完成 \(response.candidates.count) 项结果，耗时 \(String(format: "%.2f", response.elapsedSeconds)) 秒；高成本文件遍历未在 CleanNest 主进程内执行。"
@@ -4141,19 +4181,19 @@ final class AppStore: ObservableObject {
         bytes: Int64 = 0,
         category: ActivityEntry.Category? = nil
     ) {
-        activities.insert(
-            ActivityEntry(
-                title: title,
-                detail: detail,
-                outcome: outcome,
-                affectedItems: affectedItems,
-                bytes: bytes,
-                category: category
-            ),
-            at: 0
+        let entry = ActivityEntry(
+            title: title,
+            detail: detail,
+            outcome: outcome,
+            affectedItems: affectedItems,
+            bytes: bytes,
+            category: category
         )
+        activities.insert(entry, at: 0)
         activities = Array(activities.prefix(100))
+        activityLifetimeTotals.record(entry)
         saveActivities()
+        saveActivityLifetimeTotals()
     }
 
     func exportActivities(to url: URL) throws {
@@ -4166,7 +4206,14 @@ final class AppStore: ObservableObject {
     func clearActivities() {
         activities = []
         saveActivities()
-        lastTechnicalDetail = "CleanNest 活动记录已清空；废纸篓和 Mole 自身日志未改变。"
+        requestedActivityDetailID = nil
+        lastTechnicalDetail = "CleanNest 活动明细已清空；累计成果、废纸篓和 Mole 自身日志未改变。"
+    }
+
+    func resetActivityLifetimeTotals() {
+        activityLifetimeTotals = ActivityLifetimeTotals()
+        saveActivityLifetimeTotals()
+        lastTechnicalDetail = "CleanNest 累计成果已归零；活动明细、文件和废纸篓未改变。"
     }
 
     private var activityFileURL: URL {
@@ -4186,6 +4233,34 @@ final class AppStore: ObservableObject {
         guard let data = try? JSONEncoder().encode(activities) else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: url, options: .atomic)
+    }
+
+    private func loadActivityLifetimeTotals() {
+        let url = CleanNestDataPaths.activityLifetimeTotals()
+        do {
+            if let saved = try ActivityLifetimeTotalsPersistence.load(from: url) {
+                activityLifetimeTotals = saved
+                return
+            }
+            activityLifetimeTotals = ActivityLifetimeTotals(entries: activities)
+            if !activities.isEmpty { saveActivityLifetimeTotals() }
+        } catch {
+            activityLifetimeTotals = ActivityLifetimeTotals(entries: activities)
+            lastTechnicalDetail = "累计成果记录无法读取，已从现有活动明细重建：\(error.localizedDescription)"
+            saveActivityLifetimeTotals()
+        }
+    }
+
+    private func saveActivityLifetimeTotals() {
+        guard !demoMode else { return }
+        do {
+            try ActivityLifetimeTotalsPersistence.save(
+                activityLifetimeTotals,
+                to: CleanNestDataPaths.activityLifetimeTotals()
+            )
+        } catch {
+            lastTechnicalDetail = "累计成果记录无法保存：\(error.localizedDescription)"
+        }
     }
 
     private func seedDemoAgentWorkspace(home: URL) {
@@ -4523,9 +4598,11 @@ final class AppStore: ObservableObject {
         let home = URL(fileURLWithPath: "/Users/demo", isDirectory: true)
         diskRoot = home
         fullDiskAccessProbeResult = .accessible
+        fullDiskAccessProbeCompletedAt = Date()
         localAIEnabled = true
         engine = EngineInstallation(executable: URL(fileURLWithPath: "/opt/homebrew/bin/mole"), version: "Mole 1.48.1")
         engineDiagnostic = "演示引擎已就绪"
+        engineLastCheckedAt = Date()
         systemSnapshot = SystemSnapshot(
             host: "MacBook Pro",
             healthScore: 92,
@@ -4690,6 +4767,7 @@ final class AppStore: ObservableObject {
         cleanupScanIncludedMediaAndDuplicates = true
         selectedCleanupIDs = Set(cleanupCandidates.filter(\.isRecommended).map(\.id))
         cleanupHasScanned = true
+        cleanupScanCompletedAt = Date()
         let demoModelID = "Qwen3.8-27B-Uncensored-8bit"
         let demoModelPath = home
             .appendingPathComponent("Models/MLX/Qwen3.8-27B-Uncensored-8bit", isDirectory: true)

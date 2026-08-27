@@ -29,7 +29,9 @@ codesign --verify --deep --strict --verbose=2 build/CleanNest.app
 spctl --assess --type execute --verbose=2 build/CleanNest.app
 ```
 
-使用真实身份时，构建脚本会分别签署内置 `CleanNestMCP` 和外层 App，并启用 Hardened Runtime 与可信时间戳。本机直接运行脚本仍生成当前架构版本。
+使用 Developer ID 身份时，构建脚本会分别签署内置 `CleanNestMCP` 和外层 App，并启用 Hardened Runtime 与可信时间戳。本机直接运行脚本仍生成当前架构版本。
+
+项目的 `Yuan OS Local Code Signing` 是为了在开发 Mac 上稳定 TCC 代码身份的自签名证书，不是 Developer ID。构建脚本对它保留 Hardened Runtime，但明确不请求 Apple 发行时间戳，避免本机重建被网络时间戳故障阻断。这不改变其“仅本机开发”性质；指定 Developer ID 身份时仍必须获得可信时间戳。
 
 ## 免费 Universal 2 验证产物
 

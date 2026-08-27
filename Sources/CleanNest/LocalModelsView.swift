@@ -64,6 +64,7 @@ struct LocalModelsView: View {
                     runtimeList
                 }
 
+                modelDiagnosticsCard
                 platformCoverage
 
                 InlineBanner(
@@ -610,6 +611,109 @@ struct LocalModelsView: View {
         }
     }
 
+    private var modelDiagnosticsCard: some View {
+        SurfaceCard(
+            title: "最小推理测速",
+            symbol: "gauge.with.dots.needle.67percent",
+            tint: CNTheme.violet
+        ) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("只对当前配置的模型短 ID 发出一个“OK”最小请求。")
+                            .font(.subheadline.weight(.medium))
+                        Text("不发送扫描结果、文件名或文件内容；结果只代表当前机器负载。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 10)
+                    if store.localAIBenchmarkPhase.isRunning {
+                        ProgressView().controlSize(.small)
+                    }
+                    Button(store.localAIBenchmarkResult == nil ? "运行最小测速" : "重新测速") {
+                        Task { await store.runLocalAIBenchmark() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!store.localAIIsReady || store.localAIBenchmarkPhase.isRunning)
+                    .accessibilityHint("发送一个仅包含 OK 的本机推理请求")
+                }
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        benchmarkFact(
+                            "健康检查",
+                            value: store.localAIProbeLatencyMilliseconds.map { "\(Int($0.rounded())) ms" } ?? "—",
+                            detail: store.localAIIsReady ? "回环服务可达" : "等待连接"
+                        )
+                        benchmarkFact(
+                            "首字延迟",
+                            value: store.localAIBenchmarkResult.map { "\(Int($0.firstTokenMilliseconds.rounded())) ms" } ?? "—",
+                            detail: "真实流式首个输出"
+                        )
+                        benchmarkFact(
+                            "完整响应",
+                            value: benchmarkTotalValue,
+                            detail: benchmarkThroughputDetail
+                        )
+                    }
+                    VStack(spacing: 10) {
+                        benchmarkFact(
+                            "健康检查",
+                            value: store.localAIProbeLatencyMilliseconds.map { "\(Int($0.rounded())) ms" } ?? "—",
+                            detail: store.localAIIsReady ? "回环服务可达" : "等待连接"
+                        )
+                        benchmarkFact(
+                            "首字延迟",
+                            value: store.localAIBenchmarkResult.map { "\(Int($0.firstTokenMilliseconds.rounded())) ms" } ?? "—",
+                            detail: "真实流式首个输出"
+                        )
+                        benchmarkFact(
+                            "完整响应",
+                            value: benchmarkTotalValue,
+                            detail: benchmarkThroughputDetail
+                        )
+                    }
+                }
+
+                if let model = configuredLocalAIModel {
+                    Label(modelMemoryGuidance(model), systemImage: "memorychip")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                switch store.localAIBenchmarkPhase {
+                case .failed(let detail):
+                    InlineBanner(
+                        title: "最小推理测速未完成",
+                        detail: detail,
+                        kind: .warning
+                    )
+                case .completed:
+                    if let result = store.localAIBenchmarkResult {
+                        Text("本次实测对象：\(result.modelID)。这不是长文本吞吐或峰值内存承诺。")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .textSelection(.enabled)
+                    }
+                case .idle, .running:
+                    if !store.localAIIsReady {
+                        HStack(spacing: 10) {
+                            Label("先确认设置中的回环服务与模型短 ID，才能运行测速。", systemImage: "info.circle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            Button("检测连接") {
+                                Task { await store.probeLocalAI() }
+                            }
+                            .disabled(!store.localAIEnabled || store.localAIServiceState.isBusy)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private var platformCoverage: some View {
         SurfaceCard(title: "平台覆盖", symbol: "square.stack.3d.up", tint: CNTheme.violet) {
             VStack(alignment: .leading, spacing: 12) {
@@ -647,6 +751,59 @@ struct LocalModelsView: View {
                 }
             }
         }
+    }
+
+    private func benchmarkFact(_ title: String, value: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 18, weight: .semibold, design: .rounded))
+                .monospacedMetric()
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+
+    private var benchmarkTotalValue: String {
+        store.localAIBenchmarkResult.map { "\(Int($0.totalMilliseconds.rounded())) ms" } ?? "—"
+    }
+
+    private var benchmarkThroughputDetail: String {
+        guard let result = store.localAIBenchmarkResult else { return "等待用户主动测速" }
+        if let rate = result.tokensPerSecond {
+            return String(format: "%.1f token/s · %d token", rate, result.outputTokens ?? 0)
+        }
+        return "\(result.outputCharacters) 个输出字符"
+    }
+
+    private var configuredLocalAIModel: LocalModelDescriptor? {
+        store.localAIModelDescriptor(path: store.localAIModelPath)
+    }
+
+    private func modelMemoryGuidance(_ model: LocalModelDescriptor) -> String {
+        let physical = store.systemSnapshot?.memoryTotalBytes
+            ?? Int64(clamping: ProcessInfo.processInfo.physicalMemory)
+        guard model.weightBytes > 0, physical > 0 else {
+            return "未取得完整权重或物理内存数据；是否可运行仍以实际载入结果为准。"
+        }
+        let ratio = Double(model.weightBytes) / Double(physical)
+        let verdict: String
+        if ratio <= 0.55 {
+            verdict = "权重仍为系统、KV 缓存和其他 App 留有较明显空间"
+        } else if ratio <= 0.75 {
+            verdict = "可用余量有限，长上下文或同时运行多个重型 App 时应观察内存压力"
+        } else {
+            verdict = "权重已接近本机物理内存，实际载入和长上下文可能出现明显压力"
+        }
+        return "模型权重约 \(CleanNestFormatting.bytes(model.weightBytes))，本机物理内存 \(CleanNestFormatting.bytes(physical))：\(verdict)。这不是峰值内存承诺。"
     }
 
     private func fact(_ title: String, value: String, symbol: String) -> some View {

@@ -67,4 +67,80 @@ final class ActivityStatisticsTests: XCTestCase {
         XCTAssertEqual(statistics.processedBytes, 2_048)
         XCTAssertEqual(statistics.cleanedItems, 4)
     }
+
+    func testLifetimeTotalsSurviveDetailListResetAndRoundTrip() throws {
+        let entries = [
+            ActivityEntry(
+                date: Date(timeIntervalSince1970: 100),
+                title: "清理空间",
+                detail: "done",
+                outcome: .success,
+                affectedItems: 8,
+                bytes: 4_096,
+                category: .cleanup
+            ),
+            ActivityEntry(
+                date: Date(timeIntervalSince1970: 200),
+                title: "卸载 Example",
+                detail: "done",
+                outcome: .partial,
+                affectedItems: 2,
+                bytes: 2_048,
+                category: .applicationUninstall
+            )
+        ]
+        let totals = ActivityLifetimeTotals(entries: entries)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("totals.json")
+
+        try ActivityLifetimeTotalsPersistence.save(totals, to: url)
+        let loaded = try XCTUnwrap(ActivityLifetimeTotalsPersistence.load(from: url))
+
+        XCTAssertEqual(loaded.processedBytes, 6_144)
+        XCTAssertEqual(loaded.cleanedItems, 8)
+        XCTAssertEqual(loaded.uninstalledApplications, 1)
+        XCTAssertEqual(loaded.productiveOperations, 2)
+
+        var detailList = entries
+        detailList.removeAll()
+        XCTAssertTrue(detailList.isEmpty)
+        XCTAssertEqual(loaded.processedBytes, 6_144)
+    }
+
+    func testActivityFilterCombinesSearchCategoryOutcomeAndTime() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let entries = [
+            ActivityEntry(
+                date: now.addingTimeInterval(-60),
+                title: "清理 Codex 缓存",
+                detail: "已移到废纸篓",
+                outcome: .success,
+                category: .cleanup
+            ),
+            ActivityEntry(
+                date: now.addingTimeInterval(-120),
+                title: "卸载 Codex",
+                detail: "未完成",
+                outcome: .failed,
+                category: .applicationUninstall
+            ),
+            ActivityEntry(
+                date: now.addingTimeInterval(-8 * 24 * 60 * 60),
+                title: "清理 Codex 缓存",
+                detail: "旧记录",
+                outcome: .success,
+                category: .cleanup
+            )
+        ]
+        let filter = ActivityFilter(
+            query: "codex",
+            category: .cleanup,
+            outcome: .success,
+            timeWindow: .week
+        )
+
+        XCTAssertEqual(filter.apply(to: entries, relativeTo: now).map(\.detail), ["已移到废纸篓"])
+    }
 }

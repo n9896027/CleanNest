@@ -29,6 +29,18 @@ public enum CleanNestWorkload: String, CaseIterable, Codable, Hashable, Sendable
     case nativeDeveloperStorage
 }
 
+public enum CleanNestSettingsSection: String, CaseIterable, Identifiable, Codable, Sendable {
+    case general
+    case menuBar
+    case scanAndPrivacy
+    case localAI
+    case historyAndStorage
+    case advanced
+    case about
+
+    public var id: String { rawValue }
+}
+
 /// Centralizes which work is allowed at launch and which work is page-scoped.
 /// The GUI executes this policy; tests can therefore prevent a heavy scanner
 /// from quietly returning to the cold-start path.
@@ -56,7 +68,20 @@ public enum AppLifecyclePolicy {
         case .localModels:
             return [.localModelCatalog, .localModelRuntimeDiscovery, .localAIProbe]
         case .settings:
-            return [.fullDiskAccessProbe, .localModelCatalog]
+            return []
+        }
+    }
+
+    public static func foregroundWorkloads(
+        forSettingsSection section: CleanNestSettingsSection
+    ) -> Set<CleanNestWorkload> {
+        switch section {
+        case .scanAndPrivacy:
+            return [.fullDiskAccessProbe]
+        case .localAI:
+            return [.localModelCatalog, .localModelRuntimeDiscovery, .localAIProbe]
+        case .general, .menuBar, .historyAndStorage, .advanced, .about:
+            return []
         }
     }
 

@@ -45,6 +45,11 @@ public enum CleanNestDataPaths {
             .appendingPathComponent("activity.json", isDirectory: false)
     }
 
+    public static func activityLifetimeTotals(fileManager: FileManager = .default) -> URL {
+        applicationSupportDirectory(fileManager: fileManager)
+            .appendingPathComponent("activity-lifetime-totals.json", isDirectory: false)
+    }
+
     public static func evolutionMemory(fileManager: FileManager = .default) -> URL {
         applicationSupportDirectory(fileManager: fileManager)
             .appendingPathComponent("evolution-memory.json", isDirectory: false)

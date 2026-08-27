@@ -32,6 +32,20 @@ final class AppLifecyclePolicyTests: XCTestCase {
         XCTAssertTrue(
             AppLifecyclePolicy.foregroundWorkloads(for: .overview).isEmpty
         )
+        XCTAssertTrue(
+            AppLifecyclePolicy.foregroundWorkloads(for: .settings).isEmpty
+        )
+        XCTAssertEqual(
+            AppLifecyclePolicy.foregroundWorkloads(forSettingsSection: .scanAndPrivacy),
+            [.fullDiskAccessProbe]
+        )
+        XCTAssertEqual(
+            AppLifecyclePolicy.foregroundWorkloads(forSettingsSection: .localAI),
+            [.localModelCatalog, .localModelRuntimeDiscovery, .localAIProbe]
+        )
+        XCTAssertTrue(
+            AppLifecyclePolicy.foregroundWorkloads(forSettingsSection: .general).isEmpty
+        )
     }
 
     func testOnlyHeavyPresentationPagesRequestRelease() {
