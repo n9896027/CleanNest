@@ -164,6 +164,20 @@ public enum AgentWorkspaceRecoveryError: LocalizedError, Equatable {
     }
 }
 
+public enum AgentWorkspaceBackupCapacityPolicy {
+    public static let safetyMarginBytes: Int64 = 512 * 1_024 * 1_024
+
+    public static func requiredFreeBytes(forLogicalBytes logicalBytes: Int64) -> Int64 {
+        let safeLogicalBytes = max(0, logicalBytes)
+        guard safeLogicalBytes <= Int64.max - safetyMarginBytes else { return Int64.max }
+        return safeLogicalBytes + safetyMarginBytes
+    }
+
+    public static func hasCapacity(logicalBytes: Int64, availableBytes: Int64) -> Bool {
+        max(0, availableBytes) >= requiredFreeBytes(forLogicalBytes: logicalBytes)
+    }
+}
+
 /// GUI-only, backup-first mutation boundary for Agent cache/log/temp files.
 ///
 /// The read-only MCP and scanner targets do not link this module. Every
@@ -291,9 +305,13 @@ public struct AgentWorkspaceRecoveryService: Sendable {
 
         let freeBefore = try Self.freeBytes(at: recoveryRoot)
         let logicalBytes = candidates.reduce(Int64(0)) { Self.saturatingAdd($0, $1.identity.logicalBytes) }
-        let safetyMargin: Int64 = 512 * 1_024 * 1_024
-        let required = Self.saturatingAdd(logicalBytes, safetyMargin)
-        guard freeBefore >= required else {
+        let required = AgentWorkspaceBackupCapacityPolicy.requiredFreeBytes(
+            forLogicalBytes: logicalBytes
+        )
+        guard AgentWorkspaceBackupCapacityPolicy.hasCapacity(
+            logicalBytes: logicalBytes,
+            availableBytes: freeBefore
+        ) else {
             throw AgentWorkspaceRecoveryError.insufficientBackupCapacity(
                 required: required,
                 available: freeBefore

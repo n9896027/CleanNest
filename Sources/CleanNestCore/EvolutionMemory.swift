@@ -862,6 +862,13 @@ public struct EvolutionMemory: Codable, Equatable, Sendable {
 }
 
 public enum EvolutionMemoryPersistence {
+    /// A one-time copy of the last pre-v3 learning file. CleanNest 0.6.5 does
+    /// not understand trial expiry metadata, so keeping this file is safer
+    /// than pretending a v3 rule set can be downgraded losslessly.
+    public static func rollbackBackupURL(for url: URL) -> URL {
+        url.deletingPathExtension().appendingPathExtension("pre-v3.json")
+    }
+
     public static func load(from url: URL) throws -> EvolutionMemory {
         guard FileManager.default.fileExists(atPath: url.path) else { return EvolutionMemory() }
         let decoder = JSONDecoder()
@@ -879,10 +886,22 @@ public enum EvolutionMemoryPersistence {
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        try preserveRollbackBackupIfNeeded(at: url)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(memory)
         try data.write(to: url, options: .atomic)
+    }
+
+    private static func preserveRollbackBackupIfNeeded(at url: URL) throws {
+        let backupURL = rollbackBackupURL(for: url)
+        guard !FileManager.default.fileExists(atPath: backupURL.path),
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let schemaVersion = root["schemaVersion"] as? Int,
+              (1..<EvolutionMemory.schemaVersion).contains(schemaVersion) else { return }
+        try data.write(to: backupURL, options: .atomic)
     }
 }

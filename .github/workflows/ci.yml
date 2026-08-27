@@ -30,7 +30,13 @@ jobs:
         run: swift --version
 
       - name: Validate build script syntax
-        run: bash -n build.sh
+        run: |
+          bash -n build.sh
+          zsh -n scripts/verify-release-candidate.sh
+          zsh -n scripts/verify-48h-soak-report.sh
+
+      - name: Validate localization catalog
+        run: swift Tools/LocalizationAudit.swift Resources/Localizable.xcstrings
 
       - name: Run unit tests with coverage
         run: swift test --enable-code-coverage
@@ -42,6 +48,19 @@ jobs:
         env:
           CLEANNEST_CODESIGN_IDENTITY: "-"
         run: ./build.sh release
+
+      - name: Validate SBOM generator
+        run: |
+          swift Tools/SBOMGenerator.swift build/CleanNest.app build/CleanNest-ci.spdx.json
+          jq empty build/CleanNest-ci.spdx.json
+
+      - name: Validate 48-hour evidence parser with accelerated fixture
+        run: |
+          report="$RUNNER_TEMP/cleannest-soak-fixture.tsv"
+          printf 'timestamp\tpid\trss_kb\tcpu_percent\tapp_state\talert_history_mtime\tlogin_item_state\tdisplay_count\n' > "$report"
+          printf '2026-08-27T00:00:00Z\t100\t180000\t1.0\trunning\t-\tloaded\t1\n' >> "$report"
+          printf '2026-08-27T00:02:00Z\t100\t181000\t1.2\trunning\t-\tloaded\t1\n' >> "$report"
+          CLEANNEST_REQUIRED_SOAK_SECONDS=120 scripts/verify-48h-soak-report.sh "$report"
 
       - name: Smoke-test bundled read-only MCP
         run: |

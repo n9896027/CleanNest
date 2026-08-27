@@ -85,10 +85,14 @@ public enum DiskScanCachePersistence {
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .millisecondsSince1970
-        let cache = try decoder.decode(DiskScanCacheStore.self, from: Data(contentsOf: url))
-        guard cache.schemaVersion == DiskScanCacheStore.schemaVersion else {
+        var cache = try decoder.decode(DiskScanCacheStore.self, from: Data(contentsOf: url))
+        guard (1...DiskScanCacheStore.schemaVersion).contains(cache.schemaVersion) else {
             return DiskScanCacheStore()
         }
+        // 0.6.5 wrote schema 1 without traversal evidence. The new field is
+        // optional, so the index can be upgraded in memory without throwing
+        // away an otherwise valid, privacy-preserving cache.
+        cache.schemaVersion = DiskScanCacheStore.schemaVersion
         return cache
     }
 

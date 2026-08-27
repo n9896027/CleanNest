@@ -206,6 +206,47 @@ final class LocalModelRuntimeTopologyTests: XCTestCase {
         XCTAssertEqual(modelTransitions.map(\.kind), [.modelChanged])
     }
 
+    func testRepeatedModelUpDownSequenceNeverInventsReplacement() {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let stopped = LocalModelRuntimeSnapshot(
+            capturedAt: date,
+            instances: [],
+            diagnostic: "stopped"
+        )
+        let runningValue = runtime(
+            id: "omlx:80:8080",
+            platform: .omlx,
+            pid: 80,
+            ownerUserID: UInt32(getuid())
+        )
+        let running = LocalModelRuntimeSnapshot(
+            capturedAt: date.addingTimeInterval(1),
+            instances: [runningValue],
+            diagnostic: "running"
+        )
+
+        XCTAssertEqual(
+            LocalModelRuntimeTransitionDetector.compare(
+                previous: stopped,
+                current: running,
+                date: date.addingTimeInterval(1)
+            ).map(\.kind),
+            [.appeared]
+        )
+        XCTAssertEqual(
+            LocalModelRuntimeTransitionDetector.compare(
+                previous: running,
+                current: LocalModelRuntimeSnapshot(
+                    capturedAt: date.addingTimeInterval(2),
+                    instances: [],
+                    diagnostic: "stopped again"
+                ),
+                date: date.addingTimeInterval(2)
+            ).map(\.kind),
+            [.disappeared]
+        )
+    }
+
     private func runtime(
         id: String,
         platform: LocalModelPlatform,

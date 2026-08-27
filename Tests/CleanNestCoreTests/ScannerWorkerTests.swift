@@ -106,6 +106,42 @@ final class ScannerWorkerTests: XCTestCase {
         }
     }
 
+    func testCancellationStormLeavesEveryWorkerCancelledWithoutCompletedProgress() async throws {
+        let home = try temporaryDirectory(named: "CleanNestScannerCancellationStorm")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let downloads = home.appendingPathComponent("Downloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
+        for index in 0..<500 {
+            try Data(repeating: UInt8(index % 251), count: 64)
+                .write(to: downloads.appendingPathComponent("file-\(index).dmg"))
+        }
+
+        let worker = ScannerWorker()
+        var cancelledCount = 0
+        for index in 0..<24 {
+            let recorder = ScannerProgressRecorder()
+            let request = CleanupScannerRequest(
+                requestID: "cancellation-storm-\(index)",
+                homeDirectory: home,
+                includeApplicationCaches: false,
+                includeMediaAndDuplicates: true,
+                developerMode: true
+            )
+            let task = Task {
+                try await worker.scanCleanup(request) { recorder.append($0) }
+            }
+            task.cancel()
+            do {
+                _ = try await task.value
+                XCTFail("Cancellation storm iteration \(index) published a response")
+            } catch is CancellationError {
+                cancelledCount += 1
+            }
+            XCTAssertFalse(recorder.values.contains { $0.stage == .completed })
+        }
+        XCTAssertEqual(cancelledCount, 24)
+    }
+
     func testAgentWorkspaceWorkerReturnsTransportableReadOnlyResult() async throws {
         let home = try temporaryDirectory(named: "CleanNestScannerAgentWorkspace")
         defer { try? FileManager.default.removeItem(at: home) }

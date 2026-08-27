@@ -142,6 +142,9 @@ CleanNest 可以连接本机 `mlx_lm.server`，为清理候选和磁盘目录补
 | [0.7.6 验证报告](docs/VERIFICATION-0.7.6.md) | 维护任务只读预检、影响确认、前后证据、恢复复核与诚实的不确定状态 |
 | [0.7.7 验证报告](docs/VERIFICATION-0.7.7.md) | 本地模型证据拓扑、客户端实连、四级控制边界、运行时诊断与 Ollama 空服务闭环 |
 | [0.7.8 验证报告](docs/VERIFICATION-0.7.8.md) | Agent 概览/单体懒加载、类别规则簇、限时试用、排序影响与 10,000 条历史投影 |
+| [0.7.9 候选验证报告](docs/VERIFICATION-0.7.9.md) | 0.6.5 迁移/回退、取消风暴、三语言审计、48 小时证据门与 SBOM/来源证明 |
+| [0.7 数据迁移与回退](docs/MIGRATION-0.7.md) | 设置、指标、活动、索引、学习规则和 Agent 恢复记录的真实兼容边界 |
+| [本地化覆盖状态](docs/LOCALIZATION-STATUS.md) | 三语言 Catalog 覆盖、仍会回落中文的源码缺口和严格发布门 |
 | [0.7 系列路线图](docs/ROADMAP-0.7.md) | 0.7.0–0.7.9 的产品、架构、验收门和明确不承诺事项 |
 | [0.6.5 全栏目审计](docs/AUDIT-0.6.5.md) | 每个页面的现状、缺口、性能与无障碍证据 |
 | [0.6.2 验证报告](docs/VERIFICATION-0.6.2.md) | Agent 占用账本、活跃保护、XPC 内存、失败关闭与真机扫描证据 |
@@ -183,6 +186,6 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-当前开发里程碑为 **0.7.8（Build 35）**；0.6 系列封存版仍为 0.6.5。CI 会在 Apple Silicon 与 Intel runner 上编译并运行测试。欢迎通过 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可复现的问题或功能建议；安全问题请使用私密漏洞报告渠道。
+当前开发候选为 **0.7.9（Build 36）**；它已加入迁移、回退、稳定性与来源证明门，但真实 48 小时、完整三语言 UI、Developer ID 和 Apple 公证仍未通过，因此不是正式安装包。0.6 系列封存版仍为 0.6.5。CI 会在 Apple Silicon 与 Intel runner 上编译并运行测试。欢迎通过 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可复现的问题或功能建议；安全问题请使用私密漏洞报告渠道。
 
 App 的核心导航、总览、磁盘、系统状态与设置关键界面已提供 English、简体中文和繁體中文资源；涉及运行时路径或深度诊断的动态文案可能仍回退为源语言。日本語和한국어 README 用于说明项目范围，完整 UI 本地化仍会继续扩充。

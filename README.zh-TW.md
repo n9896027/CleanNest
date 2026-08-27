@@ -147,6 +147,6 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-目前開發里程碑為 **0.7.8（Build 35）**；0.6 系列封存基線仍為 0.6.5。CI 會在 Apple Silicon 與 Intel runner 上建置並執行測試。歡迎透過 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可重現問題或功能建議；安全漏洞請私密回報。
+目前開發候選為 **0.7.9（Build 36）**；已加入遷移、回復、穩定性與來源證明關卡，但真實 48 小時、完整三語 UI、Developer ID 與 Apple 公證仍未通過，因此不是正式安裝包。0.6 系列封存基線仍為 0.6.5。CI 會在 Apple Silicon 與 Intel runner 上建置並執行測試。歡迎透過 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可重現問題或功能建議；安全漏洞請私密回報。
 
 目前 App 介面與詳細維護文件仍以簡體中文為主。本繁體中文 README 用於正確說明專案範圍，不代表介面本地化已完成。
