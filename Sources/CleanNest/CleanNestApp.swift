@@ -31,6 +31,7 @@ struct CleanNestApp: App {
                         Task { await store.applicationDidBecomeActive() }
                     }
                     SnapshotCapture.captureIfRequested(store: store)
+                    MemoryBudgetCapture.runIfRequested(store: store)
                     if CleanNestLaunchContext.menuBarOnly {
                         NSApp.setActivationPolicy(.accessory)
                         DispatchQueue.main.async {

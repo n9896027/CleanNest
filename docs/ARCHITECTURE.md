@@ -5,7 +5,10 @@
 ```text
 SwiftUI 界面
     ↓ 用户明确操作
+AppLifecyclePolicy：冷启动与各页面允许的工作负载
+    ↓ 单槽任务、进入页面加载、离开页面取消/延迟释放
 AppStore 状态与任务编排
+    ├─ AgentWorkspacePresentationState：Agent 页独立发布域
     ├─ CleanNestScanner.xpc：可丢弃的独立文件扫描进程
     │       ↓ 版本化 JSON Data，只返回进度与完整结果
     │  CleanNestCore：扫描、解码、安全策略、进程复核、SQLite 指标
@@ -35,6 +38,15 @@ macOS ServiceManagement
 - `Tests/CleanNestCoreTests`：可定位的确定性单元测试。
 - `build.sh`：编译、生成图标、原子组装 App Bundle、签名并验证指定要求。
 
+## 页面生命周期与内存边界（0.7.0）
+
+1. 冷启动只允许菜单栏原生监测、Mole 探测、指标存储准备和用户启用的本地模型运行时发现；不会加载指标图表、进程列表、模型目录、完全磁盘访问探测或 Agent 文件级结果。
+2. `RootView` 以当前侧栏页面驱动 `AppLifecyclePolicy`。清理、卸载和磁盘页才探测文件访问；系统状态页才加载历史与进程；Agent 页才启动 XPC 遍历和原生开发工具账本；模型/设置页才读取模型目录。
+3. Agent 约 20 项高频状态位于独立 `AgentWorkspacePresentationState`，扫描进度不会触发无关页面与菜单栏的 `AppStore.objectWillChange`。冷启动只读取不含路径和动作能力的 `AgentWorkspaceSummary`。
+4. 菜单栏、指标、模型运行时和 Agent 监测都使用单一可取消 Task 槽；重新开始前取消旧任务。Agent 监测还要求 App 处于前台且 Agent 页仍为当前页面。
+5. 离开 Agent 或系统状态页 15 秒后释放文件级快照、依赖图、开发工具预览、进程列表和图表点；聚合摘要、持久化历史和恢复记录不被删除。
+6. `MemoryBudgetCapture` 只在显式测试环境变量存在时运行，以 `task_vm_info.phys_footprint` 记录冷启动、全页巡游和真实 Agent 场景；普通 App 启动不创建报告或自动巡页。
+
 ## 扫描与解释数据流
 
 1. 用户选择功能或目录。
@@ -49,12 +61,12 @@ macOS ServiceManagement
 
 增量索引最多保存 12 个根的哈希身份、条目相对身份、签名、大小和计数，不保存完整绝对路径或文件正文。只有扫描与证据两阶段都完成时，App 才会同时替换报告与完成元数据。取消、XPC 中断或服务崩溃会保留上一次完整结果；App 不会回退到主进程扫描。客户端关闭连接后，扫描服务主动退出，下次扫描由 macOS 重新启动。
 
-## Agent 工作区数据流（0.6.4 P2）
+## Agent 工作区数据流（0.7.0）
 
 1. 主 App 从内置目录或已验证的同签名者规则包取得 `AgentRuleCatalog`；扫描协议 v3 把这份值类型规则送入独立 XPC。XPC 只在通过路径边界验证的根下使用 `FTS_PHYSICAL` 读取文件类型、分配块、逻辑大小、修改时间和设备/文件号；不跟随符号链接，不打开会话正文、代码或凭据内容。
 2. 扫描前用当前用户的 `lsof` 打开文件表定位活跃文件；即使未在表内，近 15 分钟仍有写入的文件也会锁定。打开文件探测失败时明确降级，不会把未知活跃状态冒充为安全。
 3. 扫描最多处理每个 Agent 600,000 个目录项。读取失败、取消或达到上限的分组标记为不完整，其预览体积强制为零；上一次完整界面结果和基线保留。
-4. App 只在整次结果完整时写入 `agent-workspace-observation.json`，其中仅有时间、Agent/分类 ID 与分配块体积，没有绝对路径。后续扫描用该基线识别明显增长。
+4. App 只在整次结果完整时写入 `agent-workspace-observation.json`，其中仅有时间、Agent/分类 ID 与分配块体积，没有绝对路径；同时写入更小的 `agent-workspace-summary.json`，后者只含供应方聚合数量、体积、活跃项数和摘要文字。后续扫描用观察基线识别明显增长，冷启动只读取聚合摘要。
 5. 扫描器只为二进制硬编码支持的 Codex/Claude 缓存、临时文件和日志中的静置普通文件生成有界执行令牌；令牌绑定供应方、分类、路径、设备号、文件号、所有者、逻辑/分配大小与纳秒级修改时间。外部规则、新 Agent、会话、索引、记忆、凭据、运行时和虚拟机没有执行令牌。
 6. 用户手动选择后，GUI 专用 `CleanNestMutation` 再读取打开文件表并复核全部身份。它在同一数据卷的 `Application Support/CleanNest/AgentRecovery` 建立权限为 `0700` 的事务目录，以硬链接作为无复制备份源，使用固定参数调用系统 `ditto` 创建 ZIP，并要求 `unzip -tqq` CRC 校验成功。
 7. 备份完成后再次复核打开状态与身份，才以排他原子重命名把原件移入事务区；部分失败会反向回滚。完整压缩包成立后才释放事务原件，并保存含原路径的本机恢复清单。恢复不会覆盖 Agent 后来重建的同名文件。

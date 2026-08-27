@@ -5,6 +5,7 @@ import CleanNestMutation
 
 struct AgentWorkspaceView: View {
     @EnvironmentObject private var store: AppStore
+    @ObservedObject var presentation: AgentWorkspacePresentationState
     @State private var showingRecoveryConfirmation = false
     @State private var showingArchiveSuggestions = false
     @State private var nativeCleanupRequest: NativeDeveloperStorageEntry?
@@ -56,26 +57,23 @@ struct AgentWorkspaceView: View {
                         store.lastTechnicalDetail = snapshot.diagnostic
                         store.showTechnicalDetail()
                     }
-                } else if store.agentWorkspacePhase.isScanning {
-                    loadingPanel
                 } else {
-                    EmptyPanel(
-                        symbol: "sparkle.magnifyingglass",
-                        title: "尚未建立 Agent 占用账本",
-                        detail: "首次扫描只读取文件大小、数量、时间与打开状态。"
-                    )
+                    if let summary = store.agentWorkspaceSummary {
+                        cachedSummaryPanel(summary)
+                    }
+                    if store.agentWorkspacePhase.isScanning {
+                        loadingPanel
+                    } else if store.agentWorkspaceSummary == nil {
+                        EmptyPanel(
+                            symbol: "sparkle.magnifyingglass",
+                            title: "尚未建立 Agent 占用账本",
+                            detail: "首次扫描只读取文件大小、数量、时间与打开状态。"
+                        )
+                    }
                 }
             }
             .frame(maxWidth: CNTheme.contentMaxWidth, alignment: .leading)
             .padding(CNTheme.pagePadding)
-        }
-        .task {
-            if store.agentWorkspaceSnapshot == nil {
-                await store.refreshAgentWorkspace()
-            }
-            if store.nativeDeveloperStorageSnapshot == nil {
-                await store.refreshNativeDeveloperStorage()
-            }
         }
         .sheet(isPresented: $showingRecoveryConfirmation) {
             AgentWorkspaceRecoveryConfirmation(
@@ -136,6 +134,55 @@ struct AgentWorkspaceView: View {
                 }
             }
         }
+    }
+
+    private func cachedSummaryPanel(_ summary: AgentWorkspaceSummary) -> some View {
+        SurfaceCard(prominence: .prominent, tint: CNTheme.violet) {
+            ContentSectionHeader(
+                "上次完成的聚合结果",
+                detail: summary.capturedAt.formatted(date: .abbreviated, time: .shortened),
+                symbol: "clock.arrow.circlepath",
+                tint: CNTheme.violet
+            ) {
+                StatusPill(
+                    text: summary.isComplete ? "历史结果" : "历史结果不完整",
+                    symbol: "clock",
+                    style: summary.isComplete ? .neutral : .warning
+                )
+            }
+
+            HStack(spacing: 12) {
+                MetricCard(
+                    label: "Agent",
+                    value: "\(summary.providers.count) 个",
+                    detail: "仅聚合计数",
+                    symbol: "terminal",
+                    tint: CNTheme.violet
+                )
+                MetricCard(
+                    label: "上次占用",
+                    value: CleanNestFormatting.bytes(summary.allocatedBytes),
+                    detail: "不含文件路径",
+                    symbol: "internaldrive",
+                    tint: CNTheme.cyan
+                )
+                MetricCard(
+                    label: "文件",
+                    value: summary.fileCount.formatted(),
+                    detail: "活跃 \(summary.activeFileCount) 个",
+                    symbol: "doc.on.doc",
+                    tint: CNTheme.warning
+                )
+            }
+
+            InlineBanner(
+                title: "正在重新验证，不会沿用旧处置权限",
+                detail: "这个摘要不含路径、打开文件或处置令牌；刷新完成前只能看，不能据此清理。",
+                kind: .info
+            )
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("上次完成的 Agent 聚合结果")
     }
 
     private func storageLedger(_ snapshot: AgentWorkspaceSnapshot) -> some View {

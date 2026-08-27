@@ -427,7 +427,7 @@ struct SystemStatusView: View {
                         kind: .info
                     )
                 } else {
-                    VStack(spacing: 0) {
+                    LazyVStack(spacing: 0) {
                         ForEach(Array(processes.enumerated()), id: \.element.id) { index, process in
                             memoryProcessRow(process)
                             if index < processes.count - 1 {

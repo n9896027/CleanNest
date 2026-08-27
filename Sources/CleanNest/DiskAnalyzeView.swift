@@ -112,7 +112,7 @@ struct DiskAnalyzeView: View {
                                 .foregroundStyle(.secondary)
                                 .padding(.vertical, 18)
                         } else {
-                            VStack(spacing: 0) {
+                            LazyVStack(spacing: 0) {
                                 ForEach(Array(report.entries.enumerated()), id: \.element.id) { index, entry in
                                     DiskEntryRow(entry: entry, maximumBytes: largestBytes)
                                     if index < report.entries.count - 1 { Divider().padding(.leading, 42) }
@@ -427,7 +427,7 @@ private struct DiskDecisionCenter: View {
     }
 
     private var decisionList: some View {
-        VStack(spacing: 0) {
+        LazyVStack(spacing: 0) {
             if filteredItems.isEmpty {
                 Text("这个筛选下没有项目。")
                     .font(.caption)

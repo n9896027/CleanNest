@@ -1,0 +1,75 @@
+{
+  "appVersion" : "CleanNest 0.7.0 (27)",
+  "coldBudgetBytes" : 230686720,
+  "demoMode" : true,
+  "interactionBudgetBytes" : 681574400,
+  "limitations" : [
+    "页面巡游使用合成数据；它验证渲染生命周期，不证明真实扫描峰值。"
+  ],
+  "mode" : "tour",
+  "passed" : true,
+  "samples" : [
+    {
+      "capturedAt" : "2026-08-27T06:46:26Z",
+      "phase" : "page-overview",
+      "physicalFootprintBytes" : 392332344
+    },
+    {
+      "capturedAt" : "2026-08-27T06:46:27Z",
+      "phase" : "page-cleanup",
+      "physicalFootprintBytes" : 473351272
+    },
+    {
+      "capturedAt" : "2026-08-27T06:46:27Z",
+      "phase" : "page-applications",
+      "physicalFootprintBytes" : 376620184
+    },
+    {
+      "capturedAt" : "2026-08-27T06:46:27Z",
+      "phase" : "page-disk",
+      "physicalFootprintBytes" : 472745136
+    },
+    {
+      "capturedAt" : "2026-08-27T06:46:28Z",
+      "phase" : "page-systemStatus",
+      "physicalFootprintBytes" : 438928632
+    },
+    {
+      "capturedAt" : "2026-08-27T06:46:28Z",
+      "phase" : "page-maintenance",
+      "physicalFootprintBytes" : 411206928
+    },
+    {
+      "capturedAt" : "2026-08-27T06:46:29Z",
+      "phase" : "page-agentWorkspace",
+      "physicalFootprintBytes" : 539739456
+    },
+    {
+      "capturedAt" : "2026-08-27T06:46:29Z",
+      "phase" : "page-localModels",
+      "physicalFootprintBytes" : 415155496
+    },
+    {
+      "capturedAt" : "2026-08-27T06:46:29Z",
+      "phase" : "page-learning",
+      "physicalFootprintBytes" : 433259840
+    },
+    {
+      "capturedAt" : "2026-08-27T06:46:30Z",
+      "phase" : "page-activity",
+      "physicalFootprintBytes" : 417498432
+    },
+    {
+      "capturedAt" : "2026-08-27T06:46:30Z",
+      "phase" : "page-settings",
+      "physicalFootprintBytes" : 488867136
+    },
+    {
+      "capturedAt" : "2026-08-27T06:47:30Z",
+      "phase" : "tour-settled",
+      "physicalFootprintBytes" : 199394624
+    }
+  ],
+  "schemaVersion" : 1,
+  "settledBudgetBytes" : 367001600
+}

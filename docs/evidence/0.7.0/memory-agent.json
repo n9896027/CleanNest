@@ -1,0 +1,30 @@
+{
+  "appVersion" : "CleanNest 0.7.0 (27)",
+  "coldBudgetBytes" : 230686720,
+  "demoMode" : false,
+  "interactionBudgetBytes" : 681574400,
+  "limitations" : [
+
+  ],
+  "mode" : "agent",
+  "passed" : true,
+  "samples" : [
+    {
+      "capturedAt" : "2026-08-27T06:47:52Z",
+      "phase" : "agent-first-scan",
+      "physicalFootprintBytes" : 344474872
+    },
+    {
+      "capturedAt" : "2026-08-27T06:47:59Z",
+      "phase" : "agent-repeat-scan",
+      "physicalFootprintBytes" : 334005520
+    },
+    {
+      "capturedAt" : "2026-08-27T06:49:00Z",
+      "phase" : "agent-settled",
+      "physicalFootprintBytes" : 206619824
+    }
+  ],
+  "schemaVersion" : 1,
+  "settledBudgetBytes" : 367001600
+}

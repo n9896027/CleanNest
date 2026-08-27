@@ -4,6 +4,8 @@ import CleanNestCore
 struct EvolutionView: View {
     @EnvironmentObject private var store: AppStore
     @State private var confirmingReset = false
+    @State private var visibleRuleLimit = 100
+    @State private var visibleModelLimit = 50
 
     private var hasMemory: Bool {
         !store.evolutionMemory.events.isEmpty
@@ -33,7 +35,10 @@ struct EvolutionView: View {
             }
             .frame(maxWidth: CNTheme.contentMaxWidth, alignment: .leading)
             .padding(CNTheme.pagePadding)
+            .accessibilityElement(children: .contain)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("本机学习")
         .alert("清空所有本机学习记录？", isPresented: $confirmingReset) {
             Button("取消", role: .cancel) { }
             Button("清空记录", role: .destructive) {
@@ -226,7 +231,9 @@ struct EvolutionView: View {
     }
 
     private var ruleReview: some View {
-        SurfaceCard(
+        let proposals = store.evolutionMemory.sortedRuleProposals
+        let visibleProposals = Array(proposals.prefix(visibleRuleLimit))
+        return SurfaceCard(
             title: "规则审核台",
             symbol: "checklist",
             prominence: .prominent,
@@ -246,13 +253,21 @@ struct EvolutionView: View {
                         detail: "在清理列表中选择“提议：以后优先清理/保留”，或完成一次安全清理。"
                     )
                 } else {
-                    VStack(spacing: 0) {
-                        ForEach(Array(store.evolutionMemory.sortedRuleProposals.enumerated()), id: \.element.id) { index, proposal in
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(visibleProposals.enumerated()), id: \.element.id) { index, proposal in
                             ruleRow(proposal)
-                            if index < store.evolutionMemory.sortedRuleProposals.count - 1 {
+                            if index < visibleProposals.count - 1 {
                                 Divider().padding(.leading, 43)
                             }
                         }
+                    }
+                    if visibleProposals.count < proposals.count {
+                        Button("再显示 \(min(100, proposals.count - visibleProposals.count)) 条") {
+                            visibleRuleLimit += 100
+                        }
+                        .buttonStyle(.borderless)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityHint("只加载更多规则行，不会启用或修改规则")
                     }
                 }
             }
@@ -294,6 +309,7 @@ struct EvolutionView: View {
             ruleActions(proposal)
         }
         .padding(.vertical, 10)
+        .accessibilityElement(children: .contain)
     }
 
     @ViewBuilder
@@ -370,12 +386,14 @@ struct EvolutionView: View {
     }
 
     private var modelMemory: some View {
-        SurfaceCard(title: "模型表现", symbol: "brain.head.profile") {
+        let signals = store.evolutionMemory.sortedModelSignals
+        let visibleSignals = Array(signals.prefix(visibleModelLimit))
+        return SurfaceCard(title: "模型表现", symbol: "brain.head.profile") {
             if store.evolutionMemory.sortedModelSignals.isEmpty {
                 compactEmpty(symbol: "hand.thumbsup", title: "还没有模型评价", detail: "完成一次 AI 分析后，评价建议是否有帮助。")
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(store.evolutionMemory.sortedModelSignals.enumerated()), id: \.element.id) { index, signal in
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(visibleSignals.enumerated()), id: \.element.id) { index, signal in
                         HStack(spacing: 10) {
                             Image(systemName: "cpu").foregroundStyle(CNTheme.accent).frame(width: 26)
                             VStack(alignment: .leading, spacing: 3) {
@@ -393,10 +411,17 @@ struct EvolutionView: View {
                             }
                         }
                         .padding(.vertical, 9)
-                        if index < store.evolutionMemory.sortedModelSignals.count - 1 {
+                        if index < visibleSignals.count - 1 {
                             Divider().padding(.leading, 36)
                         }
                     }
+                }
+                if visibleSignals.count < signals.count {
+                    Button("再显示 \(min(50, signals.count - visibleSignals.count)) 个模型") {
+                        visibleModelLimit += 50
+                    }
+                    .buttonStyle(.borderless)
+                    .frame(maxWidth: .infinity)
                 }
             }
         }

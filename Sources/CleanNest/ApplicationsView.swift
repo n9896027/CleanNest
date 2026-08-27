@@ -219,7 +219,7 @@ struct ApplicationsView: View {
                                     .foregroundStyle(.secondary)
                                     .padding(.vertical, 8)
                             } else {
-                                VStack(spacing: 0) {
+                                LazyVStack(spacing: 0) {
                                     ForEach(Array(store.selectedApplicationLeftovers.enumerated()), id: \.element.id) { index, item in
                                         UninstallItemRow(
                                             title: item.name,

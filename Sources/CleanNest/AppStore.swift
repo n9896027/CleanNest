@@ -41,6 +41,22 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     static let spaceItems: [SidebarItem] = [.cleanup, .applications, .analyze]
     static let systemItems: [SidebarItem] = [.status, .maintenance]
     static let intelligenceItems: [SidebarItem] = [.agentWorkspace, .models, .evolution]
+
+    var lifecycleSurface: CleanNestSurface {
+        switch self {
+        case .overview: return .overview
+        case .cleanup: return .cleanup
+        case .applications: return .applications
+        case .analyze: return .disk
+        case .status: return .systemStatus
+        case .maintenance: return .maintenance
+        case .agentWorkspace: return .agentWorkspace
+        case .models: return .localModels
+        case .evolution: return .learning
+        case .activity: return .activity
+        case .settings: return .settings
+        }
+    }
 }
 
 enum OperationPhase: Equatable {
@@ -249,25 +265,88 @@ final class AppStore: ObservableObject {
 
     @Published var activities: [ActivityEntry] = []
     @Published private(set) var evolutionMemory = EvolutionMemory()
-    @Published private(set) var agentWorkspaceSnapshot: AgentWorkspaceSnapshot?
-    @Published private(set) var agentWorkspacePhase: AgentWorkspaceScanPhase = .idle
-    @Published private(set) var agentWorkspaceDiagnostic = "尚未扫描 Agent 工作痕迹"
-    @Published var selectedAgentWorkspaceCandidateIDs = Set<String>()
-    @Published private(set) var agentWorkspaceRecoveryRecords: [AgentWorkspaceRecoveryRecord] = []
-    @Published private(set) var agentWorkspaceRecoveryPhase: AgentWorkspaceRecoveryPhase = .idle
-    @Published private(set) var agentWorkspaceRecoveryMessage: String?
-    @Published private(set) var agentWorkspaceRecoveryMessageIsWarning = false
-    @Published private(set) var agentRuleCatalog = AgentRuleCatalog.builtIn
-    @Published private(set) var agentRuleCatalogSource: AgentRuleCatalogSource = .builtIn
-    @Published private(set) var agentRuleCatalogDiagnostic = "正在使用内置规则。"
-    @Published private(set) var agentDependencyGraph = AgentDependencyGraphSnapshot.empty
-    @Published private(set) var agentDependencyGraphIsRefreshing = false
-    @Published private(set) var nativeDeveloperStorageSnapshot: NativeDeveloperStorageSnapshot?
-    @Published private(set) var nativeDeveloperStorageIsRefreshing = false
-    @Published private(set) var nativeDeveloperStorageActionTool: NativeDeveloperStorageTool?
-    @Published private(set) var nativeDeveloperStorageMessage: String?
-    @Published private(set) var nativeDeveloperStorageMessageIsWarning = false
-    @Published private(set) var nativeGitRepository: URL?
+    let agentWorkspaceState = AgentWorkspacePresentationState()
+
+    private(set) var agentWorkspaceSummary: AgentWorkspaceSummary? {
+        get { agentWorkspaceState.cachedSummary }
+        set { agentWorkspaceState.cachedSummary = newValue }
+    }
+    private(set) var agentWorkspaceSnapshot: AgentWorkspaceSnapshot? {
+        get { agentWorkspaceState.snapshot }
+        set { agentWorkspaceState.snapshot = newValue }
+    }
+    private(set) var agentWorkspacePhase: AgentWorkspaceScanPhase {
+        get { agentWorkspaceState.phase }
+        set { agentWorkspaceState.phase = newValue }
+    }
+    private(set) var agentWorkspaceDiagnostic: String {
+        get { agentWorkspaceState.diagnostic }
+        set { agentWorkspaceState.diagnostic = newValue }
+    }
+    private(set) var selectedAgentWorkspaceCandidateIDs: Set<String> {
+        get { agentWorkspaceState.selectedCandidateIDs }
+        set { agentWorkspaceState.selectedCandidateIDs = newValue }
+    }
+    private(set) var agentWorkspaceRecoveryRecords: [AgentWorkspaceRecoveryRecord] {
+        get { agentWorkspaceState.recoveryRecords }
+        set { agentWorkspaceState.recoveryRecords = newValue }
+    }
+    private(set) var agentWorkspaceRecoveryPhase: AgentWorkspaceRecoveryPhase {
+        get { agentWorkspaceState.recoveryPhase }
+        set { agentWorkspaceState.recoveryPhase = newValue }
+    }
+    private(set) var agentWorkspaceRecoveryMessage: String? {
+        get { agentWorkspaceState.recoveryMessage }
+        set { agentWorkspaceState.recoveryMessage = newValue }
+    }
+    private(set) var agentWorkspaceRecoveryMessageIsWarning: Bool {
+        get { agentWorkspaceState.recoveryMessageIsWarning }
+        set { agentWorkspaceState.recoveryMessageIsWarning = newValue }
+    }
+    private(set) var agentRuleCatalog: AgentRuleCatalog {
+        get { agentWorkspaceState.ruleCatalog }
+        set { agentWorkspaceState.ruleCatalog = newValue }
+    }
+    private(set) var agentRuleCatalogSource: AgentRuleCatalogSource {
+        get { agentWorkspaceState.ruleCatalogSource }
+        set { agentWorkspaceState.ruleCatalogSource = newValue }
+    }
+    private(set) var agentRuleCatalogDiagnostic: String {
+        get { agentWorkspaceState.ruleCatalogDiagnostic }
+        set { agentWorkspaceState.ruleCatalogDiagnostic = newValue }
+    }
+    private(set) var agentDependencyGraph: AgentDependencyGraphSnapshot {
+        get { agentWorkspaceState.dependencyGraph }
+        set { agentWorkspaceState.dependencyGraph = newValue }
+    }
+    private(set) var agentDependencyGraphIsRefreshing: Bool {
+        get { agentWorkspaceState.dependencyGraphIsRefreshing }
+        set { agentWorkspaceState.dependencyGraphIsRefreshing = newValue }
+    }
+    private(set) var nativeDeveloperStorageSnapshot: NativeDeveloperStorageSnapshot? {
+        get { agentWorkspaceState.nativeDeveloperStorageSnapshot }
+        set { agentWorkspaceState.nativeDeveloperStorageSnapshot = newValue }
+    }
+    private(set) var nativeDeveloperStorageIsRefreshing: Bool {
+        get { agentWorkspaceState.nativeDeveloperStorageIsRefreshing }
+        set { agentWorkspaceState.nativeDeveloperStorageIsRefreshing = newValue }
+    }
+    private(set) var nativeDeveloperStorageActionTool: NativeDeveloperStorageTool? {
+        get { agentWorkspaceState.nativeDeveloperStorageActionTool }
+        set { agentWorkspaceState.nativeDeveloperStorageActionTool = newValue }
+    }
+    private(set) var nativeDeveloperStorageMessage: String? {
+        get { agentWorkspaceState.nativeDeveloperStorageMessage }
+        set { agentWorkspaceState.nativeDeveloperStorageMessage = newValue }
+    }
+    private(set) var nativeDeveloperStorageMessageIsWarning: Bool {
+        get { agentWorkspaceState.nativeDeveloperStorageMessageIsWarning }
+        set { agentWorkspaceState.nativeDeveloperStorageMessageIsWarning = newValue }
+    }
+    private(set) var nativeGitRepository: URL? {
+        get { agentWorkspaceState.nativeGitRepository }
+        set { agentWorkspaceState.nativeGitRepository = newValue }
+    }
     @Published var customEnginePath = ""
     @Published var lastTechnicalDetail = ""
     @Published var showingTechnicalDetail = false
@@ -318,8 +397,15 @@ final class AppStore: ObservableObject {
     private var localModelDiscoveryID = UUID()
     private var localModelRuntimeMonitorTask: Task<Void, Never>?
     private var agentWorkspaceMonitorTask: Task<Void, Never>?
+    private var activeAgentWorkspaceScanTask: Task<AgentWorkspaceScannerResponse, Error>?
+    private var agentWorkspaceReleaseTask: Task<Void, Never>?
+    private var systemStatusReleaseTask: Task<Void, Never>?
     private var agentWorkspaceScanID = UUID()
     private var applicationIsActive = true
+    private var activeLifecyclePage: SidebarItem?
+    private var hasLoadedEvolutionMemory = false
+    private var hasLoadedDiskManualDecisions = false
+    private var hasLoadedAgentWorkspaceRecoveryRecords = false
 
     init() {
         demoMode = ProcessInfo.processInfo.environment["CLEANNEST_DEMO"] == "1"
@@ -380,11 +466,12 @@ final class AppStore: ObservableObject {
             activities = []
             evolutionMemory = EvolutionMemory()
             seedDemoData()
+            hasLoadedEvolutionMemory = true
+            hasLoadedDiskManualDecisions = true
+            hasLoadedAgentWorkspaceRecoveryRecords = true
         } else {
             loadActivities()
-            loadEvolutionMemory()
-            loadDiskManualDecisions()
-            loadAgentWorkspaceRecoveryRecords()
+            loadAgentWorkspaceSummary()
             refreshDiskCapacity()
         }
         Task { await bootstrap() }
@@ -544,21 +631,146 @@ final class AppStore: ObservableObject {
 
     func bootstrap() async {
         if demoMode { return }
-        startNativeMonitoring()
-        await refreshLocalModelCatalog()
-        await prepareMetricsHistory()
-        await refreshFullDiskAccessProbe()
-        await refreshEngine()
+        let workloads = AppLifecyclePolicy.bootstrapWorkloads(
+            menuBarMonitoringEnabled: menuBarConfiguration.isEnabled,
+            localModelMenuBarEnabled: localModelMenuBarEnabled
+        )
+        if workloads.contains(.nativeMenuBarMonitor) {
+            startNativeMonitoring()
+        }
+        if workloads.contains(.metricsStorage) {
+            await prepareMetricsStorage()
+        }
+        if workloads.contains(.engineProbe) {
+            await refreshEngine()
+        }
         if engine != nil {
-            await refreshSystemStatus(silent: true)
             startMetricsSampling()
         }
-        if localAIEnabled {
-            await probeLocalAI()
+        if workloads.contains(.localModelRuntimeDiscovery) {
+            startLocalModelRuntimeMonitoring()
         }
-        startLocalModelRuntimeMonitoring()
-        await refreshAgentWorkspace()
-        startAgentWorkspaceMonitoring()
+    }
+
+    func activatePage(_ page: SidebarItem) async {
+        if activeLifecyclePage != page {
+            deactivatePage(activeLifecyclePage)
+            activeLifecyclePage = page
+        }
+
+        let workloads = AppLifecyclePolicy.foregroundWorkloads(for: page.lifecycleSurface)
+        switch page.lifecycleSurface {
+        case .overview, .maintenance, .activity:
+            break
+        case .cleanup:
+            ensureEvolutionMemoryLoaded()
+            if workloads.contains(.fullDiskAccessProbe) {
+                await refreshFullDiskAccessProbe()
+            }
+        case .applications:
+            if workloads.contains(.fullDiskAccessProbe) {
+                await refreshFullDiskAccessProbe()
+            }
+        case .disk:
+            ensureDiskManualDecisionsLoaded()
+            if workloads.contains(.fullDiskAccessProbe) {
+                await refreshFullDiskAccessProbe()
+            }
+        case .systemStatus:
+            systemStatusReleaseTask?.cancel()
+            systemStatusReleaseTask = nil
+            if workloads.contains(.metricHistory) {
+                await refreshMetricHistory()
+            }
+            guard !Task.isCancelled else { return }
+            if workloads.contains(.processInspection) {
+                await refreshSystemStatus()
+            }
+        case .agentWorkspace:
+            agentWorkspaceReleaseTask?.cancel()
+            agentWorkspaceReleaseTask = nil
+            ensureAgentWorkspaceRecoveryRecordsLoaded()
+            if workloads.contains(.agentWorkspaceScan), agentWorkspaceSnapshot == nil {
+                await refreshAgentWorkspace()
+            }
+            guard !Task.isCancelled, selection == .agentWorkspace else { return }
+            if workloads.contains(.nativeDeveloperStorage), nativeDeveloperStorageSnapshot == nil {
+                await refreshNativeDeveloperStorage()
+            }
+            guard !Task.isCancelled, selection == .agentWorkspace else { return }
+            startAgentWorkspaceMonitoring()
+        case .localModels:
+            if workloads.contains(.localModelCatalog) {
+                await refreshLocalModelCatalog()
+            }
+            guard !Task.isCancelled else { return }
+            if workloads.contains(.localModelRuntimeDiscovery) {
+                await refreshLocalModelRuntimes(force: true)
+            }
+            guard !Task.isCancelled else { return }
+            if workloads.contains(.localAIProbe), localAIEnabled { await probeLocalAI() }
+        case .learning:
+            ensureEvolutionMemoryLoaded()
+        case .settings:
+            if workloads.contains(.fullDiskAccessProbe) {
+                await refreshFullDiskAccessProbe()
+            }
+            guard !Task.isCancelled else { return }
+            if workloads.contains(.localModelCatalog) {
+                await refreshLocalModelCatalog()
+            }
+        }
+    }
+
+    private func deactivatePage(_ page: SidebarItem?) {
+        guard let page else { return }
+        guard AppLifecyclePolicy.releasesHeavyPresentationData(whenLeaving: page.lifecycleSurface) else {
+            return
+        }
+        switch page.lifecycleSurface {
+        case .agentWorkspace:
+            activeAgentWorkspaceScanTask?.cancel()
+            agentWorkspaceMonitorTask?.cancel()
+            agentWorkspaceMonitorTask = nil
+            scheduleAgentWorkspaceRelease()
+        case .systemStatus:
+            scheduleSystemStatusRelease()
+        default:
+            break
+        }
+    }
+
+    private func scheduleAgentWorkspaceRelease() {
+        agentWorkspaceReleaseTask?.cancel()
+        agentWorkspaceReleaseTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(15))
+            } catch {
+                return
+            }
+            guard let self, self.selection != .agentWorkspace,
+                  !self.agentWorkspaceRecoveryPhase.isBusy else { return }
+            self.agentWorkspaceState.releaseHeavyDetails()
+            self.scheduleAgentWorkspaceAllocatorRelief()
+        }
+    }
+
+    private func scheduleSystemStatusRelease() {
+        systemStatusReleaseTask?.cancel()
+        systemStatusReleaseTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(15))
+            } catch {
+                return
+            }
+            guard let self, self.selection != .status else { return }
+            self.memoryProcesses.removeAll(keepingCapacity: false)
+            self.memoryAnalysis = nil
+            self.metricHistory.removeAll(keepingCapacity: false)
+            self.forceTerminationProcessID = nil
+            self.systemStatusReleaseTask = nil
+            self.scheduleAgentWorkspaceAllocatorRelief()
+        }
     }
 
     func refreshAgentWorkspace() async {
@@ -569,35 +781,51 @@ final class AppStore: ObservableObject {
         agentWorkspaceDiagnostic = "正在按 \(agentRuleCatalog.providers.count) 个有界适配器统计文件元数据和活跃写入…"
         let previous = loadAgentWorkspaceObservation()
         let home = FileManager.default.homeDirectoryForCurrentUser
+        let request = AgentWorkspaceScannerRequest(
+            requestID: scanID.uuidString,
+            homeDirectory: home,
+            previousObservation: previous,
+            ruleCatalog: agentRuleCatalog
+        )
+        let client = agentWorkspaceScannerServiceClient
+        let scanTask = Task<AgentWorkspaceScannerResponse, Error> {
+            try await client.scanAgentWorkspace(request)
+        }
+        activeAgentWorkspaceScanTask = scanTask
         do {
-            let response = try await agentWorkspaceScannerServiceClient.scanAgentWorkspace(
-                AgentWorkspaceScannerRequest(
-                    requestID: scanID.uuidString,
-                    homeDirectory: home,
-                    previousObservation: previous,
-                    ruleCatalog: agentRuleCatalog
-                )
-            )
+            let response = try await withTaskCancellationHandler {
+                try await scanTask.value
+            } onCancel: {
+                scanTask.cancel()
+            }
             let result = response.result
             guard response.requestID == scanID.uuidString,
                   agentWorkspaceScanID == scanID else { return }
+            activeAgentWorkspaceScanTask = nil
             agentWorkspaceSnapshot = result.snapshot
             selectedAgentWorkspaceCandidateIDs.formIntersection(
                 Set(result.snapshot.actionCandidates.map(\.id))
             )
             agentWorkspaceDiagnostic = "\(result.snapshot.diagnostic) 耗时 \(String(format: "%.1f", response.elapsedSeconds)) 秒。"
             agentWorkspacePhase = .ready
-            if result.snapshot.isComplete, !result.snapshot.detectedAgents.isEmpty {
+            if result.snapshot.isComplete {
                 saveAgentWorkspaceObservation(result.observation)
+                saveAgentWorkspaceSummary(AgentWorkspaceSummary(snapshot: result.snapshot))
             }
-            await refreshAgentDependencyGraph()
+            if selection == .agentWorkspace {
+                await refreshAgentDependencyGraph()
+            }
             scheduleAgentWorkspaceAllocatorRelief()
         } catch is CancellationError {
             guard agentWorkspaceScanID == scanID else { return }
+            activeAgentWorkspaceScanTask = nil
             agentWorkspacePhase = agentWorkspaceSnapshot == nil ? .idle : .ready
-            agentWorkspaceDiagnostic = "Agent 工作区扫描已取消；上次完整结果仍保留。"
+            agentWorkspaceDiagnostic = agentWorkspaceSummary == nil
+                ? "Agent 工作区扫描已取消；没有发布不完整结果。"
+                : "Agent 工作区扫描已取消；上次聚合结果仍保留，文件级明细需要重新验证。"
         } catch {
             guard agentWorkspaceScanID == scanID else { return }
+            activeAgentWorkspaceScanTask = nil
             let message = "Agent 工作区扫描没有完成：\(error.localizedDescription)"
             agentWorkspacePhase = .failed(message)
             agentWorkspaceDiagnostic = message
@@ -780,6 +1008,7 @@ final class AppStore: ObservableObject {
     private func loadAgentWorkspaceRecoveryRecords() {
         guard !demoMode else {
             agentWorkspaceRecoveryRecords = []
+            hasLoadedAgentWorkspaceRecoveryRecords = true
             return
         }
         do {
@@ -788,6 +1017,12 @@ final class AppStore: ObservableObject {
             agentWorkspaceRecoveryRecords = []
             lastTechnicalDetail = "Agent 恢复记录无法读取：\(error.localizedDescription)"
         }
+        hasLoadedAgentWorkspaceRecoveryRecords = true
+    }
+
+    private func ensureAgentWorkspaceRecoveryRecordsLoaded() {
+        guard !hasLoadedAgentWorkspaceRecoveryRecords else { return }
+        loadAgentWorkspaceRecoveryRecords()
     }
 
     func setNativeGitRepository(_ url: URL?) async {
@@ -894,25 +1129,21 @@ final class AppStore: ObservableObject {
     }
 
     private func startAgentWorkspaceMonitoring() {
-        guard !demoMode else { return }
+        guard !demoMode, applicationIsActive,
+              selection == .agentWorkspace,
+              activeLifecyclePage == .agentWorkspace else { return }
         agentWorkspaceMonitorTask?.cancel()
         agentWorkspaceMonitorTask = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self else { return }
-                let interval: Duration
-                if !self.applicationIsActive {
-                    interval = .seconds(3_600)
-                } else if self.selection == .agentWorkspace {
-                    interval = .seconds(300)
-                } else {
-                    interval = .seconds(900)
-                }
                 do {
-                    try await Task.sleep(for: interval)
+                    try await Task.sleep(for: .seconds(300))
                 } catch {
                     return
                 }
-                guard !Task.isCancelled else { return }
+                guard let self, !Task.isCancelled,
+                      self.applicationIsActive,
+                      self.selection == .agentWorkspace,
+                      self.activeLifecyclePage == .agentWorkspace else { return }
                 await self.refreshAgentWorkspace()
             }
         }
@@ -1485,11 +1716,11 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func prepareMetricsHistory() async {
+    private func prepareMetricsStorage() async {
         do {
             try await metricsStore.prepare()
             _ = try await metricsStore.prune(retainingDays: metricsRetentionDays)
-            await refreshMetricHistory()
+            metricsDiagnostic = "历史记录已开启；进入系统状态时加载图表。"
         } catch {
             metricsDiagnostic = "历史记录未能启用：\(error.localizedDescription)"
         }
@@ -1506,7 +1737,10 @@ final class AppStore: ObservableObject {
                     break
                 }
                 guard let self, !self.isWorking, self.engine != nil else { continue }
-                await self.refreshSystemStatus(silent: true)
+                await self.refreshSystemStatus(
+                    silent: true,
+                    includeProcesses: self.selection == .status
+                )
             }
             self?.metricsSamplingIsActive = false
         }
@@ -1524,7 +1758,9 @@ final class AppStore: ObservableObject {
                 )
             )
             _ = try await metricsStore.prune(retainingDays: metricsRetentionDays)
-            metricHistory = try await metricsStore.samples(range: metricHistoryRange)
+            if selection == .status {
+                metricHistory = try await metricsStore.samples(range: metricHistoryRange)
+            }
             metricsDiagnostic = "每 60 秒本机采样；保留 \(metricsRetentionDays) 天，不上传。"
         } catch {
             metricsDiagnostic = "本次历史采样未保存：\(error.localizedDescription)"
@@ -1761,12 +1997,17 @@ final class AppStore: ObservableObject {
 
     func applicationDidResignActive() {
         applicationIsActive = false
+        agentWorkspaceMonitorTask?.cancel()
+        agentWorkspaceMonitorTask = nil
         guard waitingForFullDiskAccessReturn else { return }
         didResignAfterOpeningFullDiskAccessSettings = true
     }
 
     func applicationDidBecomeActive() async {
         applicationIsActive = true
+        if selection == .agentWorkspace, activeLifecyclePage == .agentWorkspace {
+            startAgentWorkspaceMonitoring()
+        }
         if !demoMode,
            Date().timeIntervalSince(localModelRuntimeSnapshot.capturedAt) >= 15 {
             await refreshLocalModelRuntimes()
@@ -2238,6 +2479,7 @@ final class AppStore: ObservableObject {
         _ candidate: CleanupCandidate,
         preference: LearnedCleanupPreference
     ) {
+        ensureEvolutionMemoryLoaded()
         evolutionMemory.proposeCleanupPreference(
             for: candidate,
             preference: preference,
@@ -2249,26 +2491,31 @@ final class AppStore: ObservableObject {
     }
 
     func forgetCleanupPreference(_ candidate: CleanupCandidate) {
+        ensureEvolutionMemoryLoaded()
         evolutionMemory.removeRuleProposal(id: EvolutionMemory.cleanupKey(for: candidate))
         saveEvolutionMemory()
     }
 
     func enableCleanupRule(_ id: String) {
+        ensureEvolutionMemoryLoaded()
         evolutionMemory.enableRuleProposal(id: id)
         saveEvolutionMemory()
     }
 
     func pauseCleanupRule(_ id: String) {
+        ensureEvolutionMemoryLoaded()
         evolutionMemory.pauseRuleProposal(id: id)
         saveEvolutionMemory()
     }
 
     func removeCleanupRule(_ id: String) {
+        ensureEvolutionMemoryLoaded()
         evolutionMemory.removeRuleProposal(id: id)
         saveEvolutionMemory()
     }
 
     func recordCleanupAIFeedback(helpful: Bool) {
+        ensureEvolutionMemoryLoaded()
         guard cleanupAIFeedback == nil, let analysis = cleanupAIAnalysis else { return }
         cleanupAIFeedback = helpful
         evolutionMemory.recordModelFeedback(
@@ -2281,6 +2528,7 @@ final class AppStore: ObservableObject {
     }
 
     func recordDiskAIFeedback(helpful: Bool) {
+        ensureEvolutionMemoryLoaded()
         guard diskAIFeedback == nil, let analysis = diskAIAnalysis else { return }
         diskAIFeedback = helpful
         evolutionMemory.recordModelFeedback(
@@ -2294,6 +2542,7 @@ final class AppStore: ObservableObject {
 
     func resetEvolutionMemory() {
         evolutionMemory = EvolutionMemory()
+        hasLoadedEvolutionMemory = true
         cleanupAIFeedback = nil
         diskAIFeedback = nil
         saveEvolutionMemory()
@@ -2315,8 +2564,14 @@ final class AppStore: ObservableObject {
         localModelRuntimeMonitorTask = nil
         localModelDiscoveryIsRunning = false
         agentWorkspaceScanID = UUID()
+        activeAgentWorkspaceScanTask?.cancel()
+        activeAgentWorkspaceScanTask = nil
         agentWorkspaceMonitorTask?.cancel()
         agentWorkspaceMonitorTask = nil
+        agentWorkspaceReleaseTask?.cancel()
+        agentWorkspaceReleaseTask = nil
+        systemStatusReleaseTask?.cancel()
+        systemStatusReleaseTask = nil
         activeDiskScanTask?.cancel()
         activeDiskScanTask = nil
         invalidateCleanupAI()
@@ -2325,26 +2580,34 @@ final class AppStore: ObservableObject {
         shutdownLocalAI()
     }
 
-    func refreshSystemStatus(silent: Bool = false) async {
+    func refreshSystemStatus(
+        silent: Bool = false,
+        includeProcesses: Bool = true
+    ) async {
         guard !demoMode else { return }
         let inspector = processMemoryInspector
         let nativeMemoryTask = Task.detached(priority: .utility) {
-            (
-                probe: SystemMemoryProbe.sample(),
-                processes: inspector.topProcesses(limit: 16)
-            )
+            SystemMemoryProbe.sample()
         }
-        let batteryTask = Task.detached(priority: .utility) {
-            PowerSourceProbe.sample()
-        }
+        let processTask: Task<[MemoryProcessSnapshot], Never>? = includeProcesses
+            ? Task.detached(priority: .utility) { inspector.topProcesses(limit: 16) }
+            : nil
+        let batteryTask: Task<BatteryProbeResult, Never>? = includeProcesses
+            ? Task.detached(priority: .utility) { PowerSourceProbe.sample() }
+            : nil
         guard let engine else {
-            let nativeMemory = await nativeMemoryTask.value
-            batteryProbeResult = await batteryTask.value
-            memoryProcesses = nativeMemory.processes
-            if let systemSnapshot {
+            _ = await nativeMemoryTask.value
+            let processes = await processTask?.value ?? []
+            if let batteryTask {
+                batteryProbeResult = await batteryTask.value
+            }
+            if includeProcesses {
+                memoryProcesses = processes
+            }
+            if includeProcesses, let systemSnapshot {
                 memoryAnalysis = MemoryAnalyzer.analyze(
                     snapshot: systemSnapshot,
-                    processes: nativeMemory.processes
+                    processes: processes
                 )
             }
             if !silent { phase = .failed("需要先安装或选择 Mole CLI") }
@@ -2362,19 +2625,25 @@ final class AppStore: ObservableObject {
                 throw CocoaError(.fileReadCorruptFile)
             }
             let nativeMemory = await nativeMemoryTask.value
-            batteryProbeResult = await batteryTask.value
+            let processes = await processTask?.value ?? []
+            if let batteryTask {
+                batteryProbeResult = await batteryTask.value
+            }
             let snapshot = try MoleJSONDecoder.systemSnapshot(
                 from: data,
-                memoryProbe: nativeMemory.probe
+                memoryProbe: nativeMemory
             )
             systemSnapshot = snapshot
-            memoryProcesses = nativeMemory.processes
-            memoryAnalysis = MemoryAnalyzer.analyze(
-                snapshot: snapshot,
-                processes: nativeMemory.processes
-            )
+            if includeProcesses {
+                memoryProcesses = processes
+                memoryAnalysis = MemoryAnalyzer.analyze(
+                    snapshot: snapshot,
+                    processes: processes
+                )
+            }
             if let forceID = forceTerminationProcessID,
-               !nativeMemory.processes.contains(where: { $0.id == forceID }) {
+               includeProcesses,
+               !processes.contains(where: { $0.id == forceID }) {
                 forceTerminationProcessID = nil
             }
             lastTechnicalDetail = result.standardError
@@ -2382,13 +2651,18 @@ final class AppStore: ObservableObject {
             await recordMetric(snapshot)
             phase = .idle
         } catch {
-            let nativeMemory = await nativeMemoryTask.value
-            batteryProbeResult = await batteryTask.value
-            memoryProcesses = nativeMemory.processes
-            if let systemSnapshot {
+            _ = await nativeMemoryTask.value
+            let processes = await processTask?.value ?? []
+            if let batteryTask {
+                batteryProbeResult = await batteryTask.value
+            }
+            if includeProcesses {
+                memoryProcesses = processes
+            }
+            if includeProcesses, let systemSnapshot {
                 memoryAnalysis = MemoryAnalyzer.analyze(
                     snapshot: systemSnapshot,
-                    processes: nativeMemory.processes
+                    processes: processes
                 )
             }
             if !silent { phase = .failed("系统状态暂时不可用") }
@@ -2461,6 +2735,7 @@ final class AppStore: ObservableObject {
 
     func scanCleanup() async {
         guard !demoMode else { return }
+        ensureEvolutionMemoryLoaded()
         guard !isWorking, activeCleanupScanTask == nil else { return }
         let task = Task<Void, Never> { [weak self] in
             guard let self else { return }
@@ -2852,6 +3127,7 @@ final class AppStore: ObservableObject {
 
     func analyze(_ root: URL? = nil, deepRefresh: Bool = false) async {
         guard !demoMode else { return }
+        ensureDiskManualDecisionsLoaded()
         guard !isWorking, activeDiskScanTask == nil else { return }
         let target = (root ?? diskRoot).standardizedFileURL
         let task = Task { [weak self] in
@@ -2882,7 +3158,8 @@ final class AppStore: ObservableObject {
     }
 
     func manualDiskDecision(for entry: DiskEvidenceEntry) -> DiskManualDecision? {
-        diskManualDecisions.decision(for: entry)
+        ensureDiskManualDecisionsLoaded()
+        return diskManualDecisions.decision(for: entry)
     }
 
     func canMarkForCleanupReview(_ entry: DiskEvidenceEntry) -> Bool {
@@ -2893,6 +3170,7 @@ final class AppStore: ObservableObject {
         _ decision: DiskManualDecision?,
         for entry: DiskEvidenceEntry
     ) {
+        ensureDiskManualDecisionsLoaded()
         do {
             var updated = diskManualDecisions
             try updated.set(decision, for: entry)
@@ -3752,6 +4030,12 @@ final class AppStore: ObservableObject {
             evolutionMemory = EvolutionMemory()
             lastTechnicalDetail = "本机学习记录无法读取，已使用空白记忆：\(error.localizedDescription)"
         }
+        hasLoadedEvolutionMemory = true
+    }
+
+    private func ensureEvolutionMemoryLoaded() {
+        guard !demoMode, !hasLoadedEvolutionMemory else { return }
+        loadEvolutionMemory()
     }
 
     private func saveEvolutionMemory() {
@@ -3770,6 +4054,30 @@ final class AppStore: ObservableObject {
         let url = CleanNestDataPaths.agentWorkspaceObservation()
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(AgentWorkspaceObservation.self, from: data)
+    }
+
+    private func loadAgentWorkspaceSummary() {
+        do {
+            agentWorkspaceSummary = try AgentWorkspaceSummaryPersistence.load(
+                from: CleanNestDataPaths.agentWorkspaceSummary()
+            )
+        } catch {
+            agentWorkspaceSummary = nil
+            lastTechnicalDetail = "Agent 聚合摘要无法读取；文件级扫描尚未运行：\(error.localizedDescription)"
+        }
+    }
+
+    private func saveAgentWorkspaceSummary(_ summary: AgentWorkspaceSummary) {
+        guard !demoMode else { return }
+        do {
+            try AgentWorkspaceSummaryPersistence.save(
+                summary,
+                to: CleanNestDataPaths.agentWorkspaceSummary()
+            )
+            agentWorkspaceSummary = summary
+        } catch {
+            lastTechnicalDetail = "Agent 聚合摘要未能保存：\(error.localizedDescription)"
+        }
     }
 
     private func saveAgentWorkspaceObservation(_ observation: AgentWorkspaceObservation) {
@@ -3798,6 +4106,12 @@ final class AppStore: ObservableObject {
             diskManualDecisions = DiskManualDecisionStore()
             lastTechnicalDetail = "手动清理决策无法读取，已使用空白记录：\(error.localizedDescription)"
         }
+        hasLoadedDiskManualDecisions = true
+    }
+
+    private func ensureDiskManualDecisionsLoaded() {
+        guard !demoMode, !hasLoadedDiskManualDecisions else { return }
+        loadDiskManualDecisions()
     }
 
     private func saveDiskManualDecisions() {

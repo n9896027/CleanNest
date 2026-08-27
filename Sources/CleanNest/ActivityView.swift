@@ -55,7 +55,7 @@ struct ActivityView: View {
                     )
 
                     SurfaceCard {
-                        VStack(spacing: 0) {
+                        LazyVStack(spacing: 0) {
                             ForEach(Array(store.activities.enumerated()), id: \.element.id) { index, entry in
                                 ActivityRow(entry: entry)
                                 if index < store.activities.count - 1 { Divider().padding(.leading, 45) }
