@@ -107,19 +107,22 @@ public struct LocalModelProcessSnapshot: Equatable, Codable, Sendable {
     public let executablePath: String?
     public let residentMemoryBytes: Int64?
     public let startedAt: Date?
+    public let ownerUserID: UInt32?
 
     public init(
         pid: Int32,
         commandName: String,
         executablePath: String?,
         residentMemoryBytes: Int64?,
-        startedAt: Date?
+        startedAt: Date?,
+        ownerUserID: UInt32? = nil
     ) {
         self.pid = pid
         self.commandName = commandName
         self.executablePath = executablePath
         self.residentMemoryBytes = residentMemoryBytes
         self.startedAt = startedAt
+        self.ownerUserID = ownerUserID
     }
 }
 
@@ -138,6 +141,8 @@ public struct LocalModelRuntimeInstance: Identifiable, Equatable, Codable, Senda
     public let isOwnedByCleanNest: Bool
     public let diagnostic: String
     public let engineMemoryBytes: Int64?
+    public let clients: [LocalModelClientConnection]
+    public let issues: [LocalModelRuntimeIssue]
 
     public init(
         id: String,
@@ -153,7 +158,9 @@ public struct LocalModelRuntimeInstance: Identifiable, Equatable, Codable, Senda
         evidence: [LocalModelEvidenceKind],
         isOwnedByCleanNest: Bool = false,
         diagnostic: String,
-        engineMemoryBytes: Int64? = nil
+        engineMemoryBytes: Int64? = nil,
+        clients: [LocalModelClientConnection] = [],
+        issues: [LocalModelRuntimeIssue] = []
     ) {
         self.id = id
         self.platform = platform
@@ -174,6 +181,11 @@ public struct LocalModelRuntimeInstance: Identifiable, Equatable, Codable, Senda
         self.isOwnedByCleanNest = isOwnedByCleanNest
         self.diagnostic = diagnostic
         self.engineMemoryBytes = engineMemoryBytes
+        self.clients = clients
+            .cnUniqued(on: { "\($0.processID):\($0.endpoint.displayAddress)" })
+            .sorted { ($0.commandName, $0.processID) < ($1.commandName, $1.processID) }
+        self.issues = issues
+            .cnUniqued(on: \.kind)
     }
 
     public var primaryModelID: String? {
@@ -208,7 +220,9 @@ public struct LocalModelRuntimeInstance: Identifiable, Equatable, Codable, Senda
             evidence: evidence,
             isOwnedByCleanNest: true,
             diagnostic: diagnostic,
-            engineMemoryBytes: engineMemoryBytes
+            engineMemoryBytes: engineMemoryBytes,
+            clients: clients,
+            issues: issues
         )
     }
 
@@ -317,16 +331,24 @@ public struct LocalModelRuntimeDiscovery: Sendable {
 
     public init() {}
 
-    public func discover(configuredEndpoint: String? = nil) async -> LocalModelRuntimeSnapshot {
+    public func discover(
+        configuredEndpoint: String? = nil,
+        configuredModelID: String? = nil
+    ) async -> LocalModelRuntimeSnapshot {
         let lsofResult = Self.runSystemCommand(
             executable: "/usr/sbin/lsof",
             arguments: ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"]
         )
+        let establishedResult = Self.runSystemCommand(
+            executable: "/usr/sbin/lsof",
+            arguments: ["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-Fpcn"]
+        )
         let processResult = Self.runSystemCommand(
             executable: "/bin/ps",
-            arguments: ["-axo", "pid=,rss=,lstart=,comm=,args="]
+            arguments: ["-axo", "pid=,uid=,rss=,lstart=,comm=,args="]
         )
         let listenerRecords = Self.parseLsofFieldOutput(lsofResult.output)
+        let establishedConnections = Self.parseEstablishedFieldOutput(establishedResult.output)
         let processRecords = Self.parseProcessList(processResult.output)
         let supervisorInventory = LocalModelSupervisorDiscovery.capture()
         let supervisorsByProcessID = supervisorInventory.byProcessID
@@ -364,7 +386,7 @@ public struct LocalModelRuntimeDiscovery: Sendable {
             )
         }
 
-        for port in [8080, 11434, 1234] {
+        for port in LocalModelPlatformAdapterRegistry.defaultPorts {
             registerCandidate(
                 port: port,
                 processID: listenerRecords.first(where: { $0.listener.port == port })?.pid,
@@ -423,6 +445,21 @@ public struct LocalModelRuntimeDiscovery: Sendable {
             let phase = apiProbe?.phase ?? .runningUnverified
             let diagnostic = apiProbe?.diagnostic
                 ?? "发现进程或监听端口，但平台 API 尚未确认模型身份。"
+            let clients = Self.clientConnections(
+                forPort: candidate.port,
+                serverProcessID: process?.snapshot.pid,
+                connections: establishedConnections
+            )
+            let issues = Self.runtimeIssues(
+                candidate: candidate,
+                platform: platform,
+                apiProbe: apiProbe,
+                process: process,
+                supervisor: supervisor,
+                listeners: listeners,
+                clients: clients,
+                configuredModelID: configuredModelID
+            )
             let stableID = "\(platform.rawValue):\(candidate.processID.map(String.init) ?? "api"):\(candidate.port)"
             instances.append(
                 LocalModelRuntimeInstance(
@@ -442,7 +479,9 @@ public struct LocalModelRuntimeDiscovery: Sendable {
                         : [],
                     evidence: evidence,
                     diagnostic: diagnostic,
-                    engineMemoryBytes: apiProbe?.engineMemoryBytes
+                    engineMemoryBytes: apiProbe?.engineMemoryBytes,
+                    clients: clients,
+                    issues: issues
                 )
             )
         }
@@ -501,7 +540,7 @@ public struct LocalModelRuntimeDiscovery: Sendable {
             return (lhs.process?.pid ?? 0) < (rhs.process?.pid ?? 0)
         }
 
-        let commandFailures = [lsofResult, processResult].filter { $0.exitCode != 0 }
+        let commandFailures = [lsofResult, establishedResult, processResult].filter { $0.exitCode != 0 }
         let diagnostic: String
         if let healthy = instances.first(where: { $0.phase == .runningHealthy }) {
             diagnostic = "已确认 \(healthy.platform.displayName) 的进程、地址与模型 API。"
@@ -567,18 +606,151 @@ public struct LocalModelRuntimeDiscovery: Sendable {
         return LocalModelListener(host: host, port: port)
     }
 
+    public static func parseEstablishedFieldOutput(
+        _ output: String
+    ) -> [LocalModelTCPConnectionRecord] {
+        var records: [LocalModelTCPConnectionRecord] = []
+        var currentPID: Int32?
+        var currentCommand = ""
+        for rawLine in output.split(whereSeparator: \.isNewline) {
+            let line = String(rawLine)
+            guard let field = line.first else { continue }
+            var value = String(line.dropFirst())
+            switch field {
+            case "p":
+                currentPID = Int32(value)
+                currentCommand = ""
+            case "c":
+                currentCommand = sanitizedProcessLabel(value)
+            case "n":
+                guard let processID = currentPID else { continue }
+                if let state = value.range(of: " (ESTABLISHED)") {
+                    value.removeSubrange(state.lowerBound...)
+                }
+                let endpoints = value.components(separatedBy: "->")
+                guard endpoints.count == 2,
+                      let local = parseListener(endpoints[0]),
+                      let remote = parseListener(endpoints[1]) else { continue }
+                records.append(
+                    LocalModelTCPConnectionRecord(
+                        processID: processID,
+                        commandName: currentCommand,
+                        localEndpoint: local,
+                        remoteEndpoint: remote
+                    )
+                )
+            default:
+                continue
+            }
+        }
+        return records
+    }
+
+    public static func clientConnections(
+        forPort port: Int,
+        serverProcessID: Int32?,
+        connections: [LocalModelTCPConnectionRecord]
+    ) -> [LocalModelClientConnection] {
+        connections.compactMap { connection in
+            guard connection.processID != serverProcessID else { return nil }
+            let endpoint: LocalModelListener
+            if connection.remoteEndpoint.port == port {
+                endpoint = connection.localEndpoint
+            } else if connection.localEndpoint.port == port {
+                endpoint = connection.remoteEndpoint
+            } else {
+                return nil
+            }
+            return LocalModelClientConnection(
+                processID: connection.processID,
+                commandName: connection.commandName.isEmpty ? "未知客户端" : connection.commandName,
+                endpoint: endpoint
+            )
+        }
+    }
+
+    private static func runtimeIssues(
+        candidate: Candidate,
+        platform: LocalModelPlatform,
+        apiProbe: APIProbe?,
+        process: ProcessRecord?,
+        supervisor: LocalModelSupervisorSnapshot?,
+        listeners: [LocalModelListener],
+        clients: [LocalModelClientConnection],
+        configuredModelID: String?
+    ) -> [LocalModelRuntimeIssue] {
+        var issues: [LocalModelRuntimeIssue] = []
+        if candidate.isConfigured,
+           apiProbe == nil,
+           process?.platform == nil,
+           !listeners.isEmpty {
+            issues.append(.init(
+                kind: .configuredPortConflict,
+                title: "配置端口被其他进程占用",
+                detail: "127.0.0.1:\(candidate.port) 由 \(process?.snapshot.commandName ?? "未知进程") 监听，但没有返回可验证的模型 API。",
+                isWarning: true
+            ))
+        }
+        let preferred = configuredModelID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if candidate.isConfigured,
+           !preferred.isEmpty,
+           let apiProbe,
+           !apiProbe.modelIDs.contains(where: {
+               $0.caseInsensitiveCompare(preferred) == .orderedSame
+           }) {
+            issues.append(.init(
+                kind: .modelSelectionMismatch,
+                title: "已选模型短 ID 不在服务列表",
+                detail: "当前配置为“\(preferred)”，请从该服务实际返回的短 ID 中重新选择；不要填写模型文件路径。",
+                isWarning: true
+            ))
+        }
+        if let supervisor,
+           !supervisor.isDisabled,
+           supervisor.keepAlive || supervisor.runAtLoad {
+            issues.append(.init(
+                kind: .automaticRestart,
+                title: "关闭 PID 后可能自动重启",
+                detail: "\(supervisor.label) · \(supervisor.restartDescription)。",
+                isWarning: true
+            ))
+        }
+        if !clients.isEmpty {
+            issues.append(.init(
+                kind: .activeClients,
+                title: "有客户端正在连接",
+                detail: "当前观察到 \(clients.count) 个客户端连接；关闭服务会中断它们正在进行的请求。",
+                isWarning: true
+            ))
+        }
+        if listeners.contains(where: { $0.isWildcard || !$0.isLoopback }) {
+            issues.append(.init(
+                kind: .localNetworkExposure,
+                title: "服务可能被局域网访问",
+                detail: "监听地址不只限于 127.0.0.1；CleanNest 只提示风险，不修改防火墙或绑定地址。",
+                isWarning: true
+            ))
+        }
+        if let apiProbe, platform == .ollama, apiProbe.modelIDs.isEmpty {
+            issues.append(.init(
+                kind: .noLoadedModel,
+                title: "服务在运行，但没有模型驻留",
+                detail: "Ollama /api/ps 当前没有列出已加载模型；这不是健康推理实例。",
+                isWarning: false
+            ))
+        } else if apiProbe?.phase != .runningHealthy {
+            issues.append(.init(
+                kind: .apiUnverified,
+                title: "模型 API 尚未完整确认",
+                detail: "进程或端口存在不等于模型可调用；需要平台 API 返回有效短 ID。",
+                isWarning: false
+            ))
+        }
+        return issues
+    }
+
     public static func classifyPlatform(text rawText: String) -> LocalModelPlatform? {
-        let text = rawText.lowercased()
-        if text.contains("omlx") || text.contains("omlx-server") { return .omlx }
-        if text.contains("mlx_lm.server") || text.contains("mlx-lm-server") { return .mlxLM }
-        if text.contains("ollama") { return .ollama }
-        if text.contains("lm studio") || text.contains("lm-studio") || text.contains("lmstudio") {
-            return .lmStudio
-        }
-        if text.contains("llama-server") || text.contains("llama_server") || text.contains("llama.cpp") {
-            return .llamaCPP
-        }
-        return nil
+        LocalModelPlatformAdapterRegistry.classify(processText: rawText)
     }
 
     private static func parseProcessList(_ output: String) -> [Int32: ProcessRecord] {
@@ -588,25 +760,26 @@ public struct LocalModelRuntimeDiscovery: Sendable {
         var records: [Int32: ProcessRecord] = [:]
         for rawLine in output.split(whereSeparator: \.isNewline) {
             let components = rawLine.split(omittingEmptySubsequences: true, whereSeparator: \.isWhitespace)
-            guard components.count >= 8,
+            guard components.count >= 9,
                   let pid = Int32(components[0]),
-                  let rssKiB = Int64(components[1]) else { continue }
-            let dateText = components[2...6].map(String.init).joined(separator: " ")
-            let command = sanitizedProcessLabel(String(components[7]))
-            let arguments = components.count > 8
-                ? components[8...].map(String.init).joined(separator: " ")
+                  let ownerUserID = UInt32(components[1]),
+                  let rssKiB = Int64(components[2]) else { continue }
+            let dateText = components[3...7].map(String.init).joined(separator: " ")
+            let command = sanitizedProcessLabel(String(components[8]))
+            let arguments = components.count > 9
+                ? components[9...].map(String.init).joined(separator: " ")
                 : ""
             let classificationText = command + " " + arguments
             let platform = classifyPlatform(text: classificationText)
-            guard platform != nil else { continue }
-            let executable = String(components[7])
+            let executable = String(components[8])
             records[pid] = ProcessRecord(
                 snapshot: LocalModelProcessSnapshot(
                     pid: pid,
                     commandName: command,
                     executablePath: executable.hasPrefix("/") ? executable : nil,
                     residentMemoryBytes: max(0, rssKiB) * 1_024,
-                    startedAt: formatter.date(from: dateText)
+                    startedAt: formatter.date(from: dateText),
+                    ownerUserID: ownerUserID
                 ),
                 argumentsForClassification: classificationText,
                 platform: platform
@@ -616,8 +789,9 @@ public struct LocalModelRuntimeDiscovery: Sendable {
     }
 
     private static func probe(candidate: Candidate) async -> APIProbe? {
-        if candidate.platformHint == .ollama || candidate.port == 11434 {
-            if let result = await probeOllama(port: candidate.port) { return result }
+        let adapter = LocalModelPlatformAdapterRegistry.adapter(for: candidate.platformHint)
+        if adapter?.apiStyle == .ollama || candidate.port == 11_434 {
+            return await probeOllama(port: candidate.port)
         }
         return await probeOpenAICompatible(port: candidate.port, hint: candidate.platformHint)
     }

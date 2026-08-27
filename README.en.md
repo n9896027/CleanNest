@@ -50,7 +50,7 @@ CleanNest turns Mac cleanup from a black-box button into an understandable, reve
 - **Incremental disk browser** — stream partial results while scanning; reuse only unchanged metadata signatures for 15 minutes; disclose cache hits, live scans, and a cache-bypassing deep refresh.
 - **Cleanup Decision Center** — combine breadcrumb drill-down and a native treemap with deterministic purpose, growth cause, impact, recoverability, confidence, and a safe next action for every item. You can manually mark an item for review, keep it, or decide later without overriding safety boundaries.
 - **Live menu-bar monitor** — independently sample CPU, memory, network, disk, GPU, temperature, fans, and battery at a selectable 1/2/5/10-second interval. A State-style two-line value/abbreviation layout is the compact default; expanded text, mini graphs, ordering, and per-item visibility remain configurable. Warning and critical states use both color and `!` / `!!`, combining macOS thermal state with pressure signals instead of treating ordinary high workload as a fault.
-- **Local Model Runtime Center** — correlate processes, listening sockets, platform APIs, and launchd supervisors to show model IDs, PIDs, memory, exposure, and `KeepAlive` / login-launch evidence. After confirmation, an external service can be disabled together with its exact user supervisor and closed; its configuration remains available for re-enabling.
+- **Local Model Runtime Center** — organize platform, service, model short ID, established TCP clients, and launchd supervisors into an evidence topology, with explicit diagnostics for port conflicts, model replacement, and automatic restarts. CleanNest-owned processes, current-user processes, user LaunchAgents, and system/other-user services use four distinct control tiers; every controllable action revalidates identity, and supervisor configuration remains recoverable.
 - **System status** — combine the native live instrument panel with battery and health information, 60-second local history, and plain-language memory-pressure and process guidance.
 - **Process management** — request a normal process quit only after identity checks, system-process protection, and user confirmation; CleanNest does not automatically force-quit it.
 - **App uninstall** — browse installed apps and preview the app bundle plus related files matched by exact Bundle ID.
@@ -139,6 +139,7 @@ Detailed maintainer documentation is currently written primarily in Simplified C
 | [0.7.4 verification report](docs/VERIFICATION-0.7.4.md) | APFS ledger, classified-file coverage, reliable growth comparison, and live 314/868/126 reconciliation |
 | [0.7.5 verification report](docs/VERIFICATION-0.7.5.md) | Shared alert thresholds, local alert timeline, menu-width budget, app-level process grouping, and high-frequency update isolation |
 | [0.7.6 verification report](docs/VERIFICATION-0.7.6.md) | Read-only maintenance preflight, impact confirmation, before/after evidence, recovery checks, and honest uncertainty |
+| [0.7.7 verification report](docs/VERIFICATION-0.7.7.md) | Local-model evidence topology, live clients, four control tiers, runtime diagnostics, and a bounded Ollama lifecycle check |
 | [0.7 series roadmap](docs/ROADMAP-0.7.md) | Product, architecture, acceptance gates, and explicit non-goals for 0.7.0–0.7.9 |
 | [0.6.5 section audit](docs/AUDIT-0.6.5.md) | Current behavior, gaps, performance, and accessibility evidence for every primary surface |
 | [0.6.0 verification report](docs/VERIFICATION-0.6.0.md) | XPC isolation, cancellation rollback, injected scanner failure, recovery, and cold-start memory evidence |
@@ -178,6 +179,6 @@ Preview the UI with synthetic data only:
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-The current development milestone is **0.7.6 (Build 33)**; the sealed 0.6-series baseline remains 0.6.5. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
+The current development milestone is **0.7.7 (Build 34)**; the sealed 0.6-series baseline remains 0.6.5. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
 
 Core navigation and the main overview, disk, status, and settings surfaces now include English, Simplified Chinese, and Traditional Chinese resources. Some runtime diagnostics and path-dependent copy can still fall back to the source language; Japanese and Korean currently have localized project overviews rather than full UI resources.

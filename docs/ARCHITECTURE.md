@@ -145,16 +145,19 @@ CleanNest 有两条相互独立的状态链路：
 4. Finder、Dock 和菜单栏任务要求出现不属于执行前集合的新 PID 才写成“服务已验证恢复”；Quick Look 只在命令成功且基础接口重新响应时写成“基础复核通过”。命令成功、复核不确定和未恢复是不同结果。
 5. 最近 40 条 `MaintenanceRunRecord` 原子保存在 `maintenance-history.json`，只含动作、时间、状态、界面服务 PID 和说明。活动记录保存同一结论，不将命令退出码冒充用户可见问题已修好。
 
-## 本地模型运行数据流
+## 本地模型运行数据流（0.7.7）
 
-1. `LocalModelRuntimeDiscovery` 按 10–60 秒自适应间隔从系统 `ps` 与 `lsof` 读取模型相关进程、RSS、启动时间和 TCP 监听：用户停留在模型页时最快，App 非活跃、菜单栏模型状态关闭或没有运行实例时自动降频。同时读取 `launchctl list` / `print-disabled` 与标准 LaunchAgents / LaunchDaemons 的有限元数据。完整命令行和 plist 参数只在本次内存分类中使用，不进入公开模型或持久化；环境变量不读取。
+1. `LocalModelRuntimeDiscovery` 按 10–60 秒自适应间隔从系统 `ps` 与 `lsof` 读取进程 UID、RSS、启动时间、TCP 监听与已建立连接：用户停留在模型页时最快，App 非活跃、菜单栏模型状态关闭或没有运行实例时自动降频。同时读取 `launchctl list` / `print-disabled` 与标准 LaunchAgents / LaunchDaemons 的有限元数据。完整命令行和 plist 参数只在本次内存分类中使用，不进入公开模型或持久化；环境变量不读取。
 2. 发现层仅探测 oMLX、MLX-LM、Ollama、LM Studio、llama.cpp 的标准回环端口、已识别进程端口和用户明确配置的回环端点，不扫描局域网。
 3. OpenAI 兼容平台读取 `/v1/models`，Ollama 读取 `/api/tags` 与 `/api/ps`。只有 API 返回可用短 ID 才标记健康，仅有 PID/端口时保持待确认。
 4. 发现层按 launchd 当前 PID 把模型进程与守护标签交叉对齐；未运行但仍有 plist 的模型守护也以“未运行 / 已停用”实例显示，避免停用后入口消失。
 5. `AppStore` 把发现到的 PID 与 `LocalModelOwnedRuntime` 当前 `Process` 身份精确对齐；自有实例一致时可直接正常终止。普通外部实例只在具备足够身份时提供带省略号的风险确认入口。
 6. 外部实例确认后必须强制重新发现，并把原快照、刷新快照和即时进程快照的 PID、启动时间、当前用户与可执行文件交叉复核；任一身份变化都拒绝操作。先发送 SIGTERM，3 秒仍存活时才允许用户二次勾选后发送 SIGKILL，不按名称批量结束。
 7. 守护停用是独立提交链：再次复核模型进程、标签、`gui/<uid>` 作用域、当前用户所有权、标准用户 LaunchAgents 目录，以及 plist 的设备号/文件号；通过后才用参数数组调用 `launchctl disable` 与 `bootout`。不编辑/删除 plist；重新启用先复核同一文件，再调用 `enable` 与 `bootstrap`。
-8. 运行快照、监听地址和推导的内网地址只保留在内存，驱动侧边栏运行中心和独立 `MODEL` 菜单栏状态；活动记录只保留平台、PID 或守护标签与结果，不保存模型 ID、地址或命令。
+8. `LocalModelPlatformAdapterRegistry` 以可测试描述符选择进程标记、默认端口和 API 风格；最终快照按“平台 → 服务 → 模型短 ID → 已建立客户端连接 → 守护”分组。只有 TCP `ESTABLISHED` 证据才声称客户端实连。
+9. 控制权限固定为 CleanNest 自启、当前用户进程、当前用户 LaunchAgent 和受保护只读。启动前重新发现端口；外部关闭仍重验 UID、PID、启动时间、可执行文件和守护文件身份。
+10. 运行快照、客户端连接、监听地址和推导的内网地址只保留在内存，驱动侧边栏运行中心和独立 `MODEL` 菜单栏状态；运行诊断时间线也只在本次 App 运行中保留，不持久化模型 ID、地址或命令。
+11. App 在 macOS 睡眠前不停止任何模型；唤醒后立即重新核对进程、端口、客户端、API 和守护，并记录 PID 替换、模型列表变化或启动失败，不把唤醒后旧快照当成当前事实。
 
 ## 高风险操作边界
 

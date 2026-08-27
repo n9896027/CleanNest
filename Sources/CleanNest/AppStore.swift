@@ -251,6 +251,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var localModelDiscoveryPhase: LocalModelRuntimePhase = .unknown
     @Published private(set) var localModelDiscoveryIsRunning = false
     @Published private(set) var localModelRuntimeDiagnostic = "尚未检查本地模型运行时"
+    @Published private(set) var localModelRuntimeTransitions: [LocalModelRuntimeTransition] = []
+    @Published private(set) var localModelLastWakeCheckAt: Date?
     @Published private(set) var localModelMenuBarEnabled = true
     @Published private(set) var stoppingExternalLocalModelRuntimeID: String?
     @Published private(set) var externalLocalModelStopMessage: String?
@@ -671,28 +673,26 @@ final class AppStore: ObservableObject {
         }
     }
 
-    var configuredLocalModelCanStart: Bool {
+    var localModelStartReadiness: LocalModelStartReadiness {
         let modelPath = localAIModelPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let executablePath = localAIExecutablePath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !modelPath.isEmpty,
-              !executablePath.isEmpty,
-              FileManager.default.isExecutableFile(atPath: executablePath),
-              localModelRuntimeSnapshot.healthyInstances.isEmpty,
-              !localAIServiceState.isBusy else { return false }
-        let executableName = URL(fileURLWithPath: executablePath).lastPathComponent.lowercased()
-        guard executableName == "omlx"
-                || executableName.hasPrefix("omlx-")
-                || executableName.contains("mlx_lm.server")
-                || executableName.contains("mlx-lm-server") else { return false }
-        if let configuredPort = (try? LocalAIEndpoint(rawValue: localAIEndpoint))?.port,
-           localModelRuntimeSnapshot.instances.contains(where: { instance in
-               instance.listeners.contains { $0.port == configuredPort }
-           }) {
-            return false
-        }
-        return localModelCatalog.descriptor(
+        let modelIsComplete = !modelPath.isEmpty && localModelCatalog.descriptor(
             at: URL(fileURLWithPath: modelPath, isDirectory: true)
         ) != nil
+        guard executablePath.isEmpty || FileManager.default.isExecutableFile(atPath: executablePath) else {
+            return .configurationMissing("所选模型服务程序不存在或不可执行。")
+        }
+        return LocalModelStartPolicy.evaluate(
+            modelIsComplete: modelIsComplete,
+            executablePath: executablePath,
+            configuredPort: (try? LocalAIEndpoint(rawValue: localAIEndpoint))?.port,
+            runtimes: localModelRuntimeSnapshot.instances,
+            isBusy: localAIServiceState.isBusy
+        )
+    }
+
+    var configuredLocalModelCanStart: Bool {
+        localModelStartReadiness.canStart
     }
 
     func localAIModelDescriptor(path: String) -> LocalModelDescriptor? {
@@ -1294,8 +1294,13 @@ final class AppStore: ObservableObject {
         localModelRuntimeDiagnostic = "正在交叉检查进程、监听端口与平台 API…"
         let discovery = localModelRuntimeDiscovery
         let endpoint = localAIEndpoint
+        let configuredModelID = localAIServiceModelID
+        let previousSnapshot = localModelRuntimeSnapshot
         let snapshot = await Task.detached(priority: .utility) {
-            await discovery.discover(configuredEndpoint: endpoint)
+            await discovery.discover(
+                configuredEndpoint: endpoint,
+                configuredModelID: configuredModelID
+            )
         }.value
         guard localModelDiscoveryID == discoveryID else { return }
         let verified = snapshot.markingOwned(processID: localAIRuntime.ownedProcessIdentifier)
@@ -1303,6 +1308,14 @@ final class AppStore: ObservableObject {
         localModelDiscoveryPhase = verified.phase
         localModelRuntimeDiagnostic = verified.diagnostic
         localModelDiscoveryIsRunning = false
+        let transitions = LocalModelRuntimeTransitionDetector.compare(
+            previous: previousSnapshot,
+            current: verified
+        )
+        if !transitions.isEmpty {
+            localModelRuntimeTransitions.insert(contentsOf: transitions.reversed(), at: 0)
+            localModelRuntimeTransitions = Array(localModelRuntimeTransitions.prefix(24))
+        }
         if selection == .agentWorkspace {
             await refreshAgentDependencyGraph()
         }
@@ -1315,10 +1328,20 @@ final class AppStore: ObservableObject {
     }
 
     func startConfiguredLocalModelRuntime() async {
-        guard configuredLocalModelCanStart else {
-            localModelRuntimeDiagnostic = localAIModelPath.isEmpty
-                ? "请先在设置中选择本机模型与服务程序。"
-                : "当前启动配置不完整，或已有健康服务占用该端点。"
+        await refreshLocalModelRuntimes(force: true)
+        guard case .ready = localModelStartReadiness else {
+            switch localModelStartReadiness {
+            case .portOccupied(let runtime):
+                localModelRuntimeDiagnostic = runtime.phase == .runningHealthy
+                    ? "\(runtime.primaryAddress ?? "配置端口") 已有健康的 \(runtime.platform.displayName)；无需重复启动。"
+                    : "\(runtime.primaryAddress ?? "配置端口") 已被 \(runtime.process?.commandName ?? "其他进程") 占用，模型 API 尚未确认。"
+            case .configurationMissing(let detail), .unsupportedExecutable(let detail):
+                localModelRuntimeDiagnostic = detail
+            case .busy:
+                localModelRuntimeDiagnostic = "另一项模型操作仍在进行。"
+            case .ready:
+                break
+            }
             return
         }
         if !localAIEnabled {
@@ -1772,6 +1795,28 @@ final class AppStore: ObservableObject {
         case .unknown, .discovering, .stopped, .failed:
             return 30
         }
+    }
+
+    func systemWillSleep() {
+        localModelRuntimeDiagnostic = "Mac 即将休眠；CleanNest 不停止模型服务，唤醒后会重新核对进程、端口、模型和守护关系。"
+    }
+
+    func systemDidWake() async {
+        let now = Date()
+        localModelLastWakeCheckAt = now
+        localModelRuntimeTransitions.insert(
+            LocalModelRuntimeTransition(
+                date: now,
+                kind: .wakeRecheck,
+                runtimeID: "system:wake",
+                title: "唤醒后重新核对模型服务",
+                detail: "正在重新读取进程、端口、客户端连接、平台 API 与自动拉起来源。"
+            ),
+            at: 0
+        )
+        localModelRuntimeTransitions = Array(localModelRuntimeTransitions.prefix(24))
+        await refreshLocalModelRuntimes(force: true)
+        if localAIEnabled { await probeLocalAI() }
     }
 
     func refreshMetricHistory() async {
@@ -2542,6 +2587,16 @@ final class AppStore: ObservableObject {
             localAIProcessOwned = localAIRuntime.ownsRunningProcess
             localAIServiceState = .unavailable(error.localizedDescription)
             localAIDiagnostic = error.localizedDescription
+            localModelRuntimeTransitions.insert(
+                LocalModelRuntimeTransition(
+                    kind: .startFailed,
+                    runtimeID: "configured:\(localAIEndpoint)",
+                    title: "模型启动没有完成",
+                    detail: error.localizedDescription
+                ),
+                at: 0
+            )
+            localModelRuntimeTransitions = Array(localModelRuntimeTransitions.prefix(24))
         }
     }
 
@@ -5439,6 +5494,81 @@ final class AppStore: ObservableObject {
         )
         localAIBenchmarkPhase = .completed
         localAIDiagnostic = "演示模式：本机模型已连接"
+        let demoSupervisor = LocalModelSupervisorSnapshot(
+            label: "homebrew.mxcl.omlx",
+            domain: "gui/\(getuid())",
+            kind: .userLaunchAgent,
+            sourcePath: home.appendingPathComponent("Library/LaunchAgents/homebrew.mxcl.omlx.plist").path,
+            sourceDeviceID: 1,
+            sourceFileID: 9_001,
+            programName: "omlx",
+            keepAlive: true,
+            runAtLoad: true,
+            isLoaded: true,
+            isDisabled: false,
+            processID: 46_159,
+            isOwnedByCurrentUser: true,
+            platform: .omlx
+        )
+        let demoRuntime = LocalModelRuntimeInstance(
+            id: "omlx:46159:8080",
+            platform: .omlx,
+            phase: .runningHealthy,
+            modelIDs: [demoModelID, "Qwen3.8-4B-4bit"],
+            defaultModelID: demoModelID,
+            process: LocalModelProcessSnapshot(
+                pid: 46_159,
+                commandName: "omlx-server",
+                executablePath: "/opt/homebrew/bin/omlx",
+                residentMemoryBytes: 31_400_000_000,
+                startedAt: now.addingTimeInterval(-4_200),
+                ownerUserID: UInt32(getuid())
+            ),
+            supervisor: demoSupervisor,
+            listeners: [LocalModelListener(host: "127.0.0.1", port: 8_080)],
+            exposure: .localOnly,
+            localNetworkAddresses: [],
+            evidence: [.process, .supervisor, .listener, .platformAPI, .userConfiguration],
+            diagnostic: "模型 API 已确认，并发现会自动拉起的用户守护。",
+            engineMemoryBytes: 29_500_000_000,
+            clients: [
+                LocalModelClientConnection(
+                    processID: 8_812,
+                    commandName: "Codex",
+                    endpoint: LocalModelListener(host: "127.0.0.1", port: 53_456)
+                )
+            ],
+            issues: [
+                LocalModelRuntimeIssue(
+                    kind: .automaticRestart,
+                    title: "关闭 PID 后可能自动重启",
+                    detail: "homebrew.mxcl.omlx 使用 KeepAlive 和登录时启动。",
+                    isWarning: true
+                ),
+                LocalModelRuntimeIssue(
+                    kind: .activeClients,
+                    title: "有客户端正在连接",
+                    detail: "当前观察到 Codex 的已建立 TCP 连接；关闭服务会中断请求。",
+                    isWarning: true
+                )
+            ]
+        )
+        localModelRuntimeSnapshot = LocalModelRuntimeSnapshot(
+            capturedAt: now,
+            instances: [demoRuntime],
+            diagnostic: "演示模式：已确认 1 个本地模型服务。"
+        )
+        localModelDiscoveryPhase = .runningHealthy
+        localModelRuntimeDiagnostic = localModelRuntimeSnapshot.diagnostic
+        localModelRuntimeTransitions = [
+            LocalModelRuntimeTransition(
+                date: now.addingTimeInterval(-75),
+                kind: .processReplaced,
+                runtimeID: demoRuntime.id,
+                title: "模型服务出现新进程",
+                detail: "oMLX 由用户 LaunchAgent 重新拉起；当前 PID 46159。"
+            )
+        ]
         cleanupAIAnalysis = CleanupAIAnalysis(
             modelID: demoModelID,
             summary: "主要空间来自可重新生成的开发与包管理器缓存；安装包和诊断日志仍建议逐项确认。",

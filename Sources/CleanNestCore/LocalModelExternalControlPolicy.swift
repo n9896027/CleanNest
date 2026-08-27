@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public enum LocalModelExternalControlPolicy {
@@ -10,6 +11,11 @@ public enum LocalModelExternalControlPolicy {
         }
         guard process.pid > 1 else {
             return "进程身份不安全，CleanNest 拒绝发送终止信号。"
+        }
+        guard process.ownerUserID == UInt32(getuid()) else {
+            return process.ownerUserID == nil
+                ? "没有取得进程所属用户，CleanNest 只提供只读证据。"
+                : "该模型进程不属于当前用户，CleanNest 只提供只读证据。"
         }
         guard runtime.evidence.contains(.process) else {
             return "缺少进程证据，无法安全关闭。"
