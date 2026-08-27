@@ -208,6 +208,44 @@ public enum CleanupSelectionPolicy {
     }
 }
 
+public struct CleanupCandidatePageWindow: Equatable, Sendable {
+    public static let defaultPageSize = 40
+
+    public let itemCount: Int
+    public let pageSize: Int
+    public let pageIndex: Int
+
+    public init(
+        itemCount: Int,
+        pageSize: Int = Self.defaultPageSize,
+        requestedPageIndex: Int = 0
+    ) {
+        self.itemCount = max(0, itemCount)
+        self.pageSize = max(1, pageSize)
+        let availablePages = self.itemCount == 0
+            ? 0
+            : ((self.itemCount - 1) / self.pageSize) + 1
+        self.pageIndex = availablePages == 0
+            ? 0
+            : min(max(0, requestedPageIndex), availablePages - 1)
+    }
+
+    public var pageCount: Int {
+        itemCount == 0 ? 0 : ((itemCount - 1) / pageSize) + 1
+    }
+
+    public var range: Range<Int> {
+        guard itemCount > 0 else { return 0..<0 }
+        let lowerBound = pageIndex * pageSize
+        return lowerBound..<min(itemCount, lowerBound + pageSize)
+    }
+
+    public var displayedStartNumber: Int { range.isEmpty ? 0 : range.lowerBound + 1 }
+    public var displayedEndNumber: Int { range.upperBound }
+    public var hasPreviousPage: Bool { pageIndex > 0 }
+    public var hasNextPage: Bool { pageIndex + 1 < pageCount }
+}
+
 public struct CleanupBasketSummary: Equatable, Sendable {
     public let selectedCount: Int
     public let selectedBytes: Int64

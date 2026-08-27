@@ -632,16 +632,28 @@ private struct EvidenceMetric: View {
 }
 
 private struct CleanupGroup: View {
+    private static let autoExpandLimit = 24
+
     @EnvironmentObject private var store: AppStore
     let kind: CleanupKind
     let candidates: [CleanupCandidate]
     @State private var isExpanded: Bool
+    @State private var pageIndex: Int
 
     private var total: Int64 { candidates.reduce(0) { $0 + $1.allocatedBytes } }
     private var selectedCount: Int {
         candidates.reduce(0) { $0 + (store.selectedCleanupIDs.contains($1.id) ? 1 : 0) }
     }
     private var allSelected: Bool { !candidates.isEmpty && selectedCount == candidates.count }
+    private var pageWindow: CleanupCandidatePageWindow {
+        CleanupCandidatePageWindow(
+            itemCount: candidates.count,
+            requestedPageIndex: pageIndex
+        )
+    }
+    private var visibleCandidates: [CleanupCandidate] {
+        Array(candidates[pageWindow.range])
+    }
     private var showsMediaClusters: Bool {
         kind == .screenshot || kind == .image || kind == .video || kind == .audio
     }
@@ -671,7 +683,8 @@ private struct CleanupGroup: View {
     init(kind: CleanupKind, candidates: [CleanupCandidate]) {
         self.kind = kind
         self.candidates = candidates
-        _isExpanded = State(initialValue: candidates.count <= 24)
+        _isExpanded = State(initialValue: candidates.count <= Self.autoExpandLimit)
+        _pageIndex = State(initialValue: 0)
     }
 
     var body: some View {
@@ -679,9 +692,8 @@ private struct CleanupGroup: View {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            isExpanded.toggle()
-                        }
+                        pageIndex = 0
+                        isExpanded.toggle()
                     } label: {
                         HStack {
                             Image(systemName: kind.symbolName)
@@ -760,15 +772,79 @@ private struct CleanupGroup: View {
                     Divider()
                         .padding(.top, 10)
 
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
+                    VStack(spacing: 0) {
+                        ForEach(visibleCandidates) { candidate in
                             CleanupRow(candidate: candidate)
-                            if index < candidates.count - 1 { Divider().padding(.leading, 38) }
+                            if candidate.id != visibleCandidates.last?.id {
+                                Divider().padding(.leading, 38)
+                            }
                         }
+                    }
+
+                    if pageWindow.pageCount > 1 {
+                        Divider()
+                        cleanupPagination
                     }
                 }
             }
         }
+        .onChange(of: candidates.count) { _, _ in
+            pageIndex = pageWindow.pageIndex
+        }
+    }
+
+    private var cleanupPagination: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                paginationExplanation
+                Spacer(minLength: 12)
+                paginationControls
+            }
+            VStack(alignment: .leading, spacing: 9) {
+                paginationExplanation
+                paginationControls
+            }
+        }
+        .padding(.top, 10)
+    }
+
+    private var paginationExplanation: some View {
+        Text(
+            CNL10n.format(
+                "当前显示 %d–%d / %d 项。为避免大型列表卡住，每页最多加载 %d 项。",
+                pageWindow.displayedStartNumber,
+                pageWindow.displayedEndNumber,
+                candidates.count,
+                pageWindow.pageSize
+            )
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var paginationControls: some View {
+        HStack(spacing: 8) {
+            Button {
+                pageIndex = max(0, pageWindow.pageIndex - 1)
+            } label: {
+                Label(CNL10n.string("上一页"), systemImage: "chevron.left")
+            }
+            .disabled(!pageWindow.hasPreviousPage)
+
+            Text(CNL10n.format("第 %d / %d 页", pageWindow.pageIndex + 1, pageWindow.pageCount))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+
+            Button {
+                pageIndex = min(pageWindow.pageCount - 1, pageWindow.pageIndex + 1)
+            } label: {
+                Label(CNL10n.string("下一页"), systemImage: "chevron.right")
+            }
+            .disabled(!pageWindow.hasNextPage)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
     }
 }
 
