@@ -125,6 +125,108 @@ final class AgentWorkspaceTests: XCTestCase {
         XCTAssertTrue(current.snapshot.alerts.contains {
             $0.id == "codex:growth" && $0.level == .warning
         })
+        XCTAssertGreaterThan(try XCTUnwrap(
+            current.snapshot.agents.first { $0.provider == .codex }?.allocatedBytesChange
+        ), 0)
+    }
+
+    func testSummaryScanDoesNotBuildFileActionCandidates() async throws {
+        let home = try makeHome()
+        let cache = home.appendingPathComponent(".codex/cache/settled.bin")
+        try writeFile(cache, bytes: 8_192, modifiedAt: Date().addingTimeInterval(-3_600))
+
+        let result = try await AgentWorkspaceScanner(configuration: testConfiguration()).scan(
+            homeDirectory: home,
+            openFiles: [],
+            actionCandidateProviders: []
+        )
+
+        XCTAssertEqual(result.snapshot.detectedAgents.map(\.provider), [.codex])
+        XCTAssertTrue(result.snapshot.actionCandidates.isEmpty)
+        XCTAssertGreaterThan(result.snapshot.allocatedBytes, 0)
+    }
+
+    func testScopedDetailScanBuildsCandidatesOnlyForRequestedProvider() async throws {
+        let home = try makeHome()
+        try writeFile(
+            home.appendingPathComponent(".codex/cache/codex.bin"),
+            bytes: 8_192,
+            modifiedAt: Date().addingTimeInterval(-3_600)
+        )
+        try writeFile(
+            home.appendingPathComponent("Library/Application Support/Claude/Cache/claude.bin"),
+            bytes: 8_192,
+            modifiedAt: Date().addingTimeInterval(-3_600)
+        )
+
+        let result = try await AgentWorkspaceScanner(configuration: testConfiguration()).scan(
+            homeDirectory: home,
+            openFiles: [],
+            providers: [.claude],
+            actionCandidateProviders: [.claude]
+        )
+
+        XCTAssertEqual(result.snapshot.agents.map(\.provider), [.claude])
+        XCTAssertEqual(Set(result.snapshot.actionCandidates.map(\.provider)), [.claude])
+    }
+
+    func testReadOnlyProviderCannotGainCandidatesFromScopedDetailRequest() async throws {
+        let home = try makeHome()
+        try writeFile(
+            home.appendingPathComponent(".pi/agent/cache/settled.bin"),
+            bytes: 8_192,
+            modifiedAt: Date().addingTimeInterval(-3_600)
+        )
+
+        let result = try await AgentWorkspaceScanner(configuration: testConfiguration()).scan(
+            homeDirectory: home,
+            openFiles: [],
+            providers: [.piAgent],
+            actionCandidateProviders: [.piAgent]
+        )
+
+        XCTAssertTrue(result.snapshot.actionCandidates.isEmpty)
+    }
+
+    func testMergingDetailPreservesOtherProviderSummaryWithoutActionTokens() async throws {
+        let home = try makeHome()
+        try writeFile(
+            home.appendingPathComponent(".codex/cache/codex.bin"),
+            bytes: 8_192,
+            modifiedAt: Date().addingTimeInterval(-3_600)
+        )
+        try writeFile(
+            home.appendingPathComponent("Library/Application Support/Claude/Cache/claude.bin"),
+            bytes: 8_192,
+            modifiedAt: Date().addingTimeInterval(-3_600)
+        )
+        let scanner = AgentWorkspaceScanner(configuration: testConfiguration())
+        let summary = try await scanner.scan(
+            homeDirectory: home,
+            openFiles: [],
+            actionCandidateProviders: []
+        )
+        let detail = try await scanner.scan(
+            homeDirectory: home,
+            openFiles: [],
+            providers: [.codex],
+            actionCandidateProviders: [.codex]
+        )
+
+        let merged = summary.snapshot.mergingDetail(detail.snapshot, for: .codex)
+
+        XCTAssertEqual(merged.detectedAgents.count, 2)
+        XCTAssertFalse(merged.actionCandidates.isEmpty)
+        XCTAssertTrue(merged.actionCandidates.allSatisfy { $0.provider == .codex })
+        XCTAssertTrue(
+            merged.agents.first { $0.provider == .claude }?
+                .artifacts.flatMap(\.actionCandidates).isEmpty == true
+        )
+        XCTAssertTrue(merged.withoutActionCandidates().actionCandidates.isEmpty)
+        XCTAssertEqual(
+            merged.withoutActionCandidates().allocatedBytes,
+            merged.allocatedBytes
+        )
     }
 
     func testRecentFileIsProtectedEvenWhenOpenFileProbeHasNoRecord() async throws {

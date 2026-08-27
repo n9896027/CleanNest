@@ -6,7 +6,7 @@ public enum CleanupLearningDecision: String, Codable, CaseIterable, Sendable {
     case cleaned
 }
 
-public enum LearnedCleanupPreference: String, Codable, Sendable {
+public enum LearnedCleanupPreference: String, Codable, Hashable, Sendable {
     case preferCleanup
     case preferKeep
 }
@@ -49,6 +49,54 @@ public enum EvolutionRuleState: String, Codable, CaseIterable, Sendable {
     case paused
 }
 
+public enum CleanupRuleLocationLevel: String, Codable, CaseIterable, Hashable, Sendable {
+    case personalFolder
+    case developerStorage
+    case applicationData
+    case library
+    case other
+
+    public var displayName: String {
+        switch self {
+        case .personalFolder: return "个人文件夹"
+        case .developerStorage: return "开发工具目录"
+        case .applicationData: return "应用数据目录"
+        case .library: return "用户资源库"
+        case .other: return "其他有界位置"
+        }
+    }
+}
+
+public enum CleanupRuleRiskLevel: String, Codable, CaseIterable, Hashable, Sendable {
+    case low
+    case medium
+    case high
+
+    public var displayName: String {
+        switch self {
+        case .low: return "低风险"
+        case .medium: return "中风险"
+        case .high: return "高风险"
+        }
+    }
+}
+
+public enum CleanupRuleAgeBand: String, Codable, CaseIterable, Hashable, Sendable {
+    case recent
+    case settled
+    case old
+    case unknown
+
+    public var displayName: String {
+        switch self {
+        case .recent: return "7 天内"
+        case .settled: return "7–30 天"
+        case .old: return "30 天以上"
+        case .unknown: return "时间未知"
+        }
+    }
+}
+
 public struct CleanupRuleProposal: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public var displayName: String
@@ -59,6 +107,10 @@ public struct CleanupRuleProposal: Identifiable, Codable, Equatable, Sendable {
     public var reason: String
     public let createdAt: Date
     public var lastUpdatedAt: Date
+    public var locationLevel: CleanupRuleLocationLevel?
+    public var riskLevel: CleanupRuleRiskLevel?
+    public var ageBand: CleanupRuleAgeBand?
+    public var trialExpiresAt: Date?
 
     public init(
         id: String,
@@ -69,7 +121,11 @@ public struct CleanupRuleProposal: Identifiable, Codable, Equatable, Sendable {
         evidenceCount: Int = 1,
         reason: String,
         createdAt: Date = Date(),
-        lastUpdatedAt: Date = Date()
+        lastUpdatedAt: Date = Date(),
+        locationLevel: CleanupRuleLocationLevel? = nil,
+        riskLevel: CleanupRuleRiskLevel? = nil,
+        ageBand: CleanupRuleAgeBand? = nil,
+        trialExpiresAt: Date? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -80,6 +136,57 @@ public struct CleanupRuleProposal: Identifiable, Codable, Equatable, Sendable {
         self.reason = reason
         self.createdAt = createdAt
         self.lastUpdatedAt = lastUpdatedAt
+        self.locationLevel = locationLevel
+        self.riskLevel = riskLevel
+        self.ageBand = ageBand
+        self.trialExpiresAt = trialExpiresAt
+    }
+
+
+    public var isTrial: Bool { trialExpiresAt != nil && state == .enabled }
+
+    public func isExpired(at now: Date = Date()) -> Bool {
+        guard let trialExpiresAt else { return false }
+        return trialExpiresAt <= now
+    }
+}
+
+public struct CleanupRuleCluster: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let kind: CleanupKind
+    public let locationLevel: CleanupRuleLocationLevel
+    public let riskLevel: CleanupRuleRiskLevel
+    public let ageBand: CleanupRuleAgeBand
+    public let suggestedPreference: LearnedCleanupPreference
+    public let proposalIDs: [String]
+    public let exampleNames: [String]
+    public let evidenceCount: Int
+    public let pendingCount: Int
+    public let enabledCount: Int
+    public let pausedCount: Int
+    public let trialCount: Int
+    public let expiredCount: Int
+    public let lastUpdatedAt: Date
+
+    public var proposalCount: Int { proposalIDs.count }
+}
+
+public struct CleanupRuleSortingImpact: Equatable, Sendable {
+    public let matchedCount: Int
+    public let movedCount: Int
+    public let preferCleanupCount: Int
+    public let preferKeepCount: Int
+
+    public init(
+        matchedCount: Int,
+        movedCount: Int,
+        preferCleanupCount: Int,
+        preferKeepCount: Int
+    ) {
+        self.matchedCount = max(0, matchedCount)
+        self.movedCount = max(0, movedCount)
+        self.preferCleanupCount = max(0, preferCleanupCount)
+        self.preferKeepCount = max(0, preferKeepCount)
     }
 }
 
@@ -143,7 +250,7 @@ public struct EvolutionEvent: Identifiable, Codable, Equatable, Sendable {
 }
 
 public struct EvolutionMemory: Codable, Equatable, Sendable {
-    public static let schemaVersion = 2
+    public static let schemaVersion = 3
 
     public var schemaVersion: Int
     public var cleanupSignals: [String: CleanupLearningSignal]
@@ -169,7 +276,10 @@ public struct EvolutionMemory: Codable, Equatable, Sendable {
     }
 
     public var learnedCleanupCount: Int {
-        cleanupSignals.values.filter { $0.effectivePreference != nil }.count
+        cleanupSignals.values.filter { signal in
+            signal.effectivePreference != nil
+                && ruleProposals[signal.id]?.isExpired() != true
+        }.count
     }
 
     public var successfulCleanupCount: Int {
@@ -185,7 +295,99 @@ public struct EvolutionMemory: Codable, Equatable, Sendable {
     }
 
     public var enabledRuleCount: Int {
-        ruleProposals.values.filter { $0.state == .enabled }.count
+        ruleProposals.values.filter { $0.state == .enabled && !$0.isExpired() }.count
+    }
+
+    public var trialRuleCount: Int {
+        ruleProposals.values.filter { $0.isTrial && !$0.isExpired() }.count
+    }
+
+    public func expiredRuleCount(at now: Date = Date()) -> Int {
+        ruleProposals.values.filter { $0.isExpired(at: now) }.count
+    }
+
+    public func ruleClusters(now: Date = Date()) -> [CleanupRuleCluster] {
+        struct Key: Hashable {
+            let kind: CleanupKind
+            let location: CleanupRuleLocationLevel
+            let risk: CleanupRuleRiskLevel
+            let age: CleanupRuleAgeBand
+            let preference: LearnedCleanupPreference
+        }
+        var grouped: [Key: [CleanupRuleProposal]] = [:]
+        for proposal in ruleProposals.values {
+            let key = Key(
+                kind: proposal.kind,
+                location: proposal.locationLevel ?? Self.defaultLocationLevel(for: proposal.kind),
+                risk: proposal.riskLevel ?? Self.defaultRiskLevel(for: proposal.kind),
+                age: proposal.ageBand ?? .unknown,
+                preference: proposal.suggestedPreference
+            )
+            grouped[key, default: []].append(proposal)
+        }
+        return grouped.map { key, proposals in
+            let sorted = proposals.sorted {
+                if $0.lastUpdatedAt == $1.lastUpdatedAt { return $0.id < $1.id }
+                return $0.lastUpdatedAt > $1.lastUpdatedAt
+            }
+            return CleanupRuleCluster(
+                id: [
+                    key.kind.rawValue,
+                    key.location.rawValue,
+                    key.risk.rawValue,
+                    key.age.rawValue,
+                    key.preference.rawValue
+                ].joined(separator: "|"),
+                kind: key.kind,
+                locationLevel: key.location,
+                riskLevel: key.risk,
+                ageBand: key.age,
+                suggestedPreference: key.preference,
+                proposalIDs: sorted.map(\.id),
+                exampleNames: Array(sorted.prefix(3).map(\.displayName)),
+                evidenceCount: sorted.reduce(0) { $0 + $1.evidenceCount },
+                pendingCount: sorted.filter { $0.state == .pending }.count,
+                enabledCount: sorted.filter { $0.state == .enabled && !$0.isExpired(at: now) }.count,
+                pausedCount: sorted.filter { $0.state == .paused }.count,
+                trialCount: sorted.filter { $0.isTrial && !$0.isExpired(at: now) }.count,
+                expiredCount: sorted.filter { $0.isExpired(at: now) }.count,
+                lastUpdatedAt: sorted.first?.lastUpdatedAt ?? .distantPast
+            )
+        }.sorted {
+            if $0.pendingCount != $1.pendingCount { return $0.pendingCount > $1.pendingCount }
+            if $0.riskLevel != $1.riskLevel {
+                let order: [CleanupRuleRiskLevel: Int] = [.high: 0, .medium: 1, .low: 2]
+                return order[$0.riskLevel, default: 3] < order[$1.riskLevel, default: 3]
+            }
+            if $0.lastUpdatedAt != $1.lastUpdatedAt { return $0.lastUpdatedAt > $1.lastUpdatedAt }
+            return $0.id < $1.id
+        }
+    }
+
+    public func sortingImpact(on candidates: [CleanupCandidate]) -> CleanupRuleSortingImpact {
+        let preferences = Dictionary(uniqueKeysWithValues: candidates.compactMap { candidate in
+            cleanupPreference(for: candidate).map { (candidate.id, $0) }
+        })
+        var moved = 0
+        for kind in CleanupKind.allCases {
+            let original = candidates.filter { $0.kind == kind }
+            let oldPositions = Dictionary(uniqueKeysWithValues: original.enumerated().map { ($1.id, $0) })
+            let sorted = original.sorted { lhs, rhs in
+                let left = Self.preferenceRank(preferences[lhs.id])
+                let right = Self.preferenceRank(preferences[rhs.id])
+                if left != right { return left < right }
+                return oldPositions[lhs.id, default: .max] < oldPositions[rhs.id, default: .max]
+            }
+            moved += sorted.enumerated().reduce(0) { partial, pair in
+                partial + (oldPositions[pair.element.id] == pair.offset ? 0 : 1)
+            }
+        }
+        return CleanupRuleSortingImpact(
+            matchedCount: preferences.count,
+            movedCount: moved,
+            preferCleanupCount: preferences.values.filter { $0 == .preferCleanup }.count,
+            preferKeepCount: preferences.values.filter { $0 == .preferKeep }.count
+        )
     }
 
     public var sortedRuleProposals: [CleanupRuleProposal] {
@@ -201,7 +403,10 @@ public struct EvolutionMemory: Codable, Equatable, Sendable {
 
     public var sortedCleanupSignals: [CleanupLearningSignal] {
         cleanupSignals.values
-            .filter { $0.effectivePreference != nil }
+            .filter { signal in
+                signal.effectivePreference != nil
+                    && ruleProposals[signal.id]?.isExpired() != true
+            }
             .sorted {
                 if $0.lastUpdatedAt == $1.lastUpdatedAt { return $0.displayName < $1.displayName }
                 return $0.lastUpdatedAt > $1.lastUpdatedAt
@@ -219,8 +424,13 @@ public struct EvolutionMemory: Codable, Equatable, Sendable {
         cleanupSignals[Self.cleanupKey(for: candidate)]
     }
 
-    public func cleanupPreference(for candidate: CleanupCandidate) -> LearnedCleanupPreference? {
-        cleanupSignal(for: candidate)?.effectivePreference
+    public func cleanupPreference(
+        for candidate: CleanupCandidate,
+        now: Date = Date()
+    ) -> LearnedCleanupPreference? {
+        let key = Self.cleanupKey(for: candidate)
+        if ruleProposals[key]?.isExpired(at: now) == true { return nil }
+        return cleanupSignals[key]?.effectivePreference
     }
 
     public func ruleProposal(for candidate: CleanupCandidate) -> CleanupRuleProposal? {
@@ -250,6 +460,10 @@ public struct EvolutionMemory: Codable, Equatable, Sendable {
         proposal.state = .pending
         proposal.reason = reason
         proposal.lastUpdatedAt = now
+        proposal.locationLevel = Self.locationLevel(for: candidate)
+        proposal.riskLevel = Self.defaultRiskLevel(for: candidate.kind)
+        proposal.ageBand = Self.ageBand(for: candidate, now: now)
+        proposal.trialExpiresAt = nil
         ruleProposals[key] = proposal
         updatedAt = now
         appendEvent(EvolutionEvent(
@@ -264,6 +478,7 @@ public struct EvolutionMemory: Codable, Equatable, Sendable {
         guard var proposal = ruleProposals[id] else { return }
         proposal.state = .enabled
         proposal.lastUpdatedAt = now
+        proposal.trialExpiresAt = nil
         ruleProposals[id] = proposal
 
         var signal = cleanupSignals[id] ?? CleanupLearningSignal(
@@ -310,6 +525,63 @@ public struct EvolutionMemory: Codable, Equatable, Sendable {
             title: "已撤销学习规则",
             detail: "\(proposal.kind.rawValue) · \(proposal.displayName)"
         ))
+    }
+
+    public mutating func enableRuleProposals(ids: [String], now: Date = Date()) {
+        for id in Set(ids) { enableRuleProposal(id: id, now: now) }
+    }
+
+    public mutating func startTrialRuleProposals(
+        ids: [String],
+        duration: TimeInterval = 7 * 86_400,
+        now: Date = Date()
+    ) {
+        let expiresAt = now.addingTimeInterval(max(60, duration))
+        for id in Set(ids) {
+            enableRuleProposal(id: id, now: now)
+            guard var proposal = ruleProposals[id] else { continue }
+            proposal.trialExpiresAt = expiresAt
+            proposal.lastUpdatedAt = now
+            ruleProposals[id] = proposal
+        }
+        appendEvent(EvolutionEvent(
+            date: now,
+            kind: .ruleState,
+            title: "开始限时试用规则",
+            detail: "\(Set(ids).count) 条规则将在到期后自动暂停"
+        ))
+    }
+
+    public mutating func pauseRuleProposals(ids: [String], now: Date = Date()) {
+        for id in Set(ids) { pauseRuleProposal(id: id, now: now) }
+    }
+
+    public mutating func removeRuleProposals(ids: [String], now: Date = Date()) {
+        for id in Set(ids) { removeRuleProposal(id: id, now: now) }
+    }
+
+    @discardableResult
+    public mutating func expireTrials(now: Date = Date()) -> Int {
+        let expiredIDs = ruleProposals.values.filter {
+            $0.state == .enabled && $0.isExpired(at: now)
+        }.map(\.id)
+        for id in expiredIDs { pauseRuleProposal(id: id, now: now) }
+        if !expiredIDs.isEmpty {
+            appendEvent(EvolutionEvent(
+                date: now,
+                kind: .ruleState,
+                title: "试用规则已到期并暂停",
+                detail: "\(expiredIDs.count) 条规则不再影响排序"
+            ))
+        }
+        return expiredIDs.count
+    }
+
+    @discardableResult
+    public mutating func removeExpiredRuleProposals(now: Date = Date()) -> Int {
+        let expiredIDs = ruleProposals.values.filter { $0.isExpired(at: now) }.map(\.id)
+        removeRuleProposals(ids: expiredIDs, now: now)
+        return expiredIDs.count
     }
 
     public mutating func recordCleanup(
@@ -429,6 +701,9 @@ public struct EvolutionMemory: Codable, Equatable, Sendable {
         proposal.suggestedPreference = .preferCleanup
         proposal.reason = "你曾确认并成功把这个项目移到废纸篓。"
         proposal.lastUpdatedAt = now
+        proposal.locationLevel = Self.locationLevel(for: candidate)
+        proposal.riskLevel = Self.defaultRiskLevel(for: candidate.kind)
+        proposal.ageBand = Self.ageBand(for: candidate, now: now)
         ruleProposals[key] = proposal
     }
 
@@ -509,6 +784,56 @@ public struct EvolutionMemory: Codable, Equatable, Sendable {
 
     public static func cleanupKey(for candidate: CleanupCandidate) -> String {
         "\(candidate.kind.rawValue)|\(normalized(candidate.name))|\(stableFingerprint(candidate.url.standardizedFileURL.path))"
+    }
+
+    private static func locationLevel(for candidate: CleanupCandidate) -> CleanupRuleLocationLevel {
+        switch candidate.kind {
+        case .developer, .packageManager:
+            return .developerStorage
+        case .appCache, .leftover:
+            return .applicationData
+        case .installer, .archive, .screenshot, .image, .video, .audio, .duplicate:
+            return .personalFolder
+        case .logs:
+            return .library
+        }
+    }
+
+    private static func defaultLocationLevel(for kind: CleanupKind) -> CleanupRuleLocationLevel {
+        switch kind {
+        case .developer, .packageManager: return .developerStorage
+        case .appCache, .leftover: return .applicationData
+        case .installer, .archive, .screenshot, .image, .video, .audio, .duplicate:
+            return .personalFolder
+        case .logs: return .library
+        }
+    }
+
+    private static func defaultRiskLevel(for kind: CleanupKind) -> CleanupRuleRiskLevel {
+        switch kind {
+        case .developer, .packageManager, .logs, .appCache:
+            return .low
+        case .installer, .archive, .screenshot:
+            return .medium
+        case .image, .video, .audio, .duplicate, .leftover:
+            return .high
+        }
+    }
+
+    private static func ageBand(for candidate: CleanupCandidate, now: Date) -> CleanupRuleAgeBand {
+        guard let modifiedAt = candidate.modifiedAt else { return .unknown }
+        let age = max(0, now.timeIntervalSince(modifiedAt))
+        if age < 7 * 86_400 { return .recent }
+        if age < 30 * 86_400 { return .settled }
+        return .old
+    }
+
+    private static func preferenceRank(_ preference: LearnedCleanupPreference?) -> Int {
+        switch preference {
+        case .preferCleanup: return 0
+        case nil: return 1
+        case .preferKeep: return 2
+        }
     }
 
     private static func modelKey(_ modelID: String) -> String {

@@ -325,6 +325,14 @@ final class AppStore: ObservableObject {
         get { agentWorkspaceState.selectedCandidateIDs }
         set { agentWorkspaceState.selectedCandidateIDs = newValue }
     }
+    private(set) var selectedAgentWorkspaceProvider: AgentWorkspaceProvider? {
+        get { agentWorkspaceState.selectedProvider }
+        set { agentWorkspaceState.selectedProvider = newValue }
+    }
+    private(set) var agentWorkspaceDetailScanningProvider: AgentWorkspaceProvider? {
+        get { agentWorkspaceState.detailScanningProvider }
+        set { agentWorkspaceState.detailScanningProvider = newValue }
+    }
     private(set) var agentWorkspaceRecoveryRecords: [AgentWorkspaceRecoveryRecord] {
         get { agentWorkspaceState.recoveryRecords }
         set { agentWorkspaceState.recoveryRecords = newValue }
@@ -892,7 +900,9 @@ final class AppStore: ObservableObject {
             requestID: scanID.uuidString,
             homeDirectory: home,
             previousObservation: previous,
-            ruleCatalog: agentRuleCatalog
+            ruleCatalog: agentRuleCatalog,
+            providers: nil,
+            detailProvider: nil
         )
         let client = agentWorkspaceScannerServiceClient
         let scanTask = Task<AgentWorkspaceScannerResponse, Error> {
@@ -910,9 +920,9 @@ final class AppStore: ObservableObject {
                   agentWorkspaceScanID == scanID else { return }
             activeAgentWorkspaceScanTask = nil
             agentWorkspaceSnapshot = result.snapshot
-            selectedAgentWorkspaceCandidateIDs.formIntersection(
-                Set(result.snapshot.actionCandidates.map(\.id))
-            )
+            selectedAgentWorkspaceCandidateIDs.removeAll(keepingCapacity: false)
+            selectedAgentWorkspaceProvider = nil
+            agentWorkspaceDetailScanningProvider = nil
             agentWorkspaceDiagnostic = "\(result.snapshot.diagnostic) 耗时 \(String(format: "%.1f", response.elapsedSeconds)) 秒。"
             agentWorkspacePhase = .ready
             if result.snapshot.isComplete {
@@ -936,6 +946,85 @@ final class AppStore: ObservableObject {
             let message = "Agent 工作区扫描没有完成：\(error.localizedDescription)"
             agentWorkspacePhase = .failed(message)
             agentWorkspaceDiagnostic = message
+        }
+    }
+
+    func openAgentWorkspaceDetail(_ provider: AgentWorkspaceProvider) async {
+        selectedAgentWorkspaceProvider = provider
+        await refreshAgentWorkspace(provider: provider)
+    }
+
+    func closeAgentWorkspaceDetail() {
+        agentWorkspaceSnapshot = agentWorkspaceSnapshot?.withoutActionCandidates()
+        selectedAgentWorkspaceProvider = nil
+        agentWorkspaceDetailScanningProvider = nil
+        selectedAgentWorkspaceCandidateIDs.removeAll(keepingCapacity: false)
+    }
+
+    func refreshAgentWorkspace(provider: AgentWorkspaceProvider) async {
+        guard !demoMode, !agentWorkspacePhase.isScanning else { return }
+        let scanID = UUID()
+        agentWorkspaceScanID = scanID
+        agentWorkspacePhase = .scanning
+        agentWorkspaceDetailScanningProvider = provider
+        agentWorkspaceDiagnostic = "正在重新验证 \(provider.displayName) 的类别、活跃文件和可恢复候选…"
+        let previous = loadAgentWorkspaceObservation()
+        let request = AgentWorkspaceScannerRequest(
+            requestID: scanID.uuidString,
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            previousObservation: previous,
+            ruleCatalog: agentRuleCatalog,
+            providers: [provider],
+            detailProvider: provider
+        )
+        let client = agentWorkspaceScannerServiceClient
+        let scanTask = Task<AgentWorkspaceScannerResponse, Error> {
+            try await client.scanAgentWorkspace(request)
+        }
+        activeAgentWorkspaceScanTask = scanTask
+        do {
+            let response = try await withTaskCancellationHandler {
+                try await scanTask.value
+            } onCancel: {
+                scanTask.cancel()
+            }
+            guard response.requestID == scanID.uuidString,
+                  agentWorkspaceScanID == scanID,
+                  selectedAgentWorkspaceProvider == provider else { return }
+            activeAgentWorkspaceScanTask = nil
+            agentWorkspaceDetailScanningProvider = nil
+            let detail = response.result.snapshot
+            if let summarySnapshot = agentWorkspaceSnapshot {
+                agentWorkspaceSnapshot = summarySnapshot.mergingDetail(detail, for: provider)
+            } else {
+                agentWorkspaceSnapshot = detail
+            }
+            selectedAgentWorkspaceCandidateIDs.formIntersection(Set(detail.actionCandidates.map(\.id)))
+            agentWorkspaceDiagnostic = "\(detail.diagnostic) 耗时 \(String(format: "%.1f", response.elapsedSeconds)) 秒。"
+            agentWorkspacePhase = .ready
+            await refreshAgentDependencyGraph()
+            scheduleAgentWorkspaceAllocatorRelief()
+        } catch is CancellationError {
+            guard agentWorkspaceScanID == scanID else { return }
+            activeAgentWorkspaceScanTask = nil
+            agentWorkspaceDetailScanningProvider = nil
+            agentWorkspacePhase = agentWorkspaceSnapshot == nil ? .idle : .ready
+            agentWorkspaceDiagnostic = "\(provider.displayName) 详情扫描已取消；没有发布不完整结果。"
+        } catch {
+            guard agentWorkspaceScanID == scanID else { return }
+            activeAgentWorkspaceScanTask = nil
+            agentWorkspaceDetailScanningProvider = nil
+            let message = "\(provider.displayName) 详情扫描没有完成：\(error.localizedDescription)"
+            agentWorkspacePhase = .failed(message)
+            agentWorkspaceDiagnostic = message
+        }
+    }
+
+    private func refreshCurrentAgentWorkspaceSurface() async {
+        if let provider = selectedAgentWorkspaceProvider {
+            await refreshAgentWorkspace(provider: provider)
+        } else {
+            await refreshAgentWorkspace()
         }
     }
 
@@ -968,6 +1057,7 @@ final class AppStore: ObservableObject {
             agentRuleCatalog = catalog
             agentRuleCatalogSource = .signedBundle(agentRuleCatalogStore.installedBundleURL)
             agentRuleCatalogDiagnostic = "规则 \(catalog.revision) 的代码签名、签名者和内容边界均已通过校验。"
+            closeAgentWorkspaceDetail()
             agentWorkspaceSnapshot = nil
             selectedAgentWorkspaceCandidateIDs.removeAll()
             await refreshAgentWorkspace()
@@ -982,6 +1072,7 @@ final class AppStore: ObservableObject {
             agentRuleCatalog = .builtIn
             agentRuleCatalogSource = .builtIn
             agentRuleCatalogDiagnostic = "已恢复随 App 发布并经过测试的内置规则。"
+            closeAgentWorkspaceDetail()
             agentWorkspaceSnapshot = nil
             selectedAgentWorkspaceCandidateIDs.removeAll()
             await refreshAgentWorkspace()
@@ -1054,7 +1145,7 @@ final class AppStore: ObservableObject {
                 category: .cleanup
             )
             agentWorkspaceRecoveryPhase = .idle
-            await refreshAgentWorkspace()
+            await refreshCurrentAgentWorkspaceSurface()
             refreshDiskCapacity()
         } catch {
             let message = error.localizedDescription
@@ -1089,7 +1180,7 @@ final class AppStore: ObservableObject {
                 category: .other
             )
             agentWorkspaceRecoveryPhase = .idle
-            await refreshAgentWorkspace()
+            await refreshCurrentAgentWorkspaceSurface()
             refreshDiskCapacity()
         } catch {
             let message = error.localizedDescription
@@ -1251,7 +1342,7 @@ final class AppStore: ObservableObject {
                       self.applicationIsActive,
                       self.selection == .agentWorkspace,
                       self.activeLifecyclePage == .agentWorkspace else { return }
-                await self.refreshAgentWorkspace()
+                await self.refreshCurrentAgentWorkspaceSurface()
             }
         }
     }
@@ -2676,6 +2767,10 @@ final class AppStore: ObservableObject {
         }
     }
 
+    var cleanupLearningSortingImpact: CleanupRuleSortingImpact {
+        evolutionMemory.sortingImpact(on: cleanupCandidates)
+    }
+
     func rememberCleanupPreference(
         _ candidate: CleanupCandidate,
         preference: LearnedCleanupPreference
@@ -2712,6 +2807,46 @@ final class AppStore: ObservableObject {
     func removeCleanupRule(_ id: String) {
         ensureEvolutionMemoryLoaded()
         evolutionMemory.removeRuleProposal(id: id)
+        saveEvolutionMemory()
+    }
+
+    func enableCleanupRuleCluster(_ cluster: CleanupRuleCluster) {
+        ensureEvolutionMemoryLoaded()
+        let ids = cluster.proposalIDs.filter { id in
+            guard let proposal = evolutionMemory.ruleProposals[id] else { return false }
+            return proposal.state != .enabled || proposal.isTrial
+        }
+        evolutionMemory.enableRuleProposals(ids: ids)
+        saveEvolutionMemory()
+    }
+
+    func trialCleanupRuleCluster(_ cluster: CleanupRuleCluster) {
+        ensureEvolutionMemoryLoaded()
+        let ids = cluster.proposalIDs.filter { id in
+            evolutionMemory.ruleProposals[id]?.state != .enabled
+        }
+        evolutionMemory.startTrialRuleProposals(ids: ids)
+        saveEvolutionMemory()
+    }
+
+    func pauseCleanupRuleCluster(_ cluster: CleanupRuleCluster) {
+        ensureEvolutionMemoryLoaded()
+        let ids = cluster.proposalIDs.filter { id in
+            evolutionMemory.ruleProposals[id]?.state == .enabled
+        }
+        evolutionMemory.pauseRuleProposals(ids: ids)
+        saveEvolutionMemory()
+    }
+
+    func removeCleanupRuleCluster(_ cluster: CleanupRuleCluster) {
+        ensureEvolutionMemoryLoaded()
+        evolutionMemory.removeRuleProposals(ids: cluster.proposalIDs)
+        saveEvolutionMemory()
+    }
+
+    func removeExpiredCleanupRules() {
+        ensureEvolutionMemoryLoaded()
+        _ = evolutionMemory.removeExpiredRuleProposals()
         saveEvolutionMemory()
     }
 
@@ -4654,15 +4789,18 @@ final class AppStore: ObservableObject {
     }
 
     private func loadEvolutionMemory() {
+        var expiredTrials = 0
         do {
             evolutionMemory = try EvolutionMemoryPersistence.load(
                 from: CleanNestDataPaths.evolutionMemory()
             )
+            expiredTrials = evolutionMemory.expireTrials()
         } catch {
             evolutionMemory = EvolutionMemory()
             lastTechnicalDetail = "本机学习记录无法读取，已使用空白记忆：\(error.localizedDescription)"
         }
         hasLoadedEvolutionMemory = true
+        if expiredTrials > 0 { saveEvolutionMemory() }
     }
 
     private func ensureEvolutionMemoryLoaded() {

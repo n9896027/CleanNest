@@ -14,6 +14,8 @@ final class AgentWorkspacePresentationState: ObservableObject {
     @Published var phase: AgentWorkspaceScanPhase = .idle
     @Published var diagnostic = "尚未扫描 Agent 工作痕迹"
     @Published var selectedCandidateIDs = Set<String>()
+    @Published var selectedProvider: AgentWorkspaceProvider?
+    @Published var detailScanningProvider: AgentWorkspaceProvider?
     @Published var recoveryRecords: [AgentWorkspaceRecoveryRecord] = []
     @Published var recoveryPhase: AgentWorkspaceRecoveryPhase = .idle
     @Published var recoveryMessage: String?
@@ -33,6 +35,8 @@ final class AgentWorkspacePresentationState: ObservableObject {
     func releaseHeavyDetails() {
         snapshot = nil
         selectedCandidateIDs.removeAll(keepingCapacity: false)
+        selectedProvider = nil
+        detailScanningProvider = nil
         dependencyGraph = .empty
         nativeDeveloperStorageSnapshot = nil
         phase = .idle

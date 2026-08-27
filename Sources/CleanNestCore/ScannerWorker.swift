@@ -193,7 +193,9 @@ public struct ScannerWorker: Sendable {
         let result = try await agentWorkspaceScanner.scan(
             homeDirectory: request.homeDirectory,
             previous: request.previousObservation,
-            catalog: request.ruleCatalog
+            catalog: request.ruleCatalog,
+            providers: request.providers,
+            actionCandidateProviders: request.detailProvider.map { Set([$0]) } ?? []
         )
         try Task.checkCancellation()
         let endedAt = DispatchTime.now().uptimeNanoseconds
@@ -203,7 +205,7 @@ public struct ScannerWorker: Sendable {
                 operation: .agentWorkspace,
                 stage: .completed,
                 completed: result.snapshot.detectedAgents.count,
-                total: AgentWorkspaceProvider.allCases.count
+                total: request.providers?.count ?? AgentWorkspaceProvider.allCases.count
             )
         )
         return AgentWorkspaceScannerResponse(

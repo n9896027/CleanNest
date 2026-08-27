@@ -13,6 +13,7 @@ public struct AgentWorkspaceSummary: Codable, Equatable, Sendable {
         public let activeFileCount: Int
         public let previewBytes: Int64
         public let isComplete: Bool
+        public let previousAllocatedBytes: Int64?
 
         public var id: AgentWorkspaceProvider { provider }
 
@@ -22,7 +23,8 @@ public struct AgentWorkspaceSummary: Codable, Equatable, Sendable {
             fileCount: Int,
             activeFileCount: Int,
             previewBytes: Int64,
-            isComplete: Bool
+            isComplete: Bool,
+            previousAllocatedBytes: Int64? = nil
         ) {
             self.provider = provider
             self.allocatedBytes = max(0, allocatedBytes)
@@ -30,6 +32,12 @@ public struct AgentWorkspaceSummary: Codable, Equatable, Sendable {
             self.activeFileCount = max(0, activeFileCount)
             self.previewBytes = max(0, previewBytes)
             self.isComplete = isComplete
+            self.previousAllocatedBytes = previousAllocatedBytes.map { max(0, $0) }
+        }
+
+        public var allocatedBytesChange: Int64? {
+            guard let previousAllocatedBytes else { return nil }
+            return allocatedBytes - previousAllocatedBytes
         }
     }
 
@@ -81,7 +89,8 @@ public struct AgentWorkspaceSummary: Codable, Equatable, Sendable {
                     fileCount: agent.fileCount,
                     activeFileCount: agent.activeFileCount,
                     previewBytes: agent.previewBytes,
-                    isComplete: agent.isComplete
+                    isComplete: agent.isComplete,
+                    previousAllocatedBytes: agent.previousAllocatedBytes
                 )
             },
             alertCount: snapshot.alerts.count,

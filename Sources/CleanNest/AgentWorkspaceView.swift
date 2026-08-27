@@ -9,14 +9,15 @@ struct AgentWorkspaceView: View {
     @State private var showingRecoveryConfirmation = false
     @State private var showingArchiveSuggestions = false
     @State private var nativeCleanupRequest: NativeDeveloperStorageEntry?
+    @State private var showingNativeTools = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 PageHeader(
-                    title: "Agent 工作区",
-                    subtitle: "看清多个编程 Agent 的本机占用与运行依赖；没有进程、端口或连接证据，就不会宣称它正在使用本地模型。",
-                    eyebrow: "占用账本 · 运行关系 · 只在本机"
+                    title: pageTitle,
+                    subtitle: pageSubtitle,
+                    eyebrow: showingNativeTools ? "原生 dry-run · 只在本机" : "占用账本 · 变化 · 活跃保护"
                 ) {
                     headerActions
                 }
@@ -33,19 +34,20 @@ struct AgentWorkspaceView: View {
                 }
 
                 if let snapshot = store.agentWorkspaceSnapshot {
-                    dependencyGraphPanel
-                    if snapshot.detectedAgents.isEmpty {
+                    if showingNativeTools {
+                        nativeToolCenter
+                    } else if let provider = store.selectedAgentWorkspaceProvider,
+                              let agent = snapshot.agents.first(where: { $0.provider == provider }) {
+                        agentDetail(agent, snapshot: snapshot)
+                    } else if snapshot.detectedAgents.isEmpty {
                         EmptyPanel(
                             symbol: "folder.badge.questionmark",
                             title: "没有发现已验证的 Agent 数据根",
-                            detail: "CleanNest 没有猜测目录，也没有遍历你的项目文件；应用、进程与守护服务证据仍会显示在上方运行关系中。"
+                            detail: "CleanNest 没有猜测目录，也没有遍历你的项目文件。可以刷新聚合账本，或进入工具账本查看官方 dry-run。"
                         )
                     } else {
-                        storageLedger(snapshot)
+                        agentOverview(snapshot)
                         if !snapshot.alerts.isEmpty { anomalyPanel(snapshot.alerts) }
-                        recoveryCenter(snapshot)
-                        nativeToolCenter
-                        agentInventory(snapshot.detectedAgents)
                     }
 
                     InlineBanner(
@@ -102,15 +104,58 @@ struct AgentWorkspaceView: View {
         }
     }
 
+    private var pageTitle: String {
+        if showingNativeTools { return "Agent 工具账本" }
+        if let provider = store.selectedAgentWorkspaceProvider {
+            return "\(provider.displayName) 工作区"
+        }
+        return "Agent 工作区"
+    }
+
+    private var pageSubtitle: String {
+        if showingNativeTools {
+            return "让 Git、Hugging Face 等工具先用自己的接口解释可回收对象；没有可靠预演就保持只读。"
+        }
+        if store.selectedAgentWorkspaceProvider != nil {
+            return "按类别查看占用，再按需生成逐文件证据；会话、凭据与私有索引不会被 CleanNest 猜测处置。"
+        }
+        return "先看谁在增长、谁正活跃、哪里出现异常；点进单个 Agent 后才生成文件级明细。"
+    }
+
     private var headerActions: some View {
         HStack(spacing: 9) {
+            if showingNativeTools || store.selectedAgentWorkspaceProvider != nil {
+                Button {
+                    showingNativeTools = false
+                    store.closeAgentWorkspaceDetail()
+                } label: {
+                    Label("返回概览", systemImage: "chevron.left")
+                }
+                .keyboardShortcut(.cancelAction)
+            } else {
+                Button {
+                    showingNativeTools = true
+                } label: {
+                    Label("工具账本", systemImage: "wrench.and.screwdriver")
+                }
+            }
             StatusPill(
-                text: store.agentWorkspacePhase.isScanning ? "正在采样" : "备份优先",
+                text: store.agentWorkspacePhase.isScanning
+                    ? "正在采样"
+                    : (store.selectedAgentWorkspaceProvider == nil ? "概览不建文件明细" : "详情已绑定身份"),
                 symbol: store.agentWorkspacePhase.isScanning ? "arrow.triangle.2.circlepath" : "checkmark.shield",
                 style: store.agentWorkspacePhase.isScanning ? .neutral : .success
             )
             Button {
-                Task { await store.refreshAgentWorkspace() }
+                Task {
+                    if let provider = store.selectedAgentWorkspaceProvider {
+                        await store.refreshAgentWorkspace(provider: provider)
+                    } else if showingNativeTools {
+                        await store.refreshNativeDeveloperStorage()
+                    } else {
+                        await store.refreshAgentWorkspace()
+                    }
+                }
             } label: {
                 Label("刷新", systemImage: "arrow.clockwise")
             }
@@ -118,6 +163,162 @@ struct AgentWorkspaceView: View {
             .keyboardShortcut("r", modifiers: [.command, .shift])
             .accessibilityHint("重新读取 Agent 文件元数据；刷新本身不会修改文件")
         }
+    }
+
+    private func agentOverview(_ snapshot: AgentWorkspaceSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            SurfaceCard(prominence: .prominent, tint: ledgerTint(snapshot)) {
+                ContentSectionHeader(
+                    "Agent 占用概览",
+                    detail: scanTiming(snapshot),
+                    symbol: "square.grid.2x2",
+                    tint: ledgerTint(snapshot)
+                ) {
+                    StatusPill(
+                        text: snapshot.isComplete ? "聚合账本已验证" : "部分路径不完整",
+                        symbol: snapshot.isComplete ? "checkmark.seal" : "exclamationmark.triangle",
+                        style: snapshot.isComplete ? .success : .warning
+                    )
+                }
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 0) {
+                        overviewMetric("总占用", CleanNestFormatting.bytes(snapshot.allocatedBytes), "目录分配块")
+                        overviewDivider
+                        overviewMetric("相比上次", aggregateChangeText(snapshot), "同一元数据口径")
+                        overviewDivider
+                        overviewMetric("活跃保护", "\(snapshot.activeFileCount) 个", "不会进入处置")
+                        overviewDivider
+                        overviewMetric("异常", "\(snapshot.alerts.filter { $0.level >= .warning }.count) 条", "先看高优先级")
+                    }
+                    VStack(spacing: 12) {
+                        HStack(spacing: 12) {
+                            overviewMetric("总占用", CleanNestFormatting.bytes(snapshot.allocatedBytes), "目录分配块")
+                            overviewMetric("相比上次", aggregateChangeText(snapshot), "同一元数据口径")
+                        }
+                        HStack(spacing: 12) {
+                            overviewMetric("活跃保护", "\(snapshot.activeFileCount) 个", "不会进入处置")
+                            overviewMetric("异常", "\(snapshot.alerts.filter { $0.level >= .warning }.count) 条", "先看高优先级")
+                        }
+                    }
+                }
+
+                AgentAllocationBar(agents: snapshot.detectedAgents)
+            }
+
+            ContentSectionHeader(
+                "选择一个 Agent 深入查看",
+                detail: "进入后才构建该 Agent 的文件级证据",
+                symbol: "rectangle.grid.2x2",
+                tint: CNTheme.cyan
+            )
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 270), spacing: 14)], spacing: 14) {
+                ForEach(snapshot.detectedAgents) { agent in
+                    AgentOverviewButton(
+                        agent: agent,
+                        alertCount: snapshot.alerts.filter { $0.provider == agent.provider }.count,
+                        rule: store.agentRuleCatalog.rule(for: agent.provider)
+                    ) {
+                        Task { await store.openAgentWorkspaceDetail(agent.provider) }
+                    }
+                }
+            }
+        }
+    }
+
+    private var overviewDivider: some View {
+        Divider().frame(height: 45).padding(.horizontal, 18)
+    }
+
+    private func overviewMetric(_ label: String, _ value: String, _ detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 21, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+            Text(detail).font(.caption2).foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func aggregateChangeText(_ snapshot: AgentWorkspaceSnapshot) -> String {
+        let changes = snapshot.detectedAgents.compactMap(\.allocatedBytesChange)
+        guard changes.count == snapshot.detectedAgents.count, !changes.isEmpty else { return "待建立基线" }
+        let delta = changes.reduce(Int64(0), +)
+        if delta == 0 { return "无变化" }
+        return (delta > 0 ? "+" : "−") + CleanNestFormatting.bytes(abs(delta))
+    }
+
+    @ViewBuilder
+    private func agentDetail(
+        _ agent: AgentWorkspaceAgentSnapshot,
+        snapshot: AgentWorkspaceSnapshot
+    ) -> some View {
+        let detailSnapshot = AgentWorkspaceSnapshot(
+            capturedAt: snapshot.capturedAt,
+            previousCapturedAt: snapshot.previousCapturedAt,
+            agents: [agent],
+            alerts: snapshot.alerts.filter { $0.provider == agent.provider },
+            openFileProbeSucceeded: snapshot.openFileProbeSucceeded,
+            diagnostic: snapshot.diagnostic
+        )
+
+        SurfaceCard(prominence: .prominent, tint: providerTint(agent.provider)) {
+            HStack(alignment: .center, spacing: 16) {
+                AgentProviderIcon(
+                    provider: agent.provider,
+                    rule: store.agentRuleCatalog.rule(for: agent.provider),
+                    size: 52,
+                    fallbackTint: providerTint(agent.provider)
+                )
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(CleanNestFormatting.bytes(agent.allocatedBytes))
+                        .font(.system(size: 31, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                    Text("\(agent.artifacts.count) 类 · \(agent.fileCount.formatted()) 个文件 · \(agentChangeText(agent))")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                StatusPill(
+                    text: agent.activeFileCount > 0 ? "\(agent.activeFileCount) 个活跃文件已锁定" : "未发现活跃写入",
+                    symbol: agent.activeFileCount > 0 ? "lock.fill" : "checkmark.shield",
+                    style: .success
+                )
+            }
+        }
+
+        SurfaceCard(title: "类别账本", symbol: "list.bullet.rectangle", tint: providerTint(agent.provider)) {
+            AgentLedgerPanel(
+                agent: agent,
+                rule: store.agentRuleCatalog.rule(for: agent.provider),
+                initiallyExpanded: true
+            )
+        }
+
+        recoveryCenter(detailSnapshot)
+
+        SurfaceCard(title: "运行关系", symbol: "point.3.connected.trianglepath.dotted", tint: CNTheme.violet) {
+            AgentDependencyLane(
+                provider: agent.provider,
+                graph: store.agentDependencyGraph,
+                rule: store.agentRuleCatalog.rule(for: agent.provider)
+            )
+            Label(
+                "只有进程、端口或 TCP 连接等系统证据存在时，才显示运行或模型实连。",
+                systemImage: "checkmark.seal"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private func agentChangeText(_ agent: AgentWorkspaceAgentSnapshot) -> String {
+        guard let delta = agent.allocatedBytesChange else { return "尚无变化基线" }
+        if delta == 0 { return "相比上次无变化" }
+        return "相比上次\(delta > 0 ? "增加" : "减少") \(CleanNestFormatting.bytes(abs(delta)))"
     }
 
     private var loadingPanel: some View {
@@ -608,7 +809,11 @@ struct AgentWorkspaceView: View {
 
     @ViewBuilder
     private var recoveryRecords: some View {
-        if !store.agentWorkspaceRecoveryRecords.isEmpty {
+        let records = store.agentWorkspaceRecoveryRecords.filter { record in
+            guard let provider = store.selectedAgentWorkspaceProvider else { return true }
+            return record.items.contains { $0.candidate.provider == provider }
+        }
+        if !records.isEmpty {
             Divider()
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
@@ -623,10 +828,10 @@ struct AgentWorkspaceView: View {
                     .controlSize(.small)
             }
             VStack(spacing: 0) {
-                ForEach(Array(store.agentWorkspaceRecoveryRecords.prefix(5).enumerated()), id: \.element.id) { index, record in
+                ForEach(Array(records.prefix(5).enumerated()), id: \.element.id) { index, record in
                     AgentWorkspaceRecoveryRecordRow(record: record)
                         .environmentObject(store)
-                    if index < min(5, store.agentWorkspaceRecoveryRecords.count) - 1 {
+                    if index < min(5, records.count) - 1 {
                         Divider().padding(.leading, 41)
                     }
                 }
@@ -1530,6 +1735,87 @@ private struct AgentAllocationBar: View {
     }
 }
 
+private struct AgentOverviewButton: View {
+    let agent: AgentWorkspaceAgentSnapshot
+    let alertCount: Int
+    let rule: AgentProviderRule?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 11) {
+                    AgentProviderIcon(
+                        provider: agent.provider,
+                        rule: rule,
+                        size: 38,
+                        fallbackTint: providerTint(agent.provider)
+                    )
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(agent.provider.displayName)
+                            .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        Text("\(agent.fileCount.formatted()) 个文件")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+
+                HStack(alignment: .lastTextBaseline) {
+                    Text(CleanNestFormatting.bytes(agent.allocatedBytes))
+                        .font(.system(size: 23, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                    Spacer()
+                    Text(changeText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(changeTint)
+                }
+
+                HStack(spacing: 8) {
+                    StatusPill(
+                        text: agent.activeFileCount > 0 ? "\(agent.activeFileCount) 活跃已保护" : "无活跃写入",
+                        symbol: agent.activeFileCount > 0 ? "lock.fill" : "checkmark",
+                        style: .success
+                    )
+                    if alertCount > 0 {
+                        StatusPill(text: "\(alertCount) 条线索", symbol: "waveform.path.ecg", style: .warning)
+                    } else {
+                        StatusPill(text: "无异常", symbol: "checkmark.circle", style: .neutral)
+                    }
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, minHeight: 150, alignment: .leading)
+            .background(
+                providerTint(agent.provider).opacity(0.055),
+                in: RoundedRectangle(cornerRadius: CNTheme.cardRadius, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: CNTheme.cardRadius, style: .continuous)
+                    .stroke(providerTint(agent.provider).opacity(0.16), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(agent.provider.displayName)，占用 \(CleanNestFormatting.bytes(agent.allocatedBytes))，\(changeText)，\(agent.activeFileCount) 个活跃文件，\(alertCount) 条异常线索")
+        .accessibilityHint("打开该 Agent 的类别、文件、运行关系和恢复记录")
+    }
+
+    private var changeText: String {
+        guard let delta = agent.allocatedBytesChange else { return "待建立变化基线" }
+        if delta == 0 { return "无变化" }
+        return (delta > 0 ? "+" : "−") + CleanNestFormatting.bytes(abs(delta))
+    }
+
+    private var changeTint: Color {
+        guard let delta = agent.allocatedBytesChange, delta != 0 else { return .secondary }
+        return delta > 0 ? CNTheme.warning : CNTheme.mint
+    }
+}
+
 private struct AgentWorkspaceAlertRow: View {
     let alert: AgentWorkspaceAlert
 
@@ -1566,10 +1852,14 @@ private struct AgentLedgerPanel: View {
     let rule: AgentProviderRule?
     @State private var isExpanded: Bool
 
-    init(agent: AgentWorkspaceAgentSnapshot, rule: AgentProviderRule?) {
+    init(
+        agent: AgentWorkspaceAgentSnapshot,
+        rule: AgentProviderRule?,
+        initiallyExpanded: Bool? = nil
+    ) {
         self.agent = agent
         self.rule = rule
-        _isExpanded = State(initialValue: agent.provider.supportsBackupFirstRecovery)
+        _isExpanded = State(initialValue: initiallyExpanded ?? agent.provider.supportsBackupFirstRecovery)
     }
 
     var body: some View {

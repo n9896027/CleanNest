@@ -55,7 +55,7 @@ CleanNest turns Mac cleanup from a black-box button into an understandable, reve
 - **Process management** — request a normal process quit only after identity checks, system-process protection, and user confirmation; CleanNest does not automatically force-quit it.
 - **App uninstall** — browse installed apps and preview the app bundle plus related files matched by exact Bundle ID.
 - **System maintenance** — run selected low-risk maintenance tasks and keep their results in one activity history.
-- **Auditable local learning** — explicit choices and successful cleanups create reviewable rule proposals. Nothing affects future ordering until you enable it, and every rule can be paused, resumed, or removed.
+- **Auditable local learning** — file proposals are clustered by type, location level, risk, and age. Clusters support batch review, seven-day trials, pause, revoke, expiry cleanup, and measured impact on the current list; they never select or delete files.
 - **Model Workbench** — run a minimal streaming request that contains no scan metadata, then see loopback health latency, time to first output, total time, the exact API model ID, and memory-headroom guidance.
 - **Data controls** — export or clear the activity log independently; restoring safe defaults resets preferences without silently erasing activity, learning rules, disk indexes, metric history, or macOS permissions.
 - **Mole integration** — discover `mo` installed through Apple Silicon or Intel Homebrew, or install/update Mole from inside the app.
@@ -140,6 +140,7 @@ Detailed maintainer documentation is currently written primarily in Simplified C
 | [0.7.5 verification report](docs/VERIFICATION-0.7.5.md) | Shared alert thresholds, local alert timeline, menu-width budget, app-level process grouping, and high-frequency update isolation |
 | [0.7.6 verification report](docs/VERIFICATION-0.7.6.md) | Read-only maintenance preflight, impact confirmation, before/after evidence, recovery checks, and honest uncertainty |
 | [0.7.7 verification report](docs/VERIFICATION-0.7.7.md) | Local-model evidence topology, live clients, four control tiers, runtime diagnostics, and a bounded Ollama lifecycle check |
+| [0.7.8 verification report](docs/VERIFICATION-0.7.8.md) | Agent overview/detail lazy loading, clustered learning rules, trials, measured sorting impact, and a 10,000-history projection test |
 | [0.7 series roadmap](docs/ROADMAP-0.7.md) | Product, architecture, acceptance gates, and explicit non-goals for 0.7.0–0.7.9 |
 | [0.6.5 section audit](docs/AUDIT-0.6.5.md) | Current behavior, gaps, performance, and accessibility evidence for every primary surface |
 | [0.6.0 verification report](docs/VERIFICATION-0.6.0.md) | XPC isolation, cancellation rollback, injected scanner failure, recovery, and cold-start memory evidence |
@@ -179,6 +180,6 @@ Preview the UI with synthetic data only:
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-The current development milestone is **0.7.7 (Build 34)**; the sealed 0.6-series baseline remains 0.6.5. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
+The current development milestone is **0.7.8 (Build 35)**; the sealed 0.6-series baseline remains 0.6.5. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
 
 Core navigation and the main overview, disk, status, and settings surfaces now include English, Simplified Chinese, and Traditional Chinese resources. Some runtime diagnostics and path-dependent copy can still fall back to the source language; Japanese and Korean currently have localized project overviews rather than full UI resources.

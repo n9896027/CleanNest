@@ -127,6 +127,7 @@ final class ScannerWorkerTests: XCTestCase {
         XCTAssertEqual(response.requestID, request.requestID)
         XCTAssertEqual(response.result.snapshot.detectedAgents.map(\.provider), [.codex])
         XCTAssertEqual(response.result.snapshot.detectedAgents.first?.fileCount, 1)
+        XCTAssertTrue(response.result.snapshot.actionCandidates.isEmpty)
         XCTAssertGreaterThanOrEqual(response.elapsedSeconds, 0)
         XCTAssertTrue(recorder.values.contains { $0.stage == .agentWorkspaceMetadata })
         XCTAssertEqual(recorder.values.last?.stage, .completed)

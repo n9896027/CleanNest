@@ -35,7 +35,7 @@ public struct CommandResult: Equatable, Sendable {
     }
 }
 
-public enum CleanupKind: String, CaseIterable, Codable, Sendable {
+public enum CleanupKind: String, CaseIterable, Codable, Hashable, Sendable {
     case developer = "开发缓存"
     case packageManager = "包管理器缓存"
     case logs = "旧日志"

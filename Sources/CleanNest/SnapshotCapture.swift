@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import CleanNestCore
 
 enum SnapshotCapture {
     @MainActor
@@ -13,6 +14,11 @@ enum SnapshotCapture {
 
         let outputURL = URL(fileURLWithPath: requestedPath).standardizedFileURL
         store.selection = snapshotPage(environment["CLEANNEST_SNAPSHOT_PAGE"])
+        if store.selection == .agentWorkspace,
+           let rawProvider = environment["CLEANNEST_SNAPSHOT_AGENT"],
+           let provider = AgentWorkspaceProvider(rawValue: rawProvider) {
+            store.agentWorkspaceState.selectedProvider = provider
+        }
 
         let size = snapshotSize(environment: environment)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {

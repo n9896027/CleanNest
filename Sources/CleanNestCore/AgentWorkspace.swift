@@ -286,6 +286,32 @@ public struct AgentWorkspaceArtifact: Identifiable, Codable, Equatable, Sendable
         self.actionCandidates = actionCandidates
         self.actionCandidateLimitReached = actionCandidateLimitReached
     }
+
+    public func withoutActionCandidates() -> AgentWorkspaceArtifact {
+        AgentWorkspaceArtifact(
+            id: id,
+            provider: provider,
+            kind: kind,
+            sourcePaths: sourcePaths,
+            allocatedBytes: allocatedBytes,
+            logicalBytes: logicalBytes,
+            fileCount: fileCount,
+            directoryCount: directoryCount,
+            activeFileCount: activeFileCount,
+            recentlyModifiedFileCount: recentlyModifiedFileCount,
+            oldFileCount: oldFileCount,
+            previewBytes: previewBytes,
+            largestFileBytes: largestFileBytes,
+            largestFilePath: largestFilePath,
+            latestModificationDate: latestModificationDate,
+            disposition: disposition,
+            protectionReasons: protectionReasons,
+            isComplete: isComplete,
+            diagnostic: diagnostic,
+            actionCandidates: [],
+            actionCandidateLimitReached: false
+        )
+    }
 }
 
 public struct AgentWorkspaceAgentSnapshot: Identifiable, Codable, Equatable, Sendable {
@@ -293,6 +319,7 @@ public struct AgentWorkspaceAgentSnapshot: Identifiable, Codable, Equatable, Sen
     public let detected: Bool
     public let artifacts: [AgentWorkspaceArtifact]
     public let diagnostics: [String]
+    public let previousAllocatedBytes: Int64?
 
     public var id: String { provider.rawValue }
     public var allocatedBytes: Int64 { artifacts.saturatingSum(of: \.allocatedBytes) }
@@ -301,17 +328,33 @@ public struct AgentWorkspaceAgentSnapshot: Identifiable, Codable, Equatable, Sen
     public var fileCount: Int { artifacts.reduce(0) { $0 + $1.fileCount } }
     public var activeFileCount: Int { artifacts.reduce(0) { $0 + $1.activeFileCount } }
     public var isComplete: Bool { diagnostics.isEmpty && artifacts.allSatisfy(\.isComplete) }
+    public var allocatedBytesChange: Int64? {
+        guard let previousAllocatedBytes else { return nil }
+        return allocatedBytes - previousAllocatedBytes
+    }
 
     public init(
         provider: AgentWorkspaceProvider,
         detected: Bool,
         artifacts: [AgentWorkspaceArtifact],
-        diagnostics: [String] = []
+        diagnostics: [String] = [],
+        previousAllocatedBytes: Int64? = nil
     ) {
         self.provider = provider
         self.detected = detected
         self.artifacts = artifacts
         self.diagnostics = diagnostics
+        self.previousAllocatedBytes = previousAllocatedBytes.map { max(0, $0) }
+    }
+
+    public func withoutActionCandidates() -> AgentWorkspaceAgentSnapshot {
+        AgentWorkspaceAgentSnapshot(
+            provider: provider,
+            detected: detected,
+            artifacts: artifacts.map { $0.withoutActionCandidates() },
+            diagnostics: diagnostics,
+            previousAllocatedBytes: previousAllocatedBytes
+        )
     }
 }
 
@@ -374,6 +417,44 @@ public struct AgentWorkspaceSnapshot: Codable, Equatable, Sendable {
         self.alerts = alerts
         self.openFileProbeSucceeded = openFileProbeSucceeded
         self.diagnostic = diagnostic
+    }
+
+    /// Replaces one provider's aggregate row with a freshly scanned detail row.
+    /// Other providers remain summary-only and cannot inherit file action tokens.
+    public func mergingDetail(
+        _ detail: AgentWorkspaceSnapshot,
+        for provider: AgentWorkspaceProvider
+    ) -> AgentWorkspaceSnapshot {
+        guard let replacement = detail.agents.first(where: { $0.provider == provider }) else {
+            return self
+        }
+        let mergedAgents = agents.map { agent in
+            agent.provider == provider ? replacement : agent
+        }
+        let retainedAlerts = alerts.filter { $0.provider != provider }
+        let providerAlerts = detail.alerts.filter { $0.provider == provider }
+        return AgentWorkspaceSnapshot(
+            capturedAt: detail.capturedAt,
+            previousCapturedAt: previousCapturedAt,
+            agents: mergedAgents,
+            alerts: (retainedAlerts + providerAlerts).sorted {
+                if $0.level != $1.level { return $0.level > $1.level }
+                return $0.id < $1.id
+            },
+            openFileProbeSucceeded: openFileProbeSucceeded && detail.openFileProbeSucceeded,
+            diagnostic: "聚合账本保持不变；已重新验证 \(provider.displayName) 的类别与逐文件处置证据。"
+        )
+    }
+
+    public func withoutActionCandidates() -> AgentWorkspaceSnapshot {
+        AgentWorkspaceSnapshot(
+            capturedAt: capturedAt,
+            previousCapturedAt: previousCapturedAt,
+            agents: agents.map { $0.withoutActionCandidates() },
+            alerts: alerts,
+            openFileProbeSucceeded: openFileProbeSucceeded,
+            diagnostic: diagnostic
+        )
     }
 }
 
@@ -508,9 +589,17 @@ public struct AgentWorkspaceScanner: Sendable {
         openFiles suppliedOpenFiles: [AgentWorkspaceOpenFile]? = nil,
         suppliedOpenFileProbeSucceeded: Bool = true,
         catalog: AgentRuleCatalog = .builtIn,
+        providers: [AgentWorkspaceProvider]? = nil,
+        actionCandidateProviders: Set<AgentWorkspaceProvider>? = nil,
         now: Date = Date()
     ) async throws -> AgentWorkspaceScanResult {
         try catalog.validate()
+        let requestedProviders = providers ?? AgentWorkspaceProvider.allCases
+        let uniqueProviders = requestedProviders.reduce(into: [AgentWorkspaceProvider]()) { result, provider in
+            if !result.contains(provider) { result.append(provider) }
+        }
+        let candidateProviders = actionCandidateProviders
+            ?? Set(uniqueProviders.filter(\.supportsBackupFirstRecovery))
         let probe: AgentWorkspaceOpenFileProbe.Result
         if let suppliedOpenFiles {
             probe = .init(
@@ -530,7 +619,9 @@ public struct AgentWorkspaceScanner: Sendable {
             openFileProbe: probe,
             now: now,
             configuration: configuration,
-            catalog: catalog
+            catalog: catalog,
+            providers: uniqueProviders,
+            actionCandidateProviders: candidateProviders
         )
     }
 
@@ -540,7 +631,9 @@ public struct AgentWorkspaceScanner: Sendable {
         openFileProbe: AgentWorkspaceOpenFileProbe.Result,
         now: Date,
         configuration: Configuration,
-        catalog: AgentRuleCatalog
+        catalog: AgentRuleCatalog,
+        providers: [AgentWorkspaceProvider],
+        actionCandidateProviders: Set<AgentWorkspaceProvider>
     ) -> AgentWorkspaceScanResult {
         let normalizedHome = homeDirectory.standardizedFileURL
         let roots = Dictionary(uniqueKeysWithValues: catalog.providers.map { rule in
@@ -553,7 +646,7 @@ public struct AgentWorkspaceScanner: Sendable {
         }
         let openPathSet = Set(openFiles.map { URL(fileURLWithPath: $0.path).standardizedFileURL.path })
 
-        let agents = AgentWorkspaceProvider.allCases.map { provider in
+        let agents = providers.map { provider in
             scanAgent(
                 provider: provider,
                 roots: roots[provider] ?? [],
@@ -561,7 +654,9 @@ public struct AgentWorkspaceScanner: Sendable {
                 openPaths: openPathSet,
                 activityProbeSucceeded: openFileProbe.succeeded,
                 now: now,
-                configuration: configuration
+                configuration: configuration,
+                collectActionCandidates: actionCandidateProviders.contains(provider),
+                previousAllocatedBytes: previous?.allocatedBytesByAgent[provider.rawValue]
             )
         }
         let observation = AgentWorkspaceObservation(
@@ -621,7 +716,9 @@ public struct AgentWorkspaceScanner: Sendable {
         openPaths: Set<String>,
         activityProbeSucceeded: Bool,
         now: Date,
-        configuration: Configuration
+        configuration: Configuration,
+        collectActionCandidates: Bool,
+        previousAllocatedBytes: Int64?
     ) -> AgentWorkspaceAgentSnapshot {
         let fileManager = FileManager.default
         let existingRoots = roots.filter { root in
@@ -630,7 +727,12 @@ public struct AgentWorkspaceScanner: Sendable {
                 && isDirectory.boolValue
         }
         guard !existingRoots.isEmpty else {
-            return AgentWorkspaceAgentSnapshot(provider: provider, detected: false, artifacts: [])
+            return AgentWorkspaceAgentSnapshot(
+                provider: provider,
+                detected: false,
+                artifacts: [],
+                previousAllocatedBytes: previousAllocatedBytes
+            )
         }
 
         var groupedURLs: [AgentArtifactKind: [URL]] = [:]
@@ -677,6 +779,7 @@ public struct AgentWorkspaceScanner: Sendable {
                     openPaths: openPaths,
                     now: now,
                     configuration: configuration,
+                    collectActionCandidates: collectActionCandidates,
                     remainingEntries: &remainingEntries,
                     remainingActionCandidates: &remainingActionCandidates,
                     seenFiles: &seenFiles
@@ -764,7 +867,8 @@ public struct AgentWorkspaceScanner: Sendable {
                 if $0.allocatedBytes == $1.allocatedBytes { return $0.kind.rawValue < $1.kind.rawValue }
                 return $0.allocatedBytes > $1.allocatedBytes
             },
-            diagnostics: diagnostics
+            diagnostics: diagnostics,
+            previousAllocatedBytes: previousAllocatedBytes
         )
     }
 
@@ -775,6 +879,7 @@ public struct AgentWorkspaceScanner: Sendable {
         openPaths: Set<String>,
         now: Date,
         configuration: Configuration,
+        collectActionCandidates: Bool,
         remainingEntries: inout Int,
         remainingActionCandidates: inout Int,
         seenFiles: inout Set<FileIdentity>
@@ -800,6 +905,7 @@ public struct AgentWorkspaceScanner: Sendable {
                 openPaths: openPaths,
                 now: now,
                 configuration: configuration,
+                collectActionCandidates: collectActionCandidates,
                 remainingActionCandidates: &remainingActionCandidates
             )
         }
@@ -846,6 +952,7 @@ public struct AgentWorkspaceScanner: Sendable {
                     openPaths: openPaths,
                     now: now,
                     configuration: configuration,
+                    collectActionCandidates: collectActionCandidates,
                     remainingActionCandidates: &remainingActionCandidates
                 ))
             case FTS_DNR, FTS_ERR, FTS_NS:
@@ -874,6 +981,7 @@ public struct AgentWorkspaceScanner: Sendable {
         openPaths: Set<String>,
         now: Date,
         configuration: Configuration,
+        collectActionCandidates: Bool,
         remainingActionCandidates: inout Int
     ) -> WalkMetrics {
         let allocated = max(0, Int64(fileStat.st_blocks) * 512)
@@ -897,7 +1005,8 @@ public struct AgentWorkspaceScanner: Sendable {
         result.largestFileBytes = logical
         result.largestFilePath = normalizedPath
         result.latestModificationDate = modified
-        if provider.supportsBackupFirstRecovery,
+        if collectActionCandidates,
+           provider.supportsBackupFirstRecovery,
            !isActive,
            age > configuration.recentInterval,
            [.caches, .temporaryFiles, .logs].contains(kind) {
