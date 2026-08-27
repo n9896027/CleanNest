@@ -137,6 +137,14 @@ CleanNest 有两条相互独立的状态链路：
 
 温度、GPU 和风扇计数只在系统返回有效值时显示，缺失保持为空，不伪造为零。AppleSMC 适配层不包含任何写方法，因此不能改变风扇模式或转速。MCP 只读打开历史 WAL 数据库，不创建表、不修剪数据。详见 [METRICS.md](METRICS.md) 与 [MCP.md](MCP.md)。
 
+## 维护诊断数据流（0.7.6）
+
+1. 用户先选择具体症状；`MaintenanceDiagnosticPolicy` 不读取窗口内容，而是对 Quick Look 运行只读能力查询，或用当前用户的精确进程名确认 Finder、Dock、SystemUIServer 是否存在。
+2. 预检只有“未发现基础异常”“发现可验证异常”“无法确认”三种状态。进程存在不能证明 UI 响应，Quick Look 基础接口可用也不能证明某个文件预览未过期，这些限制直接写入证据。
+3. 用户查看影响并确认后，App 会再次预检以避免使用旧状态，再执行固定参数的 `/usr/bin/qlmanage -r cache` 或 `/usr/bin/killall <精确服务名>`。没有动态命令、shell、`sudo`、日志清空、权限修改或文件删除。
+4. Finder、Dock 和菜单栏任务要求出现不属于执行前集合的新 PID 才写成“服务已验证恢复”；Quick Look 只在命令成功且基础接口重新响应时写成“基础复核通过”。命令成功、复核不确定和未恢复是不同结果。
+5. 最近 40 条 `MaintenanceRunRecord` 原子保存在 `maintenance-history.json`，只含动作、时间、状态、界面服务 PID 和说明。活动记录保存同一结论，不将命令退出码冒充用户可见问题已修好。
+
 ## 本地模型运行数据流
 
 1. `LocalModelRuntimeDiscovery` 按 10–60 秒自适应间隔从系统 `ps` 与 `lsof` 读取模型相关进程、RSS、启动时间和 TCP 监听：用户停留在模型页时最快，App 非活跃、菜单栏模型状态关闭或没有运行实例时自动降频。同时读取 `launchctl list` / `print-disabled` 与标准 LaunchAgents / LaunchDaemons 的有限元数据。完整命令行和 plist 参数只在本次内存分类中使用，不进入公开模型或持久化；环境变量不读取。

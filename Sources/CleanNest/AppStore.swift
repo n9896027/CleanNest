@@ -156,6 +156,15 @@ enum AgentWorkspaceRecoveryPhase: Equatable {
     }
 }
 
+enum MaintenanceCenterStage: Equatable {
+    case idle
+    case diagnosing(MaintenanceAction)
+    case ready(MaintenanceEvidence)
+    case executing(MaintenanceAction)
+    case verifying(MaintenanceAction)
+    case finished(MaintenanceRunRecord)
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     static let startupDiskRoot = URL(fileURLWithPath: "/", isDirectory: true).standardizedFileURL
@@ -286,6 +295,9 @@ final class AppStore: ObservableObject {
 
     @Published var activities: [ActivityEntry] = []
     @Published private(set) var activityLifetimeTotals = ActivityLifetimeTotals()
+    @Published private(set) var maintenanceEvidence: [MaintenanceAction: MaintenanceEvidence] = [:]
+    @Published private(set) var maintenanceHistory: [MaintenanceRunRecord] = []
+    @Published private(set) var maintenanceStage: MaintenanceCenterStage = .idle
     @Published var requestedActivityDetailID: UUID?
     @Published var selectedSettingsSection: CleanNestSettingsSection = .general
     @Published private(set) var evolutionMemory = EvolutionMemory()
@@ -514,6 +526,7 @@ final class AppStore: ObservableObject {
         } else {
             loadActivities()
             loadActivityLifetimeTotals()
+            loadMaintenanceHistory()
             loadAgentWorkspaceSummary()
             refreshDiskCapacity()
         }
@@ -2712,6 +2725,7 @@ final class AppStore: ObservableObject {
                 systemAlertTimeline,
                 to: CleanNestDataPaths.systemAlertTimeline()
             )
+            saveMaintenanceHistory()
         }
         activeDiskScanTask?.cancel()
         activeDiskScanTask = nil
@@ -4078,96 +4092,183 @@ final class AppStore: ObservableObject {
         ].contains { normalized.contains($0) }
     }
 
-    func runMaintenance(_ action: MaintenanceAction) async {
-        guard !demoMode else {
-            phase = .success("演示模式：\(action.rawValue) 未实际执行")
-            return
-        }
+    func diagnoseMaintenance(_ action: MaintenanceAction) async {
         guard !isWorking else { return }
+        maintenanceStage = .diagnosing(action)
+        phase = .scanning("正在只读检查\(action.rawValue)…")
+        let evidence = demoMode
+            ? demoMaintenanceEvidence(action)
+            : await maintenanceEvidenceSnapshot(action)
+        maintenanceEvidence[action] = evidence
+        maintenanceStage = .ready(evidence)
+        phase = .idle
+    }
+
+    func runMaintenance(_ action: MaintenanceAction) async {
+        guard !isWorking else { return }
+        let startedAt = Date()
+        maintenanceStage = .diagnosing(action)
+        phase = .scanning("执行前正在重新检查\(action.rawValue)…")
+        let before = demoMode
+            ? demoMaintenanceEvidence(action)
+            : await maintenanceEvidenceSnapshot(action)
+        maintenanceEvidence[action] = before
+
+        maintenanceStage = .executing(action)
         phase = .executing("正在\(action.rawValue)…")
-        let previousProcessIDs = if let processName = action.verificationProcessName {
-            await maintenanceProcessIDs(named: processName)
+        var commandSucceeded = false
+        var commandDetail = ""
+
+        if demoMode {
+            commandSucceeded = true
+            commandDetail = "演示模式没有运行系统命令。"
         } else {
-            Set<Int32>()
-        }
-
-        if let processName = action.verificationProcessName,
-           previousProcessIDs.isEmpty {
-            let detail = "CleanNest 无法确认当前的 \(processName) 进程，因此没有执行 \(action.rawValue)，避免把未验证的操作显示成成功。"
-            phase = .failed("\(action.rawValue)未执行")
-            lastTechnicalDetail = detail
-            addActivity(title: action.rawValue, detail: detail, outcome: .failed)
-            return
-        }
-
-        do {
-            let result = try await commandRunner.runChecked(
-                executable: action.executable,
-                arguments: action.arguments,
-                timeout: 15
-            )
-
-            if let processName = action.verificationProcessName {
-                let restarted = await waitForMaintenanceProcessRestart(
-                    named: processName,
-                    excluding: previousProcessIDs
+            do {
+                let result = try await commandRunner.runChecked(
+                    executable: action.executable,
+                    arguments: action.arguments,
+                    timeout: 15
                 )
-                guard restarted else {
-                    let detail = "\(action.rawValue)命令已返回，但 CleanNest 没有在 4 秒内验证 \(processName) 以新进程恢复运行。\(action.recovery)"
-                    phase = .failed("\(action.rawValue)尚未验证完成")
-                    lastTechnicalDetail = detail
-                    addActivity(title: action.rawValue, detail: detail, outcome: .failed)
-                    return
-                }
+                commandSucceeded = true
+                commandDetail = (result.standardOutput + result.standardError)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } catch {
+                commandDetail = error.localizedDescription
             }
-
-            let output = (result.standardOutput + result.standardError)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            lastTechnicalDetail = [
-                "已执行：\(action.executable.path) \(action.arguments.joined(separator: " "))",
-                action.verificationProcessName.map { "已验证：\($0) 以新进程恢复运行。" },
-                output.isEmpty ? nil : output
-            ]
-            .compactMap { $0 }
-            .joined(separator: "\n")
-            phase = .success("\(action.rawValue)已完成")
-            addActivity(title: action.rawValue, detail: action.explanation, outcome: .success, affectedItems: 1)
-        } catch {
-            phase = .failed("\(action.rawValue)没有完成")
-            let detail = "\(error.localizedDescription) \(action.recovery)"
-            lastTechnicalDetail = detail
-            addActivity(title: action.rawValue, detail: detail, outcome: .failed)
         }
+
+        maintenanceStage = .verifying(action)
+        phase = .scanning("正在复核\(action.rawValue)是否恢复…")
+        let after = if demoMode {
+            demoMaintenanceEvidence(action, afterExecution: true)
+        } else {
+            await maintenancePostflight(action, before: before)
+        }
+        maintenanceEvidence[action] = after
+
+        let record = MaintenanceDiagnosticPolicy.verify(
+            action: action,
+            startedAt: startedAt,
+            before: before,
+            after: after,
+            commandSucceeded: commandSucceeded
+        )
+        maintenanceHistory.insert(record, at: 0)
+        maintenanceHistory = Array(maintenanceHistory.prefix(MaintenanceHistoryPersistence.maximumRecords))
+        saveMaintenanceHistory()
+        maintenanceStage = .finished(record)
+
+        let activityOutcome: ActivityEntry.Outcome = switch record.outcome {
+        case .verifiedRecovered, .basicVerificationPassed: .success
+        case .inconclusive: .partial
+        case .notRecovered, .commandFailed: .failed
+        }
+        phase = activityOutcome == .success
+            ? .success(record.outcome.title)
+            : .failed(record.outcome.title)
+        lastTechnicalDetail = [
+            "执行前：\(before.headline)",
+            commandSucceeded
+                ? "命令已返回成功：\(action.executable.path) \(action.arguments.joined(separator: " "))"
+                : "命令未成功：\(commandDetail)",
+            "执行后：\(after.headline)",
+            record.summary,
+            commandDetail.isEmpty || !commandSucceeded ? nil : commandDetail
+        ]
+        .compactMap { $0 }
+        .joined(separator: "\n")
+        addActivity(
+            title: action.rawValue,
+            detail: record.summary,
+            outcome: activityOutcome,
+            affectedItems: commandSucceeded ? 1 : 0
+        )
     }
 
-    private func waitForMaintenanceProcessRestart(
-        named processName: String,
-        excluding previousProcessIDs: Set<Int32>
-    ) async -> Bool {
-        for attempt in 0..<16 {
-            let currentProcessIDs = await maintenanceProcessIDs(named: processName)
-            if !currentProcessIDs.subtracting(previousProcessIDs).isEmpty {
-                return true
+    private func maintenancePostflight(
+        _ action: MaintenanceAction,
+        before: MaintenanceEvidence
+    ) async -> MaintenanceEvidence {
+        if action == .quickLook {
+            try? await Task.sleep(for: .milliseconds(300))
+            return await maintenanceEvidenceSnapshot(action)
+        }
+
+        var latest = await maintenanceEvidenceSnapshot(action)
+        for attempt in 0..<15 {
+            if !Set(latest.processIDs).subtracting(Set(before.processIDs)).isEmpty {
+                return latest
             }
-            if attempt < 15 {
-                try? await Task.sleep(nanoseconds: 250_000_000)
+            if attempt < 14 {
+                try? await Task.sleep(for: .milliseconds(250))
+                latest = await maintenanceEvidenceSnapshot(action)
             }
         }
-        return false
+        return latest
     }
 
-    private func maintenanceProcessIDs(named processName: String) async -> Set<Int32> {
-        guard let result = try? await commandRunner.runChecked(
-            executable: URL(fileURLWithPath: "/usr/bin/pgrep"),
-            arguments: ["-x", processName],
-            timeout: 2
-        ) else {
-            return []
+    private func maintenanceEvidenceSnapshot(_ action: MaintenanceAction) async -> MaintenanceEvidence {
+        if action == .quickLook {
+            do {
+                let result = try await commandRunner.run(
+                    executable: URL(fileURLWithPath: "/usr/bin/qlmanage"),
+                    arguments: ["-m"],
+                    timeout: 5
+                )
+                return MaintenanceDiagnosticPolicy.assess(
+                    action: action,
+                    readOnlyProbeSucceeded: result.exitCode == 0
+                )
+            } catch {
+                return MaintenanceDiagnosticPolicy.assess(
+                    action: action,
+                    readOnlyProbeSucceeded: nil
+                )
+            }
         }
-        return Set(
-            result.standardOutput
+
+        guard let processName = action.verificationProcessName else {
+            return MaintenanceDiagnosticPolicy.assess(
+                action: action,
+                readOnlyProbeSucceeded: nil
+            )
+        }
+        do {
+            let result = try await commandRunner.run(
+                executable: URL(fileURLWithPath: "/usr/bin/pgrep"),
+                arguments: ["-U", String(getuid()), "-x", processName],
+                timeout: 2
+            )
+            let processIDs = result.standardOutput
                 .split(whereSeparator: \.isNewline)
                 .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            return MaintenanceDiagnosticPolicy.assess(
+                action: action,
+                processIDs: processIDs,
+                readOnlyProbeSucceeded: result.exitCode == 0 || result.exitCode == 1
+            )
+        } catch {
+            return MaintenanceDiagnosticPolicy.assess(
+                action: action,
+                readOnlyProbeSucceeded: nil
+            )
+        }
+    }
+
+    private func demoMaintenanceEvidence(
+        _ action: MaintenanceAction,
+        afterExecution: Bool = false
+    ) -> MaintenanceEvidence {
+        if action == .quickLook {
+            return MaintenanceDiagnosticPolicy.assess(
+                action: action,
+                readOnlyProbeSucceeded: true
+            )
+        }
+        return MaintenanceDiagnosticPolicy.assess(
+            action: action,
+            processIDs: [afterExecution ? 4202 : 4101],
+            readOnlyProbeSucceeded: true
         )
     }
 
@@ -4708,6 +4809,29 @@ final class AppStore: ObservableObject {
             )
         } catch {
             lastTechnicalDetail = "累计成果记录无法保存：\(error.localizedDescription)"
+        }
+    }
+
+    private func loadMaintenanceHistory() {
+        do {
+            maintenanceHistory = try MaintenanceHistoryPersistence.load(
+                from: CleanNestDataPaths.maintenanceHistory()
+            )
+        } catch {
+            maintenanceHistory = []
+            lastTechnicalDetail = "最近维护证据无法读取，已保留空白记录：\(error.localizedDescription)"
+        }
+    }
+
+    private func saveMaintenanceHistory() {
+        guard !demoMode else { return }
+        do {
+            try MaintenanceHistoryPersistence.save(
+                maintenanceHistory,
+                to: CleanNestDataPaths.maintenanceHistory()
+            )
+        } catch {
+            lastTechnicalDetail = "最近维护证据无法保存：\(error.localizedDescription)"
         }
     }
 
@@ -5607,5 +5731,40 @@ final class AppStore: ObservableObject {
             ActivityEntry(date: Date().addingTimeInterval(-86_400), title: "卸载 Sample App", detail: "App 与精确匹配的相关文件已移到废纸篓。", outcome: .success, affectedItems: 3, bytes: 430_000_000, category: .applicationUninstall),
             ActivityEntry(date: Date().addingTimeInterval(-172_800), title: "重建快速预览缓存", detail: "系统维护任务已完成。", outcome: .success, affectedItems: 1)
         ]
+        maintenanceEvidence = Dictionary(
+            uniqueKeysWithValues: MaintenanceAction.allCases.map { action in
+                let evidence = action == .quickLook
+                    ? MaintenanceDiagnosticPolicy.assess(
+                        action: action,
+                        readOnlyProbeSucceeded: true,
+                        checkedAt: now.addingTimeInterval(-240)
+                    )
+                    : MaintenanceDiagnosticPolicy.assess(
+                        action: action,
+                        processIDs: [4101],
+                        readOnlyProbeSucceeded: true,
+                        checkedAt: now.addingTimeInterval(-240)
+                    )
+                return (action, evidence)
+            }
+        )
+        if let before = maintenanceEvidence[.finder] {
+            let after = MaintenanceDiagnosticPolicy.assess(
+                action: .finder,
+                processIDs: [4202],
+                readOnlyProbeSucceeded: true,
+                checkedAt: now.addingTimeInterval(-180)
+            )
+            maintenanceHistory = [
+                MaintenanceDiagnosticPolicy.verify(
+                    action: .finder,
+                    startedAt: now.addingTimeInterval(-183),
+                    before: before,
+                    after: after,
+                    commandSucceeded: true,
+                    finishedAt: now.addingTimeInterval(-180)
+                )
+            ]
+        }
     }
 }

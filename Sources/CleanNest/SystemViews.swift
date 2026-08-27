@@ -972,9 +972,8 @@ struct MaintenanceView: View {
     @EnvironmentObject private var store: AppStore
     @State private var pendingAction: MaintenanceAction?
 
-    private var latestMaintenanceActivity: ActivityEntry? {
-        let titles = Set(MaintenanceAction.allCases.map(\.rawValue))
-        return store.activities.first { titles.contains($0.title) }
+    private var latestMaintenanceRecord: MaintenanceRunRecord? {
+        store.maintenanceHistory.first
     }
 
     var body: some View {
@@ -1013,8 +1012,8 @@ struct MaintenanceView: View {
                     }
                 }
 
-                if let latestMaintenanceActivity {
-                    latestResult(latestMaintenanceActivity)
+                if let latestMaintenanceRecord {
+                    latestResult(latestMaintenanceRecord)
                 }
             }
             .padding(CNTheme.pagePadding)
@@ -1022,13 +1021,7 @@ struct MaintenanceView: View {
         .alert(item: $pendingAction) { action in
             Alert(
                 title: Text("执行“\(CNL10n.string(action.rawValue))”？"),
-                message: Text(CNL10n.format(
-                    "适用于：%@\n\n会发生：%@\n\n安全边界：%@\n\n如果未恢复：%@",
-                    CNL10n.string(action.symptom),
-                    CNL10n.string(action.effect),
-                    CNL10n.string(action.safetyNote),
-                    CNL10n.string(action.recovery)
-                )),
+                message: Text(confirmationMessage(action)),
                 primaryButton: .default(Text("确认运行")) {
                     Task { await store.runMaintenance(action) }
                 },
@@ -1141,6 +1134,38 @@ struct MaintenanceView: View {
             }
             maintenanceDetailLine(symbol: "arrow.triangle.2.circlepath", text: action.effect)
             maintenanceDetailLine(symbol: "checkmark.shield", text: action.safetyNote)
+            if let evidence = store.maintenanceEvidence[action] {
+                evidenceSummary(evidence)
+            } else {
+                Label("尚未诊断；先做只读检查，不会重启服务。", systemImage: "magnifyingglass")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func evidenceSummary(_ evidence: MaintenanceEvidence) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: evidenceSymbol(evidence.state))
+                Text(evidence.state.title)
+                    .fontWeight(.semibold)
+                Text(evidence.checkedAt, style: .relative)
+                    .foregroundStyle(.tertiary)
+            }
+            .foregroundStyle(evidenceColor(evidence.state))
+            Text(evidence.headline)
+                .foregroundStyle(.primary)
+            Text(evidence.detail)
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption)
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(evidenceColor(evidence.state).opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9)
+                .stroke(evidenceColor(evidence.state).opacity(0.18), lineWidth: 1)
         }
     }
 
@@ -1179,7 +1204,7 @@ struct MaintenanceView: View {
         _ action: MaintenanceAction,
         horizontal: Bool = false
     ) -> some View {
-        let last = store.activities.first { $0.title == action.rawValue }
+        let last = store.maintenanceHistory.first { $0.action == action }
         return Group {
             if horizontal {
                 HStack(spacing: 9) {
@@ -1196,15 +1221,15 @@ struct MaintenanceView: View {
         }
     }
 
-    private func lastStatus(_ entry: ActivityEntry?) -> some View {
+    private func lastStatus(_ record: MaintenanceRunRecord?) -> some View {
         VStack(alignment: .trailing, spacing: 3) {
-            if let entry {
+            if let record {
                 StatusPill(
-                    text: entry.outcome == .success ? "最近已完成" : "上次未完成",
-                    symbol: entry.outcome.symbol,
-                    style: entry.outcome == .success ? .success : .danger
+                    text: record.outcome.title,
+                    symbol: record.outcome.isSuccessful ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+                    style: record.outcome.isSuccessful ? .success : .warning
                 )
-                Text(entry.date, style: .relative)
+                Text(record.finishedAt, style: .relative)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             } else {
@@ -1213,41 +1238,73 @@ struct MaintenanceView: View {
         }
     }
 
+    @ViewBuilder
     private func runButton(_ action: MaintenanceAction) -> some View {
-        Button {
-            pendingAction = action
-        } label: {
-            Label("运行此任务…", systemImage: "play.fill")
+        if store.maintenanceEvidence[action] == nil {
+            Button {
+                Task { await store.diagnoseMaintenance(action) }
+            } label: {
+                Label("先诊断", systemImage: "stethoscope")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(store.isWorking)
+            .accessibilityLabel(CNL10n.format("诊断 %@", action.rawValue))
+        } else {
+            VStack(alignment: .trailing, spacing: 5) {
+                Button {
+                    pendingAction = action
+                } label: {
+                    Label("查看影响并执行…", systemImage: "play.fill")
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.isWorking)
+                .accessibilityLabel(CNL10n.format("运行 %@", action.rawValue))
+
+                Button("重新诊断") {
+                    Task { await store.diagnoseMaintenance(action) }
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .disabled(store.isWorking)
+            }
         }
-        .buttonStyle(.bordered)
-        .disabled(store.isWorking)
-        .accessibilityLabel(CNL10n.format("运行 %@", action.rawValue))
     }
 
-    private func latestResult(_ entry: ActivityEntry) -> some View {
+    private func latestResult(_ record: MaintenanceRunRecord) -> some View {
         SurfaceCard(
             title: "最近一次维护",
             symbol: "clock.arrow.circlepath",
             prominence: .quiet,
-            tint: Color.outcome(entry.outcome)
+            tint: record.outcome.isSuccessful ? CNTheme.mint : CNTheme.warning
         ) {
             HStack(alignment: .top, spacing: 12) {
-                CNIconTile(symbol: entry.outcome.symbol, tint: Color.outcome(entry.outcome), size: 34)
+                CNIconTile(
+                    symbol: record.outcome.isSuccessful ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+                    tint: record.outcome.isSuccessful ? CNTheme.mint : CNTheme.warning,
+                    size: 34
+                )
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
-                        Text(CNL10n.string(entry.title))
+                        Text(CNL10n.string(record.action.rawValue))
                             .font(.subheadline.weight(.semibold))
                         StatusPill(
-                            text: entry.outcome.rawValue,
+                            text: record.outcome.title,
                             symbol: nil,
-                            style: entry.outcome == .success ? .success : .danger
+                            style: record.outcome.isSuccessful ? .success : .warning
                         )
                     }
-                    Text(CNL10n.string(entry.detail))
+                    Text("执行前：\(record.before.headline)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(entry.date.formatted(date: .abbreviated, time: .shortened))
+                    Text("执行后：\(record.after.headline)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(record.summary)
+                        .font(.caption.weight(.medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(record.finishedAt.formatted(date: .abbreviated, time: .shortened))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.tertiary)
                 }
@@ -1257,6 +1314,41 @@ struct MaintenanceView: View {
                 }
                 .buttonStyle(.borderless)
             }
+        }
+    }
+
+    private func confirmationMessage(_ action: MaintenanceAction) -> String {
+        let evidence = store.maintenanceEvidence[action]
+        let diagnosis = evidence.map {
+            "只读检查：\($0.state.title)\n\($0.headline)\n\($0.detail)"
+        } ?? "只读检查：尚未完成。"
+        let noAnomalyWarning = evidence?.state == .noAnomalyDetected
+            ? "\n\n提醒：基础检查没有发现明确异常。反复重启不会让 Mac 更快。"
+            : ""
+        return CNL10n.format(
+            "%@%@\n\n适用于：%@\n\n会发生：%@\n\n安全边界：%@\n\n如果未恢复：%@",
+            diagnosis,
+            noAnomalyWarning,
+            CNL10n.string(action.symptom),
+            CNL10n.string(action.effect),
+            CNL10n.string(action.safetyNote),
+            CNL10n.string(action.recovery)
+        )
+    }
+
+    private func evidenceSymbol(_ state: MaintenanceEvidenceState) -> String {
+        switch state {
+        case .noAnomalyDetected: return "checkmark.circle.fill"
+        case .anomalyDetected: return "exclamationmark.triangle.fill"
+        case .uncertain: return "questionmark.circle.fill"
+        }
+    }
+
+    private func evidenceColor(_ state: MaintenanceEvidenceState) -> Color {
+        switch state {
+        case .noAnomalyDetected: return CNTheme.mint
+        case .anomalyDetected: return CNTheme.warning
+        case .uncertain: return .secondary
         }
     }
 }

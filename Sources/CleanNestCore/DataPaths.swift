@@ -25,6 +25,11 @@ public enum CleanNestDataPaths {
             .appendingPathComponent("system-alert-timeline.json", isDirectory: false)
     }
 
+    public static func maintenanceHistory(fileManager: FileManager = .default) -> URL {
+        applicationSupportDirectory(fileManager: fileManager)
+            .appendingPathComponent("maintenance-history.json", isDirectory: false)
+    }
+
     public static func diskEvidenceSnapshot(fileManager: FileManager = .default) -> URL {
         applicationSupportDirectory(fileManager: fileManager)
             .appendingPathComponent("disk-evidence.json", isDirectory: false)

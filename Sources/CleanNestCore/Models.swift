@@ -394,7 +394,7 @@ public struct TrashOutcome: Identifiable, Sendable {
     }
 }
 
-public enum MaintenanceAction: String, CaseIterable, Identifiable, Sendable {
+public enum MaintenanceAction: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
     case quickLook = "重建快速预览缓存"
     case finder = "重新启动 Finder"
     case dock = "重新启动 Dock"
