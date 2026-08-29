@@ -1114,7 +1114,7 @@ final class AppStore: ObservableObject {
         }
         let candidates = selectedAgentWorkspaceCandidates
         guard !candidates.isEmpty else {
-            agentWorkspaceRecoveryMessage = "请先选择至少一个静置缓存、临时文件或日志。"
+            agentWorkspaceRecoveryMessage = "请先选择至少一个满足静置门槛的可处置文件。"
             agentWorkspaceRecoveryMessageIsWarning = true
             return
         }

@@ -142,11 +142,11 @@ public enum AgentWorkspaceRecoveryError: LocalizedError, Equatable {
         case .emptySelection: return "还没有选择可处理的 Agent 文件。"
         case .selectionTooLarge(let count): return "一次最多处理 2,000 个文件；当前选择了 \(count) 个。"
         case .dataTooLarge(let bytes): return "单次安全备份上限为 50 GB；当前逻辑体积为 \(CleanNestFormatting.bytes(bytes))。"
-        case .unsupportedCategory: return "只处理 Codex/Claude 的可再生缓存、临时文件和日志。其他 Agent、会话、索引、记忆与凭据继续只读。"
+        case .unsupportedCategory: return "只处理 Codex/Claude 的缓存、临时文件、日志、安装包残留、陈旧备份、已归档会话、超时未用的虚拟机与超过保留期的会话。生成内容、记忆、索引、凭据与运行时继续只读。"
         case .outsideAllowedRoot: return "候选路径已经离开已验证的 Codex/Claude 默认目录。"
         case .symbolicLinkBoundary: return "候选路径包含符号链接边界，操作已停止。"
         case .fileChanged: return "文件在扫描后发生了变化；没有处理任何未确认目标。"
-        case .fileRecentlyModified: return "文件在近 15 分钟内仍有写入；本次操作已停止。"
+        case .fileRecentlyModified: return "文件未达到所属类别的静置门槛（缓存与安装残留 15 分钟，备份、已归档会话与虚拟机 30 天，活跃会话 60 天）；本次操作已停止。"
         case .fileOpen: return "至少一个候选文件正被进程打开；本次操作已停止。"
         case .activityProbeUnavailable: return "无法确认当前打开文件，安全处置已失败关闭。"
         case .ownerMismatch: return "候选文件不属于当前用户，CleanNest 不会处理。"
@@ -178,7 +178,13 @@ public enum AgentWorkspaceBackupCapacityPolicy {
     }
 }
 
-/// GUI-only, backup-first mutation boundary for Agent cache/log/temp files.
+/// GUI-only, backup-first mutation boundary for Agent workspace files.
+///
+/// Eligible kinds and per-kind age gates come from
+/// `AgentWorkspaceMutationPolicy` (caches/logs/temp/installer leftovers settle
+/// in minutes; backups, archived sessions and stale VM bundles in 30 days;
+/// active sessions in 60 days). Generated media, memory, state, credentials
+/// and runtimes stay read-only.
 ///
 /// The read-only MCP and scanner targets do not link this module. Every
 /// operation creates and verifies a local ZIP before originals leave their
@@ -187,6 +193,8 @@ public struct AgentWorkspaceRecoveryService: Sendable {
     public let homeDirectory: URL
     public let recoveryRoot: URL
     public let recentInterval: TimeInterval
+    public let oldInterval: TimeInterval
+    public let sessionCandidateInterval: TimeInterval
     public let maximumCandidates: Int
     public let maximumLogicalBytes: Int64
 
@@ -194,12 +202,16 @@ public struct AgentWorkspaceRecoveryService: Sendable {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         recoveryRoot: URL = CleanNestDataPaths.agentWorkspaceRecoveryDirectory(),
         recentInterval: TimeInterval = 15 * 60,
+        oldInterval: TimeInterval = 30 * 86_400,
+        sessionCandidateInterval: TimeInterval = 60 * 86_400,
         maximumCandidates: Int = 2_000,
         maximumLogicalBytes: Int64 = 50 * 1_024 * 1_024 * 1_024
     ) {
         self.homeDirectory = homeDirectory.standardizedFileURL
         self.recoveryRoot = recoveryRoot.standardizedFileURL
         self.recentInterval = max(60, recentInterval)
+        self.oldInterval = max(self.recentInterval, oldInterval)
+        self.sessionCandidateInterval = max(self.recentInterval, sessionCandidateInterval)
         self.maximumCandidates = max(1, maximumCandidates)
         self.maximumLogicalBytes = max(1_024 * 1_024, maximumLogicalBytes)
     }
@@ -281,7 +293,12 @@ public struct AgentWorkspaceRecoveryService: Sendable {
         var identities = Set<String>()
         for candidate in sorted {
             guard candidate.provider.supportsBackupFirstRecovery,
-                  [.caches, .temporaryFiles, .logs].contains(candidate.kind) else {
+                  AgentWorkspaceMutationPolicy.minimumSettleInterval(
+                      for: candidate.kind,
+                      recentInterval: recentInterval,
+                      oldInterval: oldInterval,
+                      sessionCandidateInterval: sessionCandidateInterval
+                  ) != nil else {
                 throw AgentWorkspaceRecoveryError.unsupportedCategory
             }
             let key = "\(candidate.identity.deviceID):\(candidate.identity.fileID)"
@@ -636,7 +653,12 @@ public struct AgentWorkspaceRecoveryService: Sendable {
         openPaths: Set<String>,
         now: Date
     ) throws {
-        guard [.caches, .temporaryFiles, .logs].contains(candidate.kind) else {
+        guard let minimumAge = AgentWorkspaceMutationPolicy.minimumSettleInterval(
+            for: candidate.kind,
+            recentInterval: recentInterval,
+            oldInterval: oldInterval,
+            sessionCandidateInterval: sessionCandidateInterval
+        ) else {
             throw AgentWorkspaceRecoveryError.unsupportedCategory
         }
         let source = URL(fileURLWithPath: candidate.path).standardizedFileURL
@@ -644,7 +666,7 @@ public struct AgentWorkspaceRecoveryService: Sendable {
         let identity = try AgentWorkspaceFileIdentity.capture(at: source)
         guard identity == candidate.identity else { throw AgentWorkspaceRecoveryError.fileChanged }
         guard identity.ownerUserID == geteuid() else { throw AgentWorkspaceRecoveryError.ownerMismatch }
-        guard now.timeIntervalSince(identity.modificationDate) > recentInterval else {
+        guard now.timeIntervalSince(identity.modificationDate) > minimumAge else {
             throw AgentWorkspaceRecoveryError.fileRecentlyModified
         }
         guard !openPaths.contains(source.path) else { throw AgentWorkspaceRecoveryError.fileOpen }
