@@ -114,6 +114,17 @@ public enum AgentArtifactDisposition: String, Codable, Equatable, Sendable {
         case .unknown: return "只读查看"
         }
     }
+
+    /// 大白话主显示；displayName（技术术语）降级为悬浮说明。
+    public var plainDisplayName: String {
+        switch self {
+        case .protected: return "在用·先别动"
+        case .keep: return "建议保留"
+        case .review: return "看一眼再定"
+        case .regenerable: return "可安全清理"
+        case .unknown: return "仅查看"
+        }
+    }
 }
 
 public enum AgentWorkspaceAlertLevel: Int, Codable, Comparable, Sendable {
