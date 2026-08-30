@@ -760,7 +760,7 @@ struct AgentWorkspaceView: View {
                 }
             } else {
                 Label(
-                    "当前没有同时满足普通文件、静置超过 15 分钟、未被打开和扫描完整四项条件的可执行候选。",
+                    "当前没有满足类别静置门槛（缓存与安装残留 15 分钟，备份、已归档会话与虚拟机 30 天，活跃会话 60 天）、未被打开且扫描完整的可执行候选。",
                     systemImage: "checkmark.shield"
                 )
                 .font(.caption.weight(.medium))
@@ -1057,11 +1057,15 @@ private struct AgentArchiveSuggestionsSheet: View {
             )
 
             VStack(alignment: .leading, spacing: 6) {
-                Label("为什么暂时不能一键归档？", systemImage: "questionmark.circle")
+                Label("0.8.0 起，这些建议如何变成动作？", systemImage: "questionmark.circle")
                     .font(.subheadline.weight(.semibold))
-                Text("绕过 Agent 自己的会话索引直接搬文件，可能让历史会话消失、恢复时对不上记录。CleanNest 还没有验证这些私有索引的安全修改方式，因此只让你查看位置和组成。")
+                Text("超过 30 天的备份、已归档会话和超时未用的虚拟机，以及超过 60 天的会话文件，可以在详情页进入备份优先的安全处置，随时从恢复区还原。生成图片、记忆、索引、凭据和运行时继续保持只读。")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("注意：移除会话文件后，Agent 自己的会话列表可能短暂保留失效条目；这是已知现象，恢复备份即可还原。")
+                    .font(.caption)
+                    .foregroundStyle(CNTheme.warning)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(14)
@@ -1241,6 +1245,15 @@ private struct AgentWorkspaceCandidateGroupRow: View {
                 .controlSize(.small)
             }
             .padding(.vertical, 10)
+
+            if group.kind == .activeSessions || group.kind == .archivedSessions {
+                Text("移除会话文件后，Agent 自己的会话列表可能短暂保留失效条目；备份保留在恢复区，可随时还原。")
+                    .font(.caption2)
+                    .foregroundStyle(CNTheme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 31)
+                    .padding(.bottom, 4)
+            }
 
             if isExpanded {
                 VStack(spacing: 0) {
@@ -1459,7 +1472,7 @@ private struct AgentWorkspaceRecoveryConfirmation: View {
                     VStack(alignment: .leading, spacing: 11) {
                         confirmationStep(1, "再次读取打开文件表并核对设备号、文件号、大小与修改时间。")
                         confirmationStep(2, "在本机恢复区创建 ZIP，并用 CRC 完整性检查确认备份可读。")
-                        confirmationStep(3, "只有备份通过后才处理缓存、临时文件和日志；会话、索引、记忆与凭据不动。")
+                        confirmationStep(3, "只有备份通过后才处理所选文件；生成内容、索引、记忆与凭据不动。")
                         confirmationStep(4, "完成后对比 APFS 可用空间；结果可能小于候选体积，甚至因压缩率低而不增加。")
                     }
                     .padding(.top, 12)
@@ -1501,7 +1514,7 @@ private struct AgentWorkspaceRecoveryConfirmation: View {
                 .font(.headline)
                 .foregroundStyle(CNTheme.warning)
 
-            Text("这次只是把旧缓存、临时文件和日志移出原位置。它不会降低当前进程内存、减少 Token，或改善模型能力；下次用到相关缓存时可能会重新生成，第一次打开反而可能稍慢。")
+            Text("这次只是把所选旧文件移出原位置。它不会降低当前进程内存、减少 Token，或改善模型能力；下次用到相关缓存时可能会重新生成，第一次打开反而可能稍慢。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1997,7 +2010,11 @@ private struct AgentArtifactRow: View {
             Text("\(artifact.fileCount.formatted()) 文件 · \(CleanNestFormatting.age(from: artifact.latestModificationDate))写入")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            if artifact.previewBytes > 0 {
+            if artifact.actionableBytes > 0 {
+                Text("其中 \(CleanNestFormatting.bytes(artifact.actionableBytes)) 可进入安全处置")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(CNTheme.mint)
+            } else if artifact.previewBytes > 0 {
                 Text("其中 \(CleanNestFormatting.bytes(artifact.previewBytes)) 仅供后续复核")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(CNTheme.violet)
@@ -2043,6 +2060,7 @@ private func artifactSymbol(_ kind: AgentArtifactKind) -> String {
     case .activeSessions: return "text.bubble"
     case .archivedSessions: return "archivebox"
     case .backups: return "clock.arrow.circlepath"
+    case .installerLeftovers: return "doc.zipper"
     case .generatedMedia: return "photo.on.rectangle"
     case .caches: return "arrow.triangle.2.circlepath"
     case .temporaryFiles: return "timer"

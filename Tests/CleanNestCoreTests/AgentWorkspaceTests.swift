@@ -73,6 +73,225 @@ final class AgentWorkspaceTests: XCTestCase {
         XCTAssertEqual(sessions.oldFileCount, 1)
         XCTAssertGreaterThan(sessions.previewBytes, 0)
         XCTAssertTrue(sessions.protectionReasons.isEmpty)
+        // 45 天未达到活跃会话 60 天处置门槛：进入归档建议，但不产生执行候选。
+        XCTAssertTrue(sessions.actionCandidates.isEmpty)
+    }
+
+    func testActiveSessionsBecomeCandidatesOnlyAfterSixtyDays() async throws {
+        let home = try makeHome()
+        let mid = home.appendingPathComponent(".codex/sessions/2026/07/mid.jsonl")
+        let old = home.appendingPathComponent(".codex/sessions/2026/06/old.jsonl")
+        try writeFile(mid, bytes: 8_192, modifiedAt: Date().addingTimeInterval(-45 * 86_400))
+        try writeFile(old, bytes: 8_192, modifiedAt: Date().addingTimeInterval(-61 * 86_400))
+
+        let result = try await AgentWorkspaceScanner(configuration: testConfiguration()).scan(
+            homeDirectory: home,
+            openFiles: []
+        )
+        let sessions = try XCTUnwrap(
+            result.snapshot.agents
+                .first { $0.provider == .codex }?
+                .artifacts.first { $0.kind == .activeSessions }
+        )
+
+        XCTAssertEqual(sessions.actionCandidates.map(\.path), [old.standardizedFileURL.path])
+        XCTAssertGreaterThan(sessions.previewBytes, 0)
+    }
+
+    func testArchivedSessionsAndBackupsBecomeCandidatesAfterThirtyDays() async throws {
+        let home = try makeHome()
+        let archived = home.appendingPathComponent(".codex/archived_sessions/archived.jsonl")
+        let oldBackup = home.appendingPathComponent(".codex/backups/logs_2_pre_vacuum/snapshot.bin")
+        let recentBackup = home.appendingPathComponent(".codex/backups/logs_2_recent/recent.bin")
+        try writeFile(archived, bytes: 8_192, modifiedAt: Date().addingTimeInterval(-35 * 86_400))
+        try writeFile(oldBackup, bytes: 8_192, modifiedAt: Date().addingTimeInterval(-40 * 86_400))
+        try writeFile(recentBackup, bytes: 8_192, modifiedAt: Date().addingTimeInterval(-10 * 86_400))
+
+        let result = try await AgentWorkspaceScanner(configuration: testConfiguration()).scan(
+            homeDirectory: home,
+            openFiles: []
+        )
+        let codex = try XCTUnwrap(result.snapshot.agents.first { $0.provider == .codex })
+        let archivedArtifact = try XCTUnwrap(codex.artifacts.first { $0.kind == .archivedSessions })
+        let backupsArtifact = try XCTUnwrap(codex.artifacts.first { $0.kind == .backups })
+
+        XCTAssertEqual(archivedArtifact.actionCandidates.map(\.path), [archived.standardizedFileURL.path])
+        XCTAssertEqual(backupsArtifact.disposition, .review)
+        XCTAssertEqual(backupsArtifact.actionCandidates.map(\.path), [oldBackup.standardizedFileURL.path])
+    }
+
+    func testGeneratedMediaStaysReadOnlyEvenWhenVeryOld() async throws {
+        let home = try makeHome()
+        let image = home.appendingPathComponent(".codex/generated_images/abc/img.png")
+        try writeFile(image, bytes: 16_384, modifiedAt: Date().addingTimeInterval(-120 * 86_400))
+
+        let result = try await AgentWorkspaceScanner(configuration: testConfiguration()).scan(
+            homeDirectory: home,
+            openFiles: []
+        )
+        let media = try XCTUnwrap(
+            result.snapshot.agents
+                .first { $0.provider == .codex }?
+                .artifacts.first { $0.kind == .generatedMedia }
+        )
+
+        XCTAssertEqual(media.disposition, .review)
+        XCTAssertGreaterThan(media.previewBytes, 0)
+        XCTAssertTrue(media.actionCandidates.isEmpty)
+        XCTAssertTrue(media.protectionReasons.contains { $0.contains("产出资产") })
+    }
+
+    func testInstallerLeftoverWithExtractedSiblingIsReclassifiedAndActionable() async throws {
+        let home = try makeHome()
+        let bundle = home.appendingPathComponent(
+            "Library/Application Support/Claude/vm_bundles/claudevm.bundle"
+        )
+        let rootfs = bundle.appendingPathComponent("rootfs.img")
+        let archive = bundle.appendingPathComponent("rootfs.img.zst")
+        let oldDate = Date().addingTimeInterval(-45 * 86_400)
+        try writeFile(rootfs, bytes: 32_768, modifiedAt: oldDate)
+        try writeFile(archive, bytes: 8_192, modifiedAt: oldDate)
+
+        let result = try await AgentWorkspaceScanner(configuration: testConfiguration()).scan(
+            homeDirectory: home,
+            openFiles: []
+        )
+        let claude = try XCTUnwrap(result.snapshot.agents.first { $0.provider == .claude })
+        let leftovers = try XCTUnwrap(claude.artifacts.first { $0.kind == .installerLeftovers })
+        let virtualMachines = try XCTUnwrap(claude.artifacts.first { $0.kind == .virtualMachines })
+
+        XCTAssertEqual(leftovers.disposition, .regenerable)
+        XCTAssertEqual(leftovers.actionCandidates.map(\.path), [archive.standardizedFileURL.path])
+        XCTAssertTrue(leftovers.protectionReasons.contains { $0.contains("已解压") })
+        // 整组 45 天未写入的虚拟机进入复核层，并释放组内文件为候选。
+        XCTAssertEqual(virtualMachines.disposition, .review)
+        XCTAssertTrue(virtualMachines.actionCandidates.contains {
+            $0.path == rootfs.standardizedFileURL.path
+        })
+        XCTAssertTrue(virtualMachines.protectionReasons.contains { $0.contains("未写入") })
+    }
+
+    func testArchiveWithoutExtractedSiblingStaysInOriginalKind() async throws {
+        let home = try makeHome()
+        let bundle = home.appendingPathComponent(
+            "Library/Application Support/Claude/vm_bundles/claudevm.bundle"
+        )
+        let archive = bundle.appendingPathComponent("rootfs.img.zst")
+        try writeFile(archive, bytes: 8_192, modifiedAt: Date().addingTimeInterval(-45 * 86_400))
+
+        let result = try await AgentWorkspaceScanner(configuration: testConfiguration()).scan(
+            homeDirectory: home,
+            openFiles: []
+        )
+        let claude = try XCTUnwrap(result.snapshot.agents.first { $0.provider == .claude })
+
+        XCTAssertNil(claude.artifacts.first { $0.kind == .installerLeftovers })
+        let virtualMachines = try XCTUnwrap(claude.artifacts.first { $0.kind == .virtualMachines })
+        XCTAssertEqual(virtualMachines.actionCandidates.map(\.kind), [.virtualMachines])
+    }
+
+    func testActiveVirtualMachineGroupStaysKeepButStillShedsInstallerLeftovers() async throws {
+        let home = try makeHome()
+        let bundle = home.appendingPathComponent(
+            "Library/Application Support/Claude/vm_bundles/claudevm.bundle"
+        )
+        let rootfs = bundle.appendingPathComponent("rootfs.img")
+        let archive = bundle.appendingPathComponent("rootfs.img.zst")
+        try writeFile(rootfs, bytes: 32_768, modifiedAt: Date().addingTimeInterval(-2 * 86_400))
+        try writeFile(archive, bytes: 8_192, modifiedAt: Date().addingTimeInterval(-45 * 86_400))
+
+        let result = try await AgentWorkspaceScanner(configuration: testConfiguration()).scan(
+            homeDirectory: home,
+            openFiles: []
+        )
+        let claude = try XCTUnwrap(result.snapshot.agents.first { $0.provider == .claude })
+        let virtualMachines = try XCTUnwrap(claude.artifacts.first { $0.kind == .virtualMachines })
+        let leftovers = try XCTUnwrap(claude.artifacts.first { $0.kind == .installerLeftovers })
+
+        // 活跃虚拟机整组保持保留，组内文件不产生候选；
+        // 已解压就位的陈旧安装包仍单独进入可再生态。
+        XCTAssertEqual(virtualMachines.disposition, .keep)
+        XCTAssertTrue(virtualMachines.actionCandidates.isEmpty)
+        XCTAssertEqual(leftovers.actionCandidates.map(\.path), [archive.standardizedFileURL.path])
+    }
+
+    func testArchiveBelowInstallerFloorKeepsOriginalKind() async throws {
+        let home = try makeHome()
+        let cache = home.appendingPathComponent(".codex/cache")
+        let payload = cache.appendingPathComponent("setup.pkg")
+        let sibling = cache.appendingPathComponent("setup")
+        let oldDate = Date().addingTimeInterval(-45 * 86_400)
+        try writeFile(payload, bytes: 8_192, modifiedAt: oldDate)
+        try writeFile(sibling, bytes: 8_192, modifiedAt: oldDate)
+
+        let result = try await AgentWorkspaceScanner(configuration: testConfiguration(
+            installerLeftoverMinimumBytes: 1_000_000
+        )).scan(homeDirectory: home, openFiles: [])
+        let codex = try XCTUnwrap(result.snapshot.agents.first { $0.provider == .codex })
+
+        XCTAssertNil(codex.artifacts.first { $0.kind == .installerLeftovers })
+        let caches = try XCTUnwrap(codex.artifacts.first { $0.kind == .caches })
+        XCTAssertEqual(caches.actionCandidates.count, 2)
+    }
+
+    func testRecoveryAcceptsOldBackupCandidate() async throws {
+        let home = try makeHome()
+        let backup = home.appendingPathComponent(".codex/backups/logs_2_sqlite/dump.bin")
+        let payload = Data("old maintenance snapshot".utf8)
+        try FileManager.default.createDirectory(
+            at: backup.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try payload.write(to: backup)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-40 * 86_400)],
+            ofItemAtPath: backup.path
+        )
+        let result = try await AgentWorkspaceScanner(configuration: testConfiguration()).scan(
+            homeDirectory: home,
+            openFiles: []
+        )
+        let candidate = try XCTUnwrap(result.snapshot.actionCandidates.first)
+        XCTAssertEqual(candidate.kind, .backups)
+        let service = AgentWorkspaceRecoveryService(
+            homeDirectory: home,
+            recoveryRoot: home.appendingPathComponent("Library/Application Support/CleanNest/AgentRecovery")
+        )
+
+        let recovered = try await service.createRecovery(candidates: [candidate])
+
+        XCTAssertEqual(recovered.record.status, .available)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
+
+        let restored = try await service.restore(operationID: recovered.record.id)
+
+        XCTAssertEqual(restored.record.status, .restored)
+        XCTAssertEqual(try Data(contentsOf: backup), payload)
+    }
+
+    func testRecoveryRejectsSessionBelowPolicyAgeGate() async throws {
+        let home = try makeHome()
+        let session = home.appendingPathComponent(".codex/sessions/2026/08/recent.jsonl")
+        try writeFile(session, bytes: 8_192, modifiedAt: Date().addingTimeInterval(-2 * 3_600))
+        // 扫描配置把会话门槛压到 1 小时以产出候选；执行侧仍按默认 60 天复核，
+        // 验证扫描门与执行门是同一策略的两道独立检查。
+        let scan = try await AgentWorkspaceScanner(configuration: testConfiguration(
+            sessionCandidateInterval: 3_600
+        )).scan(homeDirectory: home, openFiles: [])
+        let candidate = try XCTUnwrap(scan.snapshot.actionCandidates.first)
+        XCTAssertEqual(candidate.kind, .activeSessions)
+        let service = AgentWorkspaceRecoveryService(
+            homeDirectory: home,
+            recoveryRoot: home.appendingPathComponent("Library/Application Support/CleanNest/AgentRecovery")
+        )
+
+        do {
+            _ = try await service.createRecovery(candidates: [candidate])
+            XCTFail("Expected session below the 60-day gate to be rejected")
+        } catch let error as AgentWorkspaceRecoveryError {
+            XCTAssertEqual(error, .fileRecentlyModified)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.path))
     }
 
     func testClaudeCacheIsRegenerableButCredentialsRemainProtectedByPolicy() async throws {
@@ -418,11 +637,15 @@ final class AgentWorkspaceTests: XCTestCase {
 
     private func testConfiguration(
         growthWarningBytes: Int64 = Int64.max / 4,
-        growthCriticalBytes: Int64 = Int64.max / 2
+        growthCriticalBytes: Int64 = Int64.max / 2,
+        sessionCandidateInterval: TimeInterval = 60 * 86_400,
+        installerLeftoverMinimumBytes: Int64 = 1_024
     ) -> AgentWorkspaceScanner.Configuration {
         AgentWorkspaceScanner.Configuration(
             recentInterval: 15 * 60,
             oldInterval: 30 * 86_400,
+            sessionCandidateInterval: sessionCandidateInterval,
+            installerLeftoverMinimumBytes: installerLeftoverMinimumBytes,
             largeFileWarningBytes: Int64.max / 4,
             largeFileCriticalBytes: Int64.max / 2,
             agentSizeWarningBytes: Int64.max / 4,
