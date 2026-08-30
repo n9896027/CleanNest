@@ -204,6 +204,9 @@ private final class ScannerServiceSession: NSObject, CleanNestScannerXPCProtocol
 }
 
 private final class ScannerServiceDelegate: NSObject, NSXPCListenerDelegate {
+    private let lock = NSLock()
+    private var liveConnections = 0
+
     func listener(
         _ listener: NSXPCListener,
         shouldAcceptNewConnection connection: NSXPCConnection
@@ -211,20 +214,36 @@ private final class ScannerServiceDelegate: NSObject, NSXPCListenerDelegate {
         let session = ScannerServiceSession()
         connection.exportedInterface = NSXPCInterface(with: CleanNestScannerXPCProtocol.self)
         connection.exportedObject = session
-        connection.invalidationHandler = { [weak session] in
+        lock.lock()
+        liveConnections += 1
+        lock.unlock()
+        connection.invalidationHandler = { [weak self, weak session] in
             session?.cancelAll()
-            // The scanner is intentionally disposable. Once its only App
-            // connection closes, release the process instead of retaining an
-            // idle Swift runtime and file-system buffers until memory pressure.
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.05) {
-                exit(EXIT_SUCCESS)
-            }
+            // The scanner is intentionally disposable, but App 可能同时持有多个
+            // 连接（清理/磁盘与 Agent 工作区各有独立客户端）。只有最后一条连接
+            // 关闭后才退出进程，否则会腰斩其他连接上的在途扫描。
+            self?.connectionDidInvalidate()
         }
         connection.interruptionHandler = { [weak session] in
             session?.cancelAll()
         }
         connection.resume()
         return true
+    }
+
+    private func connectionDidInvalidate() {
+        lock.lock()
+        liveConnections = max(0, liveConnections - 1)
+        lock.unlock()
+        // 留出短窗口：背靠背"取消→重扫"的新连接可能正在投递途中，
+        // 到期时按当时的真实连接数决定，而不是按失效瞬间的快照。
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let shouldExit = self.liveConnections == 0
+            self.lock.unlock()
+            if shouldExit { exit(EXIT_SUCCESS) }
+        }
     }
 }
 

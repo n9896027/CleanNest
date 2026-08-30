@@ -172,7 +172,9 @@ public struct CleanupScanner: Sendable {
                         continue
                     }
                     let modified = values.contentModificationDate
-                    if let modified, now.timeIntervalSince(modified) < Double(rule.minimumAgeDays) * day {
+                    // 修改时间缺失时失败关闭：无法确认年龄的文件不进入候选。
+                    guard let modified,
+                          now.timeIntervalSince(modified) >= Double(rule.minimumAgeDays) * day else {
                         continue
                     }
                     let isNpmContentCache = child.path.hasSuffix("/.npm/_cacache/content-v2")

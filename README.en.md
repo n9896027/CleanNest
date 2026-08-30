@@ -2,9 +2,9 @@
 
 # CleanNest
 
-**See where your Mac storage went, then reclaim only what is genuinely safe to remove.**
+**Local Mac management and safe cleanup for AI development workflows.**
 
-A native macOS app that brings together Mole and a replaceable on-device MLX model. Core scans and model analysis stay on your Mac, and files go to the Trash by default.
+CleanNest brings Agent workspaces, local model services, system alerts, and storage evidence into one on-device control surface. See first, understand second, decide last. Files go to the Trash by default, and AI can never authorize deletion.
 
 [简体中文](README.md) · **English** · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md)
 
@@ -18,26 +18,61 @@ A native macOS app that brings together Mole and a replaceable on-device MLX mod
 
 </div>
 
-![CleanNest overview showing local disk usage, cleanup suggestions, system status, and recent activity](docs/images/overview.png)
+![CleanNest overview organized around the next reviewable task, read-only status, and safe entry points](docs/images/readme/overview.png)
 
-CleanNest turns Mac cleanup from a black-box button into an understandable, reversible workflow. It shows where storage is being used and what a directory is generally for, then leaves the decision to you. It is not a “one-click booster,” and a model suggestion can never delete a file on its own.
+<p align="center"><sub>Synthetic demo data · Real local app UI · No user files, real processes, or private model details</sub></p>
 
-| See | Understand | Act safely |
-| --- | --- | --- |
-| Browse directories, caches, apps, and system status | Use deterministic rules, with optional local AI for extra context | Preview and confirm each action; files go to the Trash by default |
+CleanNest is not a conventional cleaner with AI copy added on top. It is designed for Macs running Codex, Claude, Pi Agent, local models, and developer tooling: identify who is growing, what is still active, why a service restarts, which signals are abnormal, and what can be handled recoverably.
+
+| Agent Workspace | Local Model Runtime Center | Status and alerts | Safe cleanup |
+| --- | --- | --- | --- |
+| Usage, change, active protection, anomalies | Platform, short ID, listeners, clients, launchd | CPU, memory, network, GPU, temperature, fans, battery | Preview, identity checks, Trash, recovery records |
 
 > [!IMPORTANT]
 > CleanNest is currently distributed as source code only. There is no official Developer ID-signed and Apple-notarized download yet. CI builds verify the project; they are not trusted public release binaries.
 
-## Why CleanNest
+## More than a disk cleaner
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/images/readme/agent-workspace.png" alt="Agent Workspace demo showing usage, active protection, and anomaly evidence">
+      <br><strong>Agent Workspace</strong><br>
+      <sub>Bounded ledgers for Codex, Claude, Pi Agent, Kimi, WorkBuddy, Hermes, OpenClaw, Trae, and MiniMax Hub. The overview does not build file-level evidence; details are loaded only after you open one Agent.</sub>
+    </td>
+    <td width="50%">
+      <img src="docs/images/readme/local-model-runtime.png" alt="Local Model Runtime Center demo showing service, model short ID, client, and supervisor topology">
+      <br><strong>Local Model Runtime Center</strong><br>
+      <sub>Discover oMLX, MLX-LM, Ollama, LM Studio, and llama.cpp/OpenAI-compatible services, then explain ports, model short IDs, established TCP clients, and automatic restart sources.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/images/readme/system-alerts.png" alt="System Status demo showing highlighted temperature and fan warnings plus the local alert timeline">
+      <br><strong>On-device status and alerts</strong><br>
+      <sub>One threshold policy drives the menu bar, status page, and alert timeline. Warnings use text, symbols, and color without treating an ordinary busy workload as a hardware fault.</sub>
+    </td>
+    <td width="50%">
+      <img src="docs/images/readme/cleanup-review.png" alt="Cleanup demo showing scan evidence, categories, review basket, and recovery information">
+      <br><strong>Evidence-led safe cleanup</strong><br>
+      <sub>Separate rebuildable caches, installers, screenshots, personal media, and full-SHA-256 duplicates. Personal files are not preselected, and identity is revalidated before execution.</sub>
+    </td>
+  </tr>
+</table>
+
+> These screenshots come from the local `CLEANNEST_DEMO=1` runtime. They demonstrate the current UI structure and states; every value, file, process, and model shown is synthetic rather than a user measurement.
+
+## From a problem to reviewable evidence
 
 | The problem | How CleanNest approaches it |
 | --- | --- |
-| Your disk is suddenly full, but the cause is unclear | Browse storage by folder and file size, with explanations for common macOS directories |
+| Several coding Agents keep growing, but ownership is unclear | Show per-Agent usage, change, active-file protection, and anomalies; build file evidence only inside one Agent detail view |
+| A local model restarts after being stopped | Correlate process, listener, platform API, established clients, and launchd supervisor before offering a control appropriate to the ownership tier |
+| Temperature or fan behavior becomes abnormal | Share thresholds across the menu bar, status page, and a bounded local timeline with peak, duration, and recovery evidence |
+| Your disk is suddenly full, but the cause is unclear | Reconcile directory, owning-app, and functional views while keeping APFS capacity, classified files, and cleanup candidates separate |
 | Rebuildable caches are mixed with downloads and personal data | Separate low-risk generated data from items that require review or should be kept |
-| Activity Monitor is too technical | Explain memory pressure, swap usage, and high-memory processes before you decide whether to quit anything |
 | App uninstallers leave files behind | Preview the app and related files matched by its exact Bundle ID |
-| You do not want a file inventory sent to a cloud model | Optionally use your chosen MLX model on the Mac with a deliberately limited, redacted metadata snapshot |
+| You do not want a file inventory sent to a cloud model | Deterministic scans need no AI; optional analysis accepts only an explicit `127.0.0.1` endpoint and a bounded metadata snapshot |
 
 ## Core capabilities
 
@@ -142,6 +177,11 @@ Detailed maintainer documentation is currently written primarily in Simplified C
 | [0.7.7 verification report](docs/VERIFICATION-0.7.7.md) | Local-model evidence topology, live clients, four control tiers, runtime diagnostics, and a bounded Ollama lifecycle check |
 | [0.7.8 verification report](docs/VERIFICATION-0.7.8.md) | Agent overview/detail lazy loading, clustered learning rules, trials, measured sorting impact, and a 10,000-history projection test |
 | [0.7.9 source-release verification](docs/VERIFICATION-0.7.9.md) | 0.6.5 migration/rollback, cancellation storm, trilingual audit, the real 48-hour gate, SBOM, and provenance |
+| [0.8.0 verification report](docs/VERIFICATION-0.8.0.md) | Tiered agent-workspace cleanup: installer-leftover detection, 30/60-day session and backup settle gates, and whole-group stale VM review |
+| [0.8.1 verification report](docs/VERIFICATION-0.8.1.md) | Defect fixes: stuck scan state, restore-retry deadlock, stderr pipe deadlock, XPC connection teardown, duplicate-key crashes, and a single version source |
+| [0.8.2 verification report](docs/VERIFICATION-0.8.2.md) | Usability: plain-language disposition labels with technical terms on hover, and a sidebar trimmed to six everyday entries with a collapsible advanced group |
+| [0.8.3 verification report](docs/VERIFICATION-0.8.3.md) | The learning page becomes Cleanup Habits: bureaucratic terms removed, enable button and flow diagram rewritten in plain language |
+| [0.8.4 verification report](docs/VERIFICATION-0.8.4.md) | Overview restructure: single hero action card, compact secondary rows, visual status tiles; audit columns and defensive disclaimers removed |
 | [0.7 migration and rollback](docs/MIGRATION-0.7.md) | Honest compatibility boundaries for settings, metrics, activity, indexes, learning rules, and Agent recovery records |
 | [Localization status](docs/LOCALIZATION-STATUS.md) | Catalog coverage, remaining Chinese fallbacks, and the strict release gate |
 | [0.7 series roadmap](docs/ROADMAP-0.7.md) | Product, architecture, acceptance gates, and explicit non-goals for 0.7.0–0.7.9 |

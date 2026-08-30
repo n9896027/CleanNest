@@ -17,7 +17,7 @@ struct AgentWorkspaceView: View {
                 PageHeader(
                     title: pageTitle,
                     subtitle: pageSubtitle,
-                    eyebrow: showingNativeTools ? "原生 dry-run · 只在本机" : "占用账本 · 变化 · 活跃保护"
+                    eyebrow: showingNativeTools ? "原生 dry-run · 只在本机" : "占用 · 变化 · 活跃保护"
                 ) {
                     headerActions
                 }
@@ -68,7 +68,7 @@ struct AgentWorkspaceView: View {
                     } else if store.agentWorkspaceSummary == nil {
                         EmptyPanel(
                             symbol: "sparkle.magnifyingglass",
-                            title: "尚未建立 Agent 占用账本",
+                            title: "还没有扫描过 Agent 占用",
                             detail: "首次扫描只读取文件大小、数量、时间与打开状态。"
                         )
                     }
@@ -290,7 +290,7 @@ struct AgentWorkspaceView: View {
             }
         }
 
-        SurfaceCard(title: "类别账本", symbol: "list.bullet.rectangle", tint: providerTint(agent.provider)) {
+        SurfaceCard(title: "分类占用", symbol: "list.bullet.rectangle", tint: providerTint(agent.provider)) {
             AgentLedgerPanel(
                 agent: agent,
                 rule: store.agentRuleCatalog.rule(for: agent.provider),
@@ -326,7 +326,7 @@ struct AgentWorkspaceView: View {
             HStack(spacing: 15) {
                 ProgressView().controlSize(.small)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("正在建立占用账本")
+                    Text("正在统计占用")
                         .font(.headline)
                     Text(store.agentWorkspaceDiagnostic)
                         .font(.subheadline)
@@ -389,7 +389,7 @@ struct AgentWorkspaceView: View {
     private func storageLedger(_ snapshot: AgentWorkspaceSnapshot) -> some View {
         SurfaceCard(prominence: .prominent, tint: ledgerTint(snapshot)) {
             ContentSectionHeader(
-                "当前占用账本",
+                "当前占用",
                 detail: scanTiming(snapshot),
                 symbol: "externaldrive.fill.badge.timemachine",
                 tint: ledgerTint(snapshot)
@@ -749,7 +749,7 @@ struct AgentWorkspaceView: View {
                     Button {
                         showingRecoveryConfirmation = true
                     } label: {
-                        Label("检查计划…", systemImage: "checklist.checked")
+                        Label("查看清理计划…", systemImage: "checklist.checked")
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(
@@ -760,7 +760,7 @@ struct AgentWorkspaceView: View {
                 }
             } else {
                 Label(
-                    "当前没有同时满足普通文件、静置超过 15 分钟、未被打开和扫描完整四项条件的可执行候选。",
+                    "当前没有满足类别静置门槛（缓存与安装残留 15 分钟，备份、已归档会话与虚拟机 30 天，活跃会话 60 天）、未被打开且扫描完整的可执行候选。",
                     systemImage: "checkmark.shield"
                 )
                 .font(.caption.weight(.medium))
@@ -1039,7 +1039,7 @@ private struct AgentArchiveSuggestionsSheet: View {
             HStack(alignment: .top, spacing: 14) {
                 CNIconTile(symbol: "lock.doc.fill", tint: CNTheme.violet, size: 44)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("会话归档建议")
+                    Text("旧内容建议")
                         .font(.title2.weight(.semibold))
                     Text("\(artifacts.count.formatted()) 类数据 · \(totalOldFileCount.formatted()) 个旧文件 · \(CleanNestFormatting.bytes(totalPreviewBytes))")
                         .font(.subheadline)
@@ -1057,11 +1057,15 @@ private struct AgentArchiveSuggestionsSheet: View {
             )
 
             VStack(alignment: .leading, spacing: 6) {
-                Label("为什么暂时不能一键归档？", systemImage: "questionmark.circle")
+                Label("0.8.0 起，这些建议如何变成动作？", systemImage: "questionmark.circle")
                     .font(.subheadline.weight(.semibold))
-                Text("绕过 Agent 自己的会话索引直接搬文件，可能让历史会话消失、恢复时对不上记录。CleanNest 还没有验证这些私有索引的安全修改方式，因此只让你查看位置和组成。")
+                Text("超过 30 天的备份、已归档会话和超时未用的虚拟机，以及超过 60 天的会话文件，可以在详情页进入备份优先的安全处置，随时从恢复区还原。生成图片、记忆、索引、凭据和运行时继续保持只读。")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("注意：移除会话文件后，Agent 自己的会话列表可能短暂保留失效条目；这是已知现象，恢复备份即可还原。")
+                    .font(.caption)
+                    .foregroundStyle(CNTheme.warning)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(14)
@@ -1116,7 +1120,7 @@ private struct AgentArchiveSuggestionsSheet: View {
                     Text("\(artifact.provider.displayName) · \(artifact.kind.displayName)")
                         .font(.subheadline.weight(.semibold))
                     StatusPill(
-                        text: artifact.disposition == .protected ? "当前锁定" : "人工复核",
+                        text: artifact.disposition == .protected ? "在用·先别动" : "看一眼再定",
                         symbol: artifact.disposition == .protected ? "lock.fill" : "eye",
                         style: artifact.disposition == .protected ? .warning : .neutral
                     )
@@ -1242,6 +1246,15 @@ private struct AgentWorkspaceCandidateGroupRow: View {
             }
             .padding(.vertical, 10)
 
+            if group.kind == .activeSessions || group.kind == .archivedSessions {
+                Text("移除会话文件后，Agent 自己的会话列表可能短暂保留失效条目；备份保留在恢复区，可随时还原。")
+                    .font(.caption2)
+                    .foregroundStyle(CNTheme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 31)
+                    .padding(.bottom, 4)
+            }
+
             if isExpanded {
                 VStack(spacing: 0) {
                     ForEach(Array(group.candidates.prefix(30).enumerated()), id: \.element.id) { index, candidate in
@@ -1306,6 +1319,18 @@ private struct AgentWorkspaceRecoveryRecordRow: View {
         store.agentWorkspaceRecoveryPhase == .restoring(record.id)
     }
 
+    /// 进程在备份/移动/释放途中崩溃会留下非终态记录；当前没有任何活跃操作时，
+    /// 这些陈旧状态一律按"需要恢复检查"展示（只改展示，不改清单文件）。
+    private var displayStatus: AgentWorkspaceRecoveryStatus {
+        let nonTerminal: Set<AgentWorkspaceRecoveryStatus> = [
+            .preparing, .backupVerified, .movingOriginals, .removingOriginals
+        ]
+        guard !store.agentWorkspaceRecoveryPhase.isBusy, nonTerminal.contains(record.status) else {
+            return record.status
+        }
+        return .interrupted
+    }
+
     private var deltaText: String {
         guard let delta = record.apfsDeltaBytes else { return "APFS 尚未完成对比" }
         if delta > 0 { return "APFS +\(CleanNestFormatting.bytes(delta))" }
@@ -1315,12 +1340,12 @@ private struct AgentWorkspaceRecoveryRecordRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
-            Image(systemName: record.status == .restored ? "arrow.uturn.backward.circle.fill" : "archivebox.fill")
+            Image(systemName: displayStatus == .restored ? "arrow.uturn.backward.circle.fill" : "archivebox.fill")
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(record.status == .restored ? CNTheme.success : CNTheme.violet)
+                .foregroundStyle(displayStatus == .restored ? CNTheme.success : CNTheme.violet)
                 .frame(width: 31, height: 31)
                 .background(
-                    (record.status == .restored ? CNTheme.success : CNTheme.violet).opacity(0.10),
+                    (displayStatus == .restored ? CNTheme.success : CNTheme.violet).opacity(0.10),
                     in: RoundedRectangle(cornerRadius: 9)
                 )
             VStack(alignment: .leading, spacing: 4) {
@@ -1328,9 +1353,9 @@ private struct AgentWorkspaceRecoveryRecordRow: View {
                     Text("\(record.items.count) 个 Agent 文件")
                         .font(.subheadline.weight(.semibold))
                     StatusPill(
-                        text: record.status.displayName,
-                        symbol: record.status == .restored ? "checkmark" : "arrow.uturn.backward",
-                        style: record.status == .interrupted ? .warning : .neutral
+                        text: displayStatus.displayName,
+                        symbol: displayStatus == .restored ? "checkmark" : "arrow.uturn.backward",
+                        style: displayStatus == .interrupted ? .warning : .neutral
                     )
                 }
                 Text("原目录 \(CleanNestFormatting.bytes(record.originalAllocatedBytes)) · 备份 \(CleanNestFormatting.bytes(record.archiveAllocatedBytes)) · \(deltaText)")
@@ -1459,7 +1484,7 @@ private struct AgentWorkspaceRecoveryConfirmation: View {
                     VStack(alignment: .leading, spacing: 11) {
                         confirmationStep(1, "再次读取打开文件表并核对设备号、文件号、大小与修改时间。")
                         confirmationStep(2, "在本机恢复区创建 ZIP，并用 CRC 完整性检查确认备份可读。")
-                        confirmationStep(3, "只有备份通过后才处理缓存、临时文件和日志；会话、索引、记忆与凭据不动。")
+                        confirmationStep(3, "只有备份通过后才处理所选文件；生成内容、索引、记忆与凭据不动。")
                         confirmationStep(4, "完成后对比 APFS 可用空间；结果可能小于候选体积，甚至因压缩率低而不增加。")
                     }
                     .padding(.top, 12)
@@ -1501,7 +1526,7 @@ private struct AgentWorkspaceRecoveryConfirmation: View {
                 .font(.headline)
                 .foregroundStyle(CNTheme.warning)
 
-            Text("这次只是把旧缓存、临时文件和日志移出原位置。它不会降低当前进程内存、减少 Token，或改善模型能力；下次用到相关缓存时可能会重新生成，第一次打开反而可能稍慢。")
+            Text("这次只是把所选旧文件移出原位置。它不会降低当前进程内存、减少 Token，或改善模型能力；下次用到相关缓存时可能会重新生成，第一次打开反而可能稍慢。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1886,7 +1911,7 @@ private struct AgentLedgerPanel: View {
                                 )
                             }
                         }
-                        Text("\(agent.artifacts.count) 类工作痕迹 · \(agent.fileCount.formatted()) 个文件")
+                        Text("\(agent.artifacts.count) 类内容 · \(agent.fileCount.formatted()) 个文件")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1895,7 +1920,7 @@ private struct AgentLedgerPanel: View {
                         Text(CleanNestFormatting.bytes(agent.allocatedBytes))
                             .font(.system(size: 20, weight: .semibold, design: .rounded))
                             .monospacedDigit()
-                        Text(agent.previewBytes > 0 ? "\(CleanNestFormatting.bytes(agent.previewBytes)) 进入预览" : "没有可执行动作")
+                        Text(agent.previewBytes > 0 ? "可清理 \(CleanNestFormatting.bytes(agent.previewBytes))" : "暂无可清理项")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -1907,7 +1932,7 @@ private struct AgentLedgerPanel: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(agent.provider.displayName) 工作痕迹")
+            .accessibilityLabel("\(agent.provider.displayName) 占用")
             .accessibilityValue(isExpanded ? "已展开" : "已折叠")
 
             if isExpanded {
@@ -1966,10 +1991,11 @@ private struct AgentArtifactRow: View {
                 Text(artifact.kind.displayName)
                     .font(.subheadline.weight(.semibold))
                 StatusPill(
-                    text: artifact.disposition.displayName,
+                    text: artifact.disposition.plainDisplayName,
                     symbol: dispositionSymbol(artifact.disposition),
                     style: dispositionPillStyle(artifact.disposition)
                 )
+                .help("技术口径：\(artifact.disposition.displayName)")
             }
             Text(pathSummary(artifact.sourcePaths))
                 .font(.system(size: 11.5, design: .monospaced))
@@ -1997,8 +2023,12 @@ private struct AgentArtifactRow: View {
             Text("\(artifact.fileCount.formatted()) 文件 · \(CleanNestFormatting.age(from: artifact.latestModificationDate))写入")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            if artifact.previewBytes > 0 {
-                Text("其中 \(CleanNestFormatting.bytes(artifact.previewBytes)) 仅供后续复核")
+            if artifact.actionableBytes > 0 {
+                Text("其中 \(CleanNestFormatting.bytes(artifact.actionableBytes)) 可安全清理")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(CNTheme.mint)
+            } else if artifact.previewBytes > 0 {
+                Text("其中 \(CleanNestFormatting.bytes(artifact.previewBytes)) 需要先过目")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(CNTheme.violet)
             }
@@ -2043,6 +2073,7 @@ private func artifactSymbol(_ kind: AgentArtifactKind) -> String {
     case .activeSessions: return "text.bubble"
     case .archivedSessions: return "archivebox"
     case .backups: return "clock.arrow.circlepath"
+    case .installerLeftovers: return "doc.zipper"
     case .generatedMedia: return "photo.on.rectangle"
     case .caches: return "arrow.triangle.2.circlepath"
     case .temporaryFiles: return "timer"

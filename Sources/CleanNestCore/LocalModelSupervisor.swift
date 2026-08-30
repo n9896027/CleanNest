@@ -126,9 +126,14 @@ public struct LocalModelSupervisorInventory: Sendable {
     }
 
     public var byProcessID: [Int32: LocalModelSupervisorSnapshot] {
-        Dictionary(uniqueKeysWithValues: supervisors.compactMap { supervisor in
-            supervisor.processID.map { ($0, supervisor) }
-        })
+        // 同名 Label 可同时存在于用户与系统 LaunchAgents 根目录，映射到同一
+        // 进程；Dictionary(uniqueKeysWithValues:) 遇重复键会直接崩溃。
+        Dictionary(
+            supervisors.compactMap { supervisor in
+                supervisor.processID.map { ($0, supervisor) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
     }
 }
 
@@ -224,7 +229,8 @@ public enum LocalModelSupervisorDiscovery {
         let listResult = run("/bin/launchctl", ["list"])
         let disabledResult = run("/bin/launchctl", ["print-disabled", domain])
         let jobs = parseLaunchctlList(listResult.output)
-        let jobsByLabel = Dictionary(uniqueKeysWithValues: jobs.map { ($0.label, $0) })
+        // launchctl 输出是外部数据；标签重复时保留第一条，不崩溃。
+        let jobsByLabel = Dictionary(jobs.map { ($0.label, $0) }, uniquingKeysWith: { first, _ in first })
         let disabledLabels = parseDisabledServices(disabledResult.output)
         let home = FileManager.default.homeDirectoryForCurrentUser
         let roots: [(URL, LocalModelSupervisorKind, String)] = [

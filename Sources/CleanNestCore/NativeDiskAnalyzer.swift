@@ -129,8 +129,10 @@ public struct NativeDiskAnalyzer: Sendable {
             let traversalLimit: Int? = mode == .bypassCache
                 ? nil
                 : maximumTraversalEntriesPerItem
-            let previousByID = Dictionary(uniqueKeysWithValues:
-                (cache.root(for: normalizedRoot)?.entries ?? []).map { ($0.id, $0) }
+            // 磁盘缓存可能被截断或损坏；重复条目保留第一份，不崩溃。
+            let previousByID = Dictionary(
+                (cache.root(for: normalizedRoot)?.entries ?? []).map { ($0.id, $0) },
+                uniquingKeysWith: { first, _ in first }
             )
             var entries: [DiskEntry] = []
             var nextCacheEntries: [DiskScanCacheEntry] = []

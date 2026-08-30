@@ -55,8 +55,10 @@ public struct ScannerWorker: Sendable {
         let visibleStandard = request.developerMode
             ? standard.candidates
             : standard.candidates.filter { $0.kind != .developer && $0.kind != .packageManager }
+        // 重叠规则可能对同一路径产出多个候选；路径去重本来就是这里的目的。
         var candidatesByPath = Dictionary(
-            uniqueKeysWithValues: visibleStandard.map { ($0.url.standardizedFileURL.path, $0) }
+            visibleStandard.map { ($0.url.standardizedFileURL.path, $0) },
+            uniquingKeysWith: { first, _ in first }
         )
         for candidate in personal.candidates {
             candidatesByPath[candidate.url.standardizedFileURL.path] = candidate

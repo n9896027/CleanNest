@@ -40,6 +40,7 @@ public enum AgentArtifactKind: String, CaseIterable, Codable, Hashable, Identifi
     case activeSessions
     case archivedSessions
     case backups
+    case installerLeftovers
     case generatedMedia
     case caches
     case temporaryFiles
@@ -58,6 +59,7 @@ public enum AgentArtifactKind: String, CaseIterable, Codable, Hashable, Identifi
         case .activeSessions: return "会话与工具输出"
         case .archivedSessions: return "已归档会话"
         case .backups: return "备份"
+        case .installerLeftovers: return "安装包残留"
         case .generatedMedia: return "生成图片与交互资源"
         case .caches: return "可再生缓存"
         case .temporaryFiles: return "临时文件"
@@ -68,6 +70,30 @@ public enum AgentArtifactKind: String, CaseIterable, Codable, Hashable, Identifi
         case .stateAndIndexes: return "状态与索引"
         case .credentials: return "账号与凭据"
         case .unknown: return "尚未识别"
+        }
+    }
+}
+
+/// Shared per-kind age gates for backup-first mutation. The scanner uses this
+/// to emit candidates; the mutation service re-validates the same gate against
+/// a freshly captured file identity before anything leaves its original path.
+/// A `nil` gate means the kind stays read-only regardless of age.
+public enum AgentWorkspaceMutationPolicy {
+    public static func minimumSettleInterval(
+        for kind: AgentArtifactKind,
+        recentInterval: TimeInterval,
+        oldInterval: TimeInterval,
+        sessionCandidateInterval: TimeInterval
+    ) -> TimeInterval? {
+        switch kind {
+        case .caches, .temporaryFiles, .logs, .installerLeftovers:
+            return max(60, recentInterval)
+        case .backups, .archivedSessions, .virtualMachines:
+            return max(recentInterval, oldInterval)
+        case .activeSessions:
+            return max(recentInterval, sessionCandidateInterval)
+        case .generatedMedia, .memoryAndPlans, .stateAndIndexes, .credentials, .runtime, .unknown:
+            return nil
         }
     }
 }
@@ -86,6 +112,17 @@ public enum AgentArtifactDisposition: String, Codable, Equatable, Sendable {
         case .review: return "可归档复核"
         case .regenerable: return "可再生复核"
         case .unknown: return "只读查看"
+        }
+    }
+
+    /// 大白话主显示；displayName（技术术语）降级为悬浮说明。
+    public var plainDisplayName: String {
+        switch self {
+        case .protected: return "在用·先别动"
+        case .keep: return "建议保留"
+        case .review: return "看一眼再定"
+        case .regenerable: return "可安全清理"
+        case .unknown: return "仅查看"
         }
     }
 }
@@ -186,7 +223,9 @@ public struct AgentWorkspaceFileIdentity: Codable, Equatable, Hashable, Sendable
 }
 
 /// A bounded, file-level action token emitted by the read-only scanner.
-/// Only settled cache, temporary and log files can become candidates in P1.
+/// Eligible kinds and their per-kind age gates live in
+/// `AgentWorkspaceMutationPolicy`; the mutation service re-checks the same
+/// policy before any file leaves its original path.
 public struct AgentWorkspaceActionCandidate: Identifiable, Codable, Equatable, Hashable, Sendable {
     public let id: String
     public let provider: AgentWorkspaceProvider
@@ -488,6 +527,8 @@ public struct AgentWorkspaceScanner: Sendable {
     public struct Configuration: Sendable {
         public var recentInterval: TimeInterval
         public var oldInterval: TimeInterval
+        public var sessionCandidateInterval: TimeInterval
+        public var installerLeftoverMinimumBytes: Int64
         public var largeFileWarningBytes: Int64
         public var largeFileCriticalBytes: Int64
         public var agentSizeWarningBytes: Int64
@@ -500,6 +541,8 @@ public struct AgentWorkspaceScanner: Sendable {
         public init(
             recentInterval: TimeInterval = 15 * 60,
             oldInterval: TimeInterval = 30 * 86_400,
+            sessionCandidateInterval: TimeInterval = 60 * 86_400,
+            installerLeftoverMinimumBytes: Int64 = 16 * 1_024 * 1_024,
             largeFileWarningBytes: Int64 = 256 * 1_024 * 1_024,
             largeFileCriticalBytes: Int64 = 2 * 1_024 * 1_024 * 1_024,
             agentSizeWarningBytes: Int64 = 10 * 1_024 * 1_024 * 1_024,
@@ -511,6 +554,8 @@ public struct AgentWorkspaceScanner: Sendable {
         ) {
             self.recentInterval = max(60, recentInterval)
             self.oldInterval = max(recentInterval, oldInterval)
+            self.sessionCandidateInterval = max(recentInterval, sessionCandidateInterval)
+            self.installerLeftoverMinimumBytes = max(0, installerLeftoverMinimumBytes)
             self.largeFileWarningBytes = max(1, largeFileWarningBytes)
             self.largeFileCriticalBytes = max(largeFileWarningBytes, largeFileCriticalBytes)
             self.agentSizeWarningBytes = max(1, agentSizeWarningBytes)
@@ -575,6 +620,74 @@ public struct AgentWorkspaceScanner: Sendable {
             guard rhs > 0 else { return lhs }
             return lhs > Int64.max - rhs ? Int64.max : lhs + rhs
         }
+    }
+
+    /// Per-kind walk output. Most files stay in their group kind; installer
+    /// archives with an extracted sibling are reclassified into
+    /// `.installerLeftovers` so a keep-tier group (for example a VM bundle)
+    /// can still shed its dead staging payload.
+    private struct WalkResult: Sendable {
+        var byKind: [AgentArtifactKind: WalkMetrics] = [:]
+        var installerLeftoverDirectories: Set<String> = []
+
+        static let maximumInstallerLeftoverDirectories = 16
+
+        mutating func absorb(_ file: FileMetric) {
+            byKind[file.kind, default: WalkMetrics()].merge(file.metrics)
+            if file.kind == .installerLeftovers,
+               installerLeftoverDirectories.count < Self.maximumInstallerLeftoverDirectories {
+                installerLeftoverDirectories.insert(
+                    URL(fileURLWithPath: file.path).deletingLastPathComponent().path
+                )
+            }
+        }
+
+        mutating func merge(_ other: Self) {
+            for (kind, metrics) in other.byKind {
+                byKind[kind, default: WalkMetrics()].merge(metrics)
+            }
+            for directory in other.installerLeftoverDirectories
+            where installerLeftoverDirectories.count < Self.maximumInstallerLeftoverDirectories {
+                installerLeftoverDirectories.insert(directory)
+            }
+        }
+    }
+
+    /// One scanned file plus the kind it was finally classified as.
+    private struct FileMetric: Sendable {
+        var kind: AgentArtifactKind
+        var metrics: WalkMetrics
+        var path: String
+    }
+
+    /// Kinds whose archive-shaped files may be reclassified as installer
+    /// leftovers. Sessions, generated media, memory, state and credentials
+    /// never change kind: a misleading name must not grant mutation rights.
+    private static let installerLeftoverSourceKinds: Set<AgentArtifactKind> = [
+        .virtualMachines, .runtime, .caches, .temporaryFiles, .logs, .backups, .unknown
+    ]
+
+    private static let installerArchiveSuffixes = [
+        ".tar.gz", ".tar.zst", ".tar.xz", ".tgz", ".zip", ".zst", ".dmg", ".pkg", ".tar", ".gz"
+    ]
+
+    /// An archive counts as a leftover only when the same directory already
+    /// holds the payload it unpacks to (for example `rootfs.img` sitting next
+    /// to `rootfs.img.zst`). Without that sibling the archive may be the only
+    /// copy and stays in its original kind.
+    private static func installerLeftoverSiblingExists(
+        for path: String,
+        allocatedBytes: Int64,
+        configuration: Configuration
+    ) -> Bool {
+        guard allocatedBytes >= configuration.installerLeftoverMinimumBytes else { return false }
+        let lowercased = path.lowercased()
+        guard let suffix = installerArchiveSuffixes.first(where: { lowercased.hasSuffix($0) }) else {
+            return false
+        }
+        let sibling = String(path.dropLast(suffix.count))
+        guard !sibling.isEmpty else { return false }
+        return FileManager.default.fileExists(atPath: sibling)
     }
 
     private let configuration: Configuration
@@ -763,13 +876,32 @@ public struct AgentWorkspaceScanner: Sendable {
         var remainingEntries = configuration.maximumEntriesPerAgent
         var remainingActionCandidates = configuration.maximumActionCandidatesPerAgent
         var seenFiles = Set<FileIdentity>()
-        let artifacts = AgentArtifactKind.allCases.compactMap { kind -> AgentWorkspaceArtifact? in
-            guard let urls = groupedURLs[kind], !urls.isEmpty else { return nil }
-            var combined = WalkMetrics()
+        var metricsByKind: [AgentArtifactKind: WalkMetrics] = [:]
+        var installerLeftoverDirectories: Set<String> = []
+        let eligibleCandidateKinds: Set<AgentArtifactKind> = Set(AgentArtifactKind.allCases.filter {
+            AgentWorkspaceMutationPolicy.minimumSettleInterval(
+                for: $0,
+                recentInterval: configuration.recentInterval,
+                oldInterval: configuration.oldInterval,
+                sessionCandidateInterval: configuration.sessionCandidateInterval
+            ) != nil
+        })
+        // Virtual machine bundles are only disposable as a unit: a single old
+        // file next to a live rootfs must never become a candidate. VM files
+        // collect candidates in a second pass, only after the whole group
+        // proves fully settled.
+        let firstPassCandidateKinds = collectActionCandidates
+            ? eligibleCandidateKinds.subtracting([.virtualMachines])
+            : []
+
+        let groupedKinds = AgentArtifactKind.allCases.filter { groupedURLs[$0]?.isEmpty == false }
+        for kind in groupedKinds {
+            let urls = groupedURLs[kind] ?? []
+            metricsByKind[kind] = WalkMetrics()
             for url in urls.sorted(by: { $0.path < $1.path }) {
                 guard remainingEntries > 0 else {
-                    combined.isComplete = false
-                    combined.diagnostics.append("已达到单个 Agent 的元数据扫描上限。")
+                    metricsByKind[kind]?.isComplete = false
+                    metricsByKind[kind]?.diagnostics.append("已达到单个 Agent 的元数据扫描上限。")
                     break
                 }
                 let value = walk(
@@ -779,30 +911,75 @@ public struct AgentWorkspaceScanner: Sendable {
                     openPaths: openPaths,
                     now: now,
                     configuration: configuration,
-                    collectActionCandidates: collectActionCandidates,
+                    candidateKinds: firstPassCandidateKinds,
                     remainingEntries: &remainingEntries,
                     remainingActionCandidates: &remainingActionCandidates,
                     seenFiles: &seenFiles
                 )
-                combined.merge(value)
+                for (fileKind, part) in value.byKind {
+                    metricsByKind[fileKind, default: WalkMetrics()].merge(part)
+                }
+                for directory in value.installerLeftoverDirectories
+                where installerLeftoverDirectories.count < WalkResult.maximumInstallerLeftoverDirectories {
+                    installerLeftoverDirectories.insert(directory)
+                }
             }
+        }
+
+        let virtualMachineGroupIsStale = metricsByKind[.virtualMachines].map {
+            Self.isVirtualMachineGroupStale($0, now: now, configuration: configuration)
+        } ?? false
+        if collectActionCandidates, virtualMachineGroupIsStale {
+            for url in (groupedURLs[.virtualMachines] ?? []).sorted(by: { $0.path < $1.path }) {
+                var passEntries = configuration.maximumEntriesPerAgent
+                var passSeen = Set<FileIdentity>()
+                let value = walk(
+                    url: url,
+                    provider: provider,
+                    kind: .virtualMachines,
+                    openPaths: openPaths,
+                    now: now,
+                    configuration: configuration,
+                    candidateKinds: [.virtualMachines],
+                    remainingEntries: &passEntries,
+                    remainingActionCandidates: &remainingActionCandidates,
+                    seenFiles: &passSeen
+                )
+                for (fileKind, part) in value.byKind {
+                    metricsByKind[fileKind]?.actionCandidates.append(contentsOf: part.actionCandidates)
+                    if part.actionCandidateLimitReached {
+                        metricsByKind[fileKind]?.actionCandidateLimitReached = true
+                    }
+                }
+            }
+        }
+
+        let artifacts = AgentArtifactKind.allCases.compactMap { kind -> AgentWorkspaceArtifact? in
+            guard let combined = metricsByKind[kind] else { return nil }
+            let urls = groupedURLs[kind] ?? []
+            let sourcePaths: [String] = kind == .installerLeftovers
+                ? installerLeftoverDirectories.sorted()
+                : urls.map { $0.standardizedFileURL.path }.sorted()
             let protectedByActivity = !activityProbeSucceeded
                 || combined.activeFileCount > 0
                 || combined.recentlyModifiedFileCount > 0
             let disposition = disposition(
                 kind: kind,
                 protectedByActivity: protectedByActivity,
-                isComplete: combined.isComplete
+                isComplete: combined.isComplete,
+                isStaleGroup: kind == .virtualMachines && virtualMachineGroupIsStale
             )
             let previewBytes: Int64
             if !combined.isComplete || !activityProbeSucceeded || !provider.supportsBackupFirstRecovery {
                 previewBytes = 0
             } else {
                 switch kind {
-                case .caches, .temporaryFiles, .logs:
+                case .caches, .temporaryFiles, .logs, .installerLeftovers:
                     previewBytes = combined.settledBytes
                 case .activeSessions, .archivedSessions, .backups, .generatedMedia:
                     previewBytes = combined.oldBytes
+                case .virtualMachines:
+                    previewBytes = virtualMachineGroupIsStale ? combined.oldBytes : 0
                 default:
                     previewBytes = 0
                 }
@@ -823,6 +1000,16 @@ public struct AgentWorkspaceScanner: Sendable {
             if kind == .stateAndIndexes {
                 protectionReasons.append("直接删除可能导致会话列表与文件状态不一致")
             }
+            if kind == .installerLeftovers {
+                protectionReasons.append("存在同名已解压内容，压缩包本身可复核回收")
+            }
+            if kind == .virtualMachines && virtualMachineGroupIsStale {
+                let days = Int(configuration.oldInterval / 86_400)
+                protectionReasons.append("整组超过 \(days) 天未写入；如不使用沙箱或隔离会话可复核回收")
+            }
+            if kind == .generatedMedia {
+                protectionReasons.append("生成内容属于产出资产，只复核位置，不提供执行")
+            }
             if !combined.isComplete {
                 protectionReasons.append("扫描不完整，默认禁止进入回收预览")
             }
@@ -838,7 +1025,7 @@ public struct AgentWorkspaceScanner: Sendable {
                 id: "\(provider.rawValue):\(kind.rawValue)",
                 provider: provider,
                 kind: kind,
-                sourcePaths: urls.map { $0.standardizedFileURL.path }.sorted(),
+                sourcePaths: sourcePaths,
                 allocatedBytes: combined.allocatedBytes,
                 logicalBytes: combined.logicalBytes,
                 fileCount: combined.fileCount,
@@ -879,25 +1066,28 @@ public struct AgentWorkspaceScanner: Sendable {
         openPaths: Set<String>,
         now: Date,
         configuration: Configuration,
-        collectActionCandidates: Bool,
+        candidateKinds: Set<AgentArtifactKind>,
         remainingEntries: inout Int,
         remainingActionCandidates: inout Int,
         seenFiles: inout Set<FileIdentity>
-    ) -> WalkMetrics {
+    ) -> WalkResult {
         let path = url.standardizedFileURL.path
         var rootStat = stat()
         guard path.withCString({ lstat($0, &rootStat) }) == 0 else {
-            var result = WalkMetrics()
-            result.isComplete = false
-            result.diagnostics.append("无法读取元数据：\(path)")
+            var metrics = WalkMetrics()
+            metrics.isComplete = false
+            metrics.diagnostics.append("无法读取元数据：\(path)")
+            var result = WalkResult()
+            result.byKind[kind] = metrics
             return result
         }
         let type = rootStat.st_mode & S_IFMT
         if type == S_IFREG {
             remainingEntries -= 1
             let identity = FileIdentity(device: UInt64(rootStat.st_dev), inode: UInt64(rootStat.st_ino))
-            guard seenFiles.insert(identity).inserted else { return WalkMetrics() }
-            return metrics(
+            guard seenFiles.insert(identity).inserted else { return WalkResult() }
+            var result = WalkResult()
+            result.absorb(metrics(
                 for: rootStat,
                 path: path,
                 provider: provider,
@@ -905,16 +1095,19 @@ public struct AgentWorkspaceScanner: Sendable {
                 openPaths: openPaths,
                 now: now,
                 configuration: configuration,
-                collectActionCandidates: collectActionCandidates,
+                candidateKinds: candidateKinds,
                 remainingActionCandidates: &remainingActionCandidates
-            )
+            ))
+            return result
         }
-        guard type == S_IFDIR else { return WalkMetrics() }
+        guard type == S_IFDIR else { return WalkResult() }
 
         guard let rootCString = strdup(path) else {
-            var result = WalkMetrics()
-            result.isComplete = false
-            result.diagnostics.append("无法准备目录扫描：\(path)")
+            var metrics = WalkMetrics()
+            metrics.isComplete = false
+            metrics.diagnostics.append("无法准备目录扫描：\(path)")
+            var result = WalkResult()
+            result.byKind[kind] = metrics
             return result
         }
         defer { free(rootCString) }
@@ -923,28 +1116,30 @@ public struct AgentWorkspaceScanner: Sendable {
         paths[0] = rootCString
         defer { paths.deinitialize(count: 2); paths.deallocate() }
         guard let stream = fts_open(UnsafePointer(paths), FTS_PHYSICAL | FTS_NOCHDIR, nil) else {
-            var result = WalkMetrics()
-            result.isComplete = false
-            result.diagnostics.append("无法遍历目录：\(path)")
+            var metrics = WalkMetrics()
+            metrics.isComplete = false
+            metrics.diagnostics.append("无法遍历目录：\(path)")
+            var result = WalkResult()
+            result.byKind[kind] = metrics
             return result
         }
         defer { fts_close(stream) }
 
-        var result = WalkMetrics()
+        var result = WalkResult()
         while !Task.isCancelled, remainingEntries > 0, let entry = fts_read(stream) {
             if entry.pointee.fts_level == FTS_ROOTLEVEL { continue }
             remainingEntries -= 1
             let info = Int32(entry.pointee.fts_info)
             switch info {
             case FTS_D:
-                result.directoryCount += 1
+                result.byKind[kind, default: WalkMetrics()].directoryCount += 1
             case FTS_F:
                 guard let statPointer = entry.pointee.fts_statp else { continue }
                 let fileStat = statPointer.pointee
                 let identity = FileIdentity(device: UInt64(fileStat.st_dev), inode: UInt64(fileStat.st_ino))
                 guard seenFiles.insert(identity).inserted else { continue }
                 let filePath = String(cString: entry.pointee.fts_path)
-                result.merge(metrics(
+                result.absorb(metrics(
                     for: fileStat,
                     path: filePath,
                     provider: provider,
@@ -952,23 +1147,23 @@ public struct AgentWorkspaceScanner: Sendable {
                     openPaths: openPaths,
                     now: now,
                     configuration: configuration,
-                    collectActionCandidates: collectActionCandidates,
+                    candidateKinds: candidateKinds,
                     remainingActionCandidates: &remainingActionCandidates
                 ))
             case FTS_DNR, FTS_ERR, FTS_NS:
-                result.isComplete = false
-                result.diagnostics.append("部分路径无法读取：\(String(cString: entry.pointee.fts_path))")
+                result.byKind[kind, default: WalkMetrics()].isComplete = false
+                result.byKind[kind]?.diagnostics.append("部分路径无法读取：\(String(cString: entry.pointee.fts_path))")
             default:
                 break
             }
         }
         if remainingEntries == 0 {
-            result.isComplete = false
-            result.diagnostics.append("已达到单个 Agent 的元数据扫描上限。")
+            result.byKind[kind, default: WalkMetrics()].isComplete = false
+            result.byKind[kind]?.diagnostics.append("已达到单个 Agent 的元数据扫描上限。")
         }
         if Task.isCancelled {
-            result.isComplete = false
-            result.diagnostics.append("扫描已取消。")
+            result.byKind[kind, default: WalkMetrics()].isComplete = false
+            result.byKind[kind]?.diagnostics.append("扫描已取消。")
         }
         return result
     }
@@ -981,9 +1176,9 @@ public struct AgentWorkspaceScanner: Sendable {
         openPaths: Set<String>,
         now: Date,
         configuration: Configuration,
-        collectActionCandidates: Bool,
+        candidateKinds: Set<AgentArtifactKind>,
         remainingActionCandidates: inout Int
-    ) -> WalkMetrics {
+    ) -> FileMetric {
         let allocated = max(0, Int64(fileStat.st_blocks) * 512)
         let logical = max(0, Int64(fileStat.st_size))
         let modified = Date(
@@ -993,6 +1188,18 @@ public struct AgentWorkspaceScanner: Sendable {
         let age = max(0, now.timeIntervalSince(modified))
         let normalizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
         let isActive = openPaths.contains(normalizedPath)
+        let effectiveKind: AgentArtifactKind
+        if installerLeftoverSourceKinds.contains(kind),
+           age > configuration.recentInterval,
+           installerLeftoverSiblingExists(
+               for: normalizedPath,
+               allocatedBytes: allocated,
+               configuration: configuration
+           ) {
+            effectiveKind = .installerLeftovers
+        } else {
+            effectiveKind = kind
+        }
         var result = WalkMetrics()
         result.allocatedBytes = allocated
         result.logicalBytes = logical
@@ -1005,17 +1212,22 @@ public struct AgentWorkspaceScanner: Sendable {
         result.largestFileBytes = logical
         result.largestFilePath = normalizedPath
         result.latestModificationDate = modified
-        if collectActionCandidates,
+        if candidateKinds.contains(effectiveKind),
            provider.supportsBackupFirstRecovery,
            !isActive,
-           age > configuration.recentInterval,
-           [.caches, .temporaryFiles, .logs].contains(kind) {
+           let minimumAge = AgentWorkspaceMutationPolicy.minimumSettleInterval(
+               for: effectiveKind,
+               recentInterval: configuration.recentInterval,
+               oldInterval: configuration.oldInterval,
+               sessionCandidateInterval: configuration.sessionCandidateInterval
+           ),
+           age > minimumAge {
             if remainingActionCandidates > 0 {
                 let identity = AgentWorkspaceFileIdentity(fileStat: fileStat)
                 result.actionCandidates = [AgentWorkspaceActionCandidate(
-                    id: "\(provider.rawValue):\(kind.rawValue):\(identity.deviceID):\(identity.fileID)",
+                    id: "\(provider.rawValue):\(effectiveKind.rawValue):\(identity.deviceID):\(identity.fileID)",
                     provider: provider,
-                    kind: kind,
+                    kind: effectiveKind,
                     path: normalizedPath,
                     identity: identity,
                     scannedAt: now
@@ -1025,20 +1237,40 @@ public struct AgentWorkspaceScanner: Sendable {
                 result.actionCandidateLimitReached = true
             }
         }
-        return result
+        return FileMetric(kind: effectiveKind, metrics: result, path: normalizedPath)
+    }
+
+    /// A VM bundle counts as stale only when nothing in the group has been
+    /// touched for the full old-interval: files like `efivars.fd` keep their
+    /// creation mtime even in daily-used bundles, so per-file age alone would
+    /// peel pieces off a live VM.
+    private static func isVirtualMachineGroupStale(
+        _ metrics: WalkMetrics,
+        now: Date,
+        configuration: Configuration
+    ) -> Bool {
+        guard metrics.isComplete,
+              metrics.fileCount > 0,
+              metrics.activeFileCount == 0,
+              metrics.recentlyModifiedFileCount == 0,
+              let latest = metrics.latestModificationDate else { return false }
+        return now.timeIntervalSince(latest) >= configuration.oldInterval
     }
 
     private static func disposition(
         kind: AgentArtifactKind,
         protectedByActivity: Bool,
-        isComplete: Bool
+        isComplete: Bool,
+        isStaleGroup: Bool = false
     ) -> AgentArtifactDisposition {
         guard isComplete else { return .protected }
         guard !protectedByActivity else { return .protected }
         switch kind {
-        case .credentials, .stateAndIndexes, .memoryAndPlans, .runtime, .virtualMachines:
+        case .credentials, .stateAndIndexes, .memoryAndPlans, .runtime:
             return .keep
-        case .caches, .temporaryFiles, .logs:
+        case .virtualMachines:
+            return isStaleGroup ? .review : .keep
+        case .caches, .temporaryFiles, .logs, .installerLeftovers:
             return .regenerable
         case .activeSessions, .archivedSessions, .backups, .generatedMedia:
             return .review

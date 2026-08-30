@@ -321,9 +321,10 @@ public struct TrashService: Sendable {
 
     public func trashCleanupCandidates(_ candidates: [CleanupCandidate]) async -> [TrashOutcome] {
         let candidatesByPath = Dictionary(
-            uniqueKeysWithValues: candidates.map {
+            candidates.map {
                 ($0.url.standardizedFileURL.path, $0)
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
         return await trash(candidates.map(\.url)) { target in
             guard let candidate = candidatesByPath[target.standardizedFileURL.path] else {

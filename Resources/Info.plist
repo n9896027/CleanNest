@@ -2,54 +2,54 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleDevelopmentRegion</key>
-    <string>en</string>
-    <key>CFBundleLocalizations</key>
-    <array>
-        <string>en</string>
-        <string>zh-Hans</string>
-        <string>zh-Hant</string>
-    </array>
-    <key>CFBundleDisplayName</key>
-    <string>CleanNest</string>
-    <key>CFBundleExecutable</key>
-    <string>CleanNest</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.zone.cleannest</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
-    <key>CFBundleName</key>
-    <string>CleanNest</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>CleanNest</string>
+	<key>CFBundleExecutable</key>
+	<string>CleanNest</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.zone.cleannest</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>zh-Hans</string>
+		<string>zh-Hant</string>
+	</array>
+	<key>CFBundleName</key>
+	<string>CleanNest</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.7.9</string>
+	<string>0.8.4</string>
 	<key>CFBundleVersion</key>
-	<string>37</string>
-    <key>LSApplicationCategoryType</key>
-    <string>public.app-category.utilities</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>LSMultipleInstancesProhibited</key>
-    <true/>
-    <key>NSPrincipalClass</key>
-    <string>NSApplication</string>
+	<string>42</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSMultipleInstancesProhibited</key>
+	<true/>
+	<key>NSAppDataUsageDescription</key>
+	<string>CleanNest 仅在你主动分析应用数据目录时读取文件名、目录结构与占用空间，不读取文件内容，也不会自动删除。</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
-	<key>NSAppDataUsageDescription</key>
-	<string>CleanNest 仅在你主动分析应用数据目录时读取文件名、目录结构与占用空间，不读取文件内容，也不会自动删除。</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>当普通废纸篓操作权限不足时，CleanNest 会请 Finder 显示系统管理员认证并移动你明确确认的 App。</string>
 	<key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSHumanReadableCopyright</key>
-    <string>CleanNest is an independent client. Mole CLI is credited separately under GPL-3.0.</string>
-    <key>NSSupportsAutomaticGraphicsSwitching</key>
-    <true/>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>CleanNest is an independent client. Mole CLI is credited separately under GPL-3.0.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
 </dict>
 </plist>

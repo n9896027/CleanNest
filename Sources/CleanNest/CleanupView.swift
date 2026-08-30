@@ -854,7 +854,7 @@ private struct CleanupRow: View {
                 if let learnedPreference {
                     HStack(spacing: 7) {
                         StatusPill(
-                            text: learnedPreference == .preferKeep ? "已学习：优先保留" : "已学习：优先清理",
+                            text: learnedPreference == .preferKeep ? "已记住：优先保留" : "已记住：优先清理",
                             symbol: learnedPreference == .preferKeep ? "hand.raised" : "sparkles",
                             style: learnedPreference == .preferKeep ? .warning : .success
                         )
@@ -870,7 +870,7 @@ private struct CleanupRow: View {
                             symbol: ruleProposal.state == .pending ? "doc.badge.clock" : "pause.circle",
                             style: ruleProposal.state == .pending ? .warning : .neutral
                         )
-                        Text("不会改变排序，需到本机学习页确认")
+                        Text("不会自动改变排序；到“清理习惯”页启用后才生效")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -904,7 +904,7 @@ private struct CleanupRow: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("创建或管理本机学习规则")
+            .help("查看或管理清理习惯")
         }
         .padding(.vertical, 10)
         .contentShape(Rectangle())
