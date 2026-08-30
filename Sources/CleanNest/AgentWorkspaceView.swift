@@ -17,7 +17,7 @@ struct AgentWorkspaceView: View {
                 PageHeader(
                     title: pageTitle,
                     subtitle: pageSubtitle,
-                    eyebrow: showingNativeTools ? "原生 dry-run · 只在本机" : "占用账本 · 变化 · 活跃保护"
+                    eyebrow: showingNativeTools ? "原生 dry-run · 只在本机" : "占用 · 变化 · 活跃保护"
                 ) {
                     headerActions
                 }
@@ -68,7 +68,7 @@ struct AgentWorkspaceView: View {
                     } else if store.agentWorkspaceSummary == nil {
                         EmptyPanel(
                             symbol: "sparkle.magnifyingglass",
-                            title: "尚未建立 Agent 占用账本",
+                            title: "还没有扫描过 Agent 占用",
                             detail: "首次扫描只读取文件大小、数量、时间与打开状态。"
                         )
                     }
@@ -290,7 +290,7 @@ struct AgentWorkspaceView: View {
             }
         }
 
-        SurfaceCard(title: "类别账本", symbol: "list.bullet.rectangle", tint: providerTint(agent.provider)) {
+        SurfaceCard(title: "分类占用", symbol: "list.bullet.rectangle", tint: providerTint(agent.provider)) {
             AgentLedgerPanel(
                 agent: agent,
                 rule: store.agentRuleCatalog.rule(for: agent.provider),
@@ -326,7 +326,7 @@ struct AgentWorkspaceView: View {
             HStack(spacing: 15) {
                 ProgressView().controlSize(.small)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("正在建立占用账本")
+                    Text("正在统计占用")
                         .font(.headline)
                     Text(store.agentWorkspaceDiagnostic)
                         .font(.subheadline)
@@ -389,7 +389,7 @@ struct AgentWorkspaceView: View {
     private func storageLedger(_ snapshot: AgentWorkspaceSnapshot) -> some View {
         SurfaceCard(prominence: .prominent, tint: ledgerTint(snapshot)) {
             ContentSectionHeader(
-                "当前占用账本",
+                "当前占用",
                 detail: scanTiming(snapshot),
                 symbol: "externaldrive.fill.badge.timemachine",
                 tint: ledgerTint(snapshot)
@@ -749,7 +749,7 @@ struct AgentWorkspaceView: View {
                     Button {
                         showingRecoveryConfirmation = true
                     } label: {
-                        Label("检查计划…", systemImage: "checklist.checked")
+                        Label("查看清理计划…", systemImage: "checklist.checked")
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(
@@ -1039,7 +1039,7 @@ private struct AgentArchiveSuggestionsSheet: View {
             HStack(alignment: .top, spacing: 14) {
                 CNIconTile(symbol: "lock.doc.fill", tint: CNTheme.violet, size: 44)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("会话归档建议")
+                    Text("旧内容建议")
                         .font(.title2.weight(.semibold))
                     Text("\(artifacts.count.formatted()) 类数据 · \(totalOldFileCount.formatted()) 个旧文件 · \(CleanNestFormatting.bytes(totalPreviewBytes))")
                         .font(.subheadline)
@@ -1120,7 +1120,7 @@ private struct AgentArchiveSuggestionsSheet: View {
                     Text("\(artifact.provider.displayName) · \(artifact.kind.displayName)")
                         .font(.subheadline.weight(.semibold))
                     StatusPill(
-                        text: artifact.disposition == .protected ? "当前锁定" : "人工复核",
+                        text: artifact.disposition == .protected ? "在用·先别动" : "看一眼再定",
                         symbol: artifact.disposition == .protected ? "lock.fill" : "eye",
                         style: artifact.disposition == .protected ? .warning : .neutral
                     )
@@ -1911,7 +1911,7 @@ private struct AgentLedgerPanel: View {
                                 )
                             }
                         }
-                        Text("\(agent.artifacts.count) 类工作痕迹 · \(agent.fileCount.formatted()) 个文件")
+                        Text("\(agent.artifacts.count) 类内容 · \(agent.fileCount.formatted()) 个文件")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1920,7 +1920,7 @@ private struct AgentLedgerPanel: View {
                         Text(CleanNestFormatting.bytes(agent.allocatedBytes))
                             .font(.system(size: 20, weight: .semibold, design: .rounded))
                             .monospacedDigit()
-                        Text(agent.previewBytes > 0 ? "\(CleanNestFormatting.bytes(agent.previewBytes)) 进入预览" : "没有可执行动作")
+                        Text(agent.previewBytes > 0 ? "可清理 \(CleanNestFormatting.bytes(agent.previewBytes))" : "暂无可清理项")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -1932,7 +1932,7 @@ private struct AgentLedgerPanel: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(agent.provider.displayName) 工作痕迹")
+            .accessibilityLabel("\(agent.provider.displayName) 占用")
             .accessibilityValue(isExpanded ? "已展开" : "已折叠")
 
             if isExpanded {
@@ -1991,10 +1991,11 @@ private struct AgentArtifactRow: View {
                 Text(artifact.kind.displayName)
                     .font(.subheadline.weight(.semibold))
                 StatusPill(
-                    text: artifact.disposition.displayName,
+                    text: artifact.disposition.plainDisplayName,
                     symbol: dispositionSymbol(artifact.disposition),
                     style: dispositionPillStyle(artifact.disposition)
                 )
+                .help("技术口径：\(artifact.disposition.displayName)")
             }
             Text(pathSummary(artifact.sourcePaths))
                 .font(.system(size: 11.5, design: .monospaced))
@@ -2023,11 +2024,11 @@ private struct AgentArtifactRow: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             if artifact.actionableBytes > 0 {
-                Text("其中 \(CleanNestFormatting.bytes(artifact.actionableBytes)) 可进入安全处置")
+                Text("其中 \(CleanNestFormatting.bytes(artifact.actionableBytes)) 可安全清理")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(CNTheme.mint)
             } else if artifact.previewBytes > 0 {
-                Text("其中 \(CleanNestFormatting.bytes(artifact.previewBytes)) 仅供后续复核")
+                Text("其中 \(CleanNestFormatting.bytes(artifact.previewBytes)) 需要先过目")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(CNTheme.violet)
             }

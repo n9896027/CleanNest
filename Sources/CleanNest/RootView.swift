@@ -52,6 +52,7 @@ struct RootView: View {
 private struct SidebarView: View {
     @EnvironmentObject private var store: AppStore
     @State private var hoveredItem: SidebarItem?
+    @AppStorage("sidebar.workshopExpanded") private var workshopExpanded = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -61,8 +62,7 @@ private struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 17) {
                     sidebarRow(.overview)
                     sidebarSection("空间", items: SidebarItem.spaceItems)
-                    sidebarSection("系统", items: SidebarItem.systemItems)
-                    sidebarSection("智能", items: SidebarItem.intelligenceItems)
+                    workshopSection
 
                     VStack(spacing: 5) {
                         sidebarRow(.activity)
@@ -123,6 +123,43 @@ private struct SidebarView: View {
                 .padding(.leading, 11)
             VStack(spacing: 5) {
                 ForEach(items) { sidebarRow($0) }
+            }
+        }
+    }
+
+    /// 低频工具默认折叠成一组：日常只有"总览/清理/卸载/磁盘"四个入口，
+    /// 选中组内页面时自动展开，展开状态记忆在本地。
+    private var workshopSection: some View {
+        let containsSelection = SidebarItem.workshopItems.contains(store.selection ?? .overview)
+        let expanded = workshopExpanded || containsSelection
+        return VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { workshopExpanded.toggle() }
+            } label: {
+                HStack {
+                    Text(CNL10n.string("高级工具").uppercased())
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(0.8)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+                .padding(.leading, 11)
+                .padding(.trailing, 8)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(CNL10n.string("高级工具"))
+            .accessibilityValue(expanded ? CNL10n.string("已展开") : CNL10n.string("已折叠"))
+            if expanded {
+                VStack(spacing: 5) {
+                    ForEach(SidebarItem.workshopItems) { sidebarRow($0) }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }

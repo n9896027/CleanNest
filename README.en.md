@@ -179,6 +179,7 @@ Detailed maintainer documentation is currently written primarily in Simplified C
 | [0.7.9 source-release verification](docs/VERIFICATION-0.7.9.md) | 0.6.5 migration/rollback, cancellation storm, trilingual audit, the real 48-hour gate, SBOM, and provenance |
 | [0.8.0 verification report](docs/VERIFICATION-0.8.0.md) | Tiered agent-workspace cleanup: installer-leftover detection, 30/60-day session and backup settle gates, and whole-group stale VM review |
 | [0.8.1 verification report](docs/VERIFICATION-0.8.1.md) | Defect fixes: stuck scan state, restore-retry deadlock, stderr pipe deadlock, XPC connection teardown, duplicate-key crashes, and a single version source |
+| [0.8.2 verification report](docs/VERIFICATION-0.8.2.md) | Usability: plain-language disposition labels with technical terms on hover, and a sidebar trimmed to six everyday entries with a collapsible advanced group |
 | [0.7 migration and rollback](docs/MIGRATION-0.7.md) | Honest compatibility boundaries for settings, metrics, activity, indexes, learning rules, and Agent recovery records |
 | [Localization status](docs/LOCALIZATION-STATUS.md) | Catalog coverage, remaining Chinese fallbacks, and the strict release gate |
 | [0.7 series roadmap](docs/ROADMAP-0.7.md) | Product, architecture, acceptance gates, and explicit non-goals for 0.7.0–0.7.9 |

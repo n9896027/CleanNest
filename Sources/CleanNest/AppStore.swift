@@ -39,8 +39,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     }
 
     static let spaceItems: [SidebarItem] = [.cleanup, .applications, .analyze]
-    static let systemItems: [SidebarItem] = [.status, .maintenance]
-    static let intelligenceItems: [SidebarItem] = [.agentWorkspace, .models, .evolution]
+    static let workshopItems: [SidebarItem] = [.status, .maintenance, .agentWorkspace, .models, .evolution]
 
     var lifecycleSurface: CleanNestSurface {
         switch self {

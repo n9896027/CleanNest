@@ -12,7 +12,7 @@ final class AgentWorkspacePresentationState: ObservableObject {
     @Published var cachedSummary: AgentWorkspaceSummary?
     @Published var snapshot: AgentWorkspaceSnapshot?
     @Published var phase: AgentWorkspaceScanPhase = .idle
-    @Published var diagnostic = "尚未扫描 Agent 工作痕迹"
+    @Published var diagnostic = "尚未扫描 Agent 占用"
     @Published var selectedCandidateIDs = Set<String>()
     @Published var selectedProvider: AgentWorkspaceProvider?
     @Published var detailScanningProvider: AgentWorkspaceProvider?
@@ -41,7 +41,7 @@ final class AgentWorkspacePresentationState: ObservableObject {
         nativeDeveloperStorageSnapshot = nil
         phase = .idle
         diagnostic = cachedSummary == nil
-            ? "尚未扫描 Agent 工作痕迹"
+            ? "尚未扫描 Agent 占用"
             : "已释放文件级明细；再次进入时会重新验证。"
     }
 }
