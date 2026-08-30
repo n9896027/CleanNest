@@ -29,6 +29,6 @@ public enum CleanNestFormatting {
 /// 单一版本来源：App、扫描服务、登录项与 MCP 的用户可见版本号。
 /// 发版时同步更新此处与三份 Resources/*Info.plist。
 public enum CleanNestVersion {
-    public static let current = "0.8.2"
-    public static let build = "40"
+    public static let current = "0.8.3"
+    public static let build = "41"
 }

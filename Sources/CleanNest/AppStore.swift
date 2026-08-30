@@ -15,7 +15,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     case maintenance = "系统维护"
     case agentWorkspace = "Agent 工作区"
     case models = "本地模型"
-    case evolution = "本机学习"
+    case evolution = "清理习惯"
     case activity = "活动记录"
     case settings = "设置"
 
@@ -4810,7 +4810,7 @@ final class AppStore: ObservableObject {
             expiredTrials = evolutionMemory.expireTrials()
         } catch {
             evolutionMemory = EvolutionMemory()
-            lastTechnicalDetail = "本机学习记录无法读取，已使用空白记忆：\(error.localizedDescription)"
+            lastTechnicalDetail = "清理习惯记录无法读取，已使用空白记忆：\(error.localizedDescription)"
         }
         hasLoadedEvolutionMemory = true
         if expiredTrials > 0 { saveEvolutionMemory() }
