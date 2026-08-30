@@ -618,6 +618,60 @@ final class AgentWorkspaceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path))
     }
 
+    func testRestoreRetryAfterCrashRecognizesOwnExtractedFiles() async throws {
+        let home = try makeHome()
+        let cache = home.appendingPathComponent(".codex/cache/retry.bin")
+        let payload = Data("resume me after crash".utf8)
+        try FileManager.default.createDirectory(
+            at: cache.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try payload.write(to: cache)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-3_600)],
+            ofItemAtPath: cache.path
+        )
+        let scan = try await AgentWorkspaceScanner(configuration: testConfiguration()).scan(
+            homeDirectory: home,
+            openFiles: []
+        )
+        let candidate = try XCTUnwrap(scan.snapshot.actionCandidates.first)
+        let service = AgentWorkspaceRecoveryService(
+            homeDirectory: home,
+            recoveryRoot: home.appendingPathComponent("Library/Application Support/CleanNest/AgentRecovery")
+        )
+        let operation = try await service.createRecovery(candidates: [candidate])
+        let firstRestore = try await service.restore(operationID: operation.record.id)
+        XCTAssertEqual(firstRestore.record.status, .restored)
+        XCTAssertEqual(try Data(contentsOf: cache), payload)
+
+        // 模拟崩溃后遗留的旧式清单：逐项恢复标记全部缺失（等价于 0.8.0 之前的记录）。
+        // 此时原位置的文件是上次恢复解压出的新身份文件。
+        let manifestURL = operation.operationDirectory.appendingPathComponent("manifest.json")
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var record = try decoder.decode(
+            AgentWorkspaceRecoveryRecord.self,
+            from: Data(contentsOf: manifestURL)
+        )
+        for index in record.items.indices { record.items[index].restoredAt = nil }
+        record.status = .available
+        record.restoredAt = nil
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try encoder.encode(record).write(to: manifestURL, options: .atomic)
+
+        // 重试恢复：内容与权威副本一致 → 识别为自身产物，不再误报 restoreConflict。
+        let retry = try await service.restore(operationID: operation.record.id)
+        XCTAssertEqual(retry.record.status, .restored)
+        XCTAssertEqual(try Data(contentsOf: cache), payload)
+
+        // 全部项已标记后再次恢复是空操作。
+        let third = try await service.restore(operationID: operation.record.id)
+        XCTAssertEqual(third.record.status, .restored)
+    }
+
     private func makeHome() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CleanNest-AgentWorkspaceTests-\(UUID().uuidString)", isDirectory: true)

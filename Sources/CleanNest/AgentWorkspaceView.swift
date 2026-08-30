@@ -1319,6 +1319,18 @@ private struct AgentWorkspaceRecoveryRecordRow: View {
         store.agentWorkspaceRecoveryPhase == .restoring(record.id)
     }
 
+    /// 进程在备份/移动/释放途中崩溃会留下非终态记录；当前没有任何活跃操作时，
+    /// 这些陈旧状态一律按"需要恢复检查"展示（只改展示，不改清单文件）。
+    private var displayStatus: AgentWorkspaceRecoveryStatus {
+        let nonTerminal: Set<AgentWorkspaceRecoveryStatus> = [
+            .preparing, .backupVerified, .movingOriginals, .removingOriginals
+        ]
+        guard !store.agentWorkspaceRecoveryPhase.isBusy, nonTerminal.contains(record.status) else {
+            return record.status
+        }
+        return .interrupted
+    }
+
     private var deltaText: String {
         guard let delta = record.apfsDeltaBytes else { return "APFS 尚未完成对比" }
         if delta > 0 { return "APFS +\(CleanNestFormatting.bytes(delta))" }
@@ -1328,12 +1340,12 @@ private struct AgentWorkspaceRecoveryRecordRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
-            Image(systemName: record.status == .restored ? "arrow.uturn.backward.circle.fill" : "archivebox.fill")
+            Image(systemName: displayStatus == .restored ? "arrow.uturn.backward.circle.fill" : "archivebox.fill")
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(record.status == .restored ? CNTheme.success : CNTheme.violet)
+                .foregroundStyle(displayStatus == .restored ? CNTheme.success : CNTheme.violet)
                 .frame(width: 31, height: 31)
                 .background(
-                    (record.status == .restored ? CNTheme.success : CNTheme.violet).opacity(0.10),
+                    (displayStatus == .restored ? CNTheme.success : CNTheme.violet).opacity(0.10),
                     in: RoundedRectangle(cornerRadius: 9)
                 )
             VStack(alignment: .leading, spacing: 4) {
@@ -1341,9 +1353,9 @@ private struct AgentWorkspaceRecoveryRecordRow: View {
                     Text("\(record.items.count) 个 Agent 文件")
                         .font(.subheadline.weight(.semibold))
                     StatusPill(
-                        text: record.status.displayName,
-                        symbol: record.status == .restored ? "checkmark" : "arrow.uturn.backward",
-                        style: record.status == .interrupted ? .warning : .neutral
+                        text: displayStatus.displayName,
+                        symbol: displayStatus == .restored ? "checkmark" : "arrow.uturn.backward",
+                        style: displayStatus == .interrupted ? .warning : .neutral
                     )
                 }
                 Text("原目录 \(CleanNestFormatting.bytes(record.originalAllocatedBytes)) · 备份 \(CleanNestFormatting.bytes(record.archiveAllocatedBytes)) · \(deltaText)")

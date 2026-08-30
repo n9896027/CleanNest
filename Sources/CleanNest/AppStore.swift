@@ -955,6 +955,11 @@ final class AppStore: ObservableObject {
     }
 
     func closeAgentWorkspaceDetail() {
+        // 详情扫描在途时直接返回概览会让完成回调的选择器守卫提前 return，
+        // 扫描态永久卡在 scanning。先取消在途扫描，让其走取消分支正常解锁。
+        if agentWorkspaceDetailScanningProvider != nil {
+            activeAgentWorkspaceScanTask?.cancel()
+        }
         agentWorkspaceSnapshot = agentWorkspaceSnapshot?.withoutActionCandidates()
         selectedAgentWorkspaceProvider = nil
         agentWorkspaceDetailScanningProvider = nil
@@ -990,7 +995,16 @@ final class AppStore: ObservableObject {
             }
             guard response.requestID == scanID.uuidString,
                   agentWorkspaceScanID == scanID,
-                  selectedAgentWorkspaceProvider == provider else { return }
+                  selectedAgentWorkspaceProvider == provider else {
+                // 详情扫描完成时用户已返回概览：结果丢弃，但扫描态必须解锁，
+                // 否则 isScanning 守卫会永久拒绝后续刷新。
+                if agentWorkspaceScanID == scanID {
+                    activeAgentWorkspaceScanTask = nil
+                    agentWorkspaceDetailScanningProvider = nil
+                    agentWorkspacePhase = agentWorkspaceSnapshot == nil ? .idle : .ready
+                }
+                return
+            }
             activeAgentWorkspaceScanTask = nil
             agentWorkspaceDetailScanningProvider = nil
             let detail = response.result.snapshot

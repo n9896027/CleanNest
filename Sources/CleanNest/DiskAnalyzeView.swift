@@ -532,7 +532,10 @@ private struct DiskGrowthComparisonCard: View {
         guard comparisonIsReliable,
               let current = store.diskEvidenceReport,
               let previous = store.diskPreviousEvidenceReport else { return [] }
-        let previousByID = Dictionary(uniqueKeysWithValues: previous.entries.map { ($0.id, $0) })
+        let previousByID = Dictionary(
+            previous.entries.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         let currentIDs = Set(current.entries.map(\.id))
         var values = current.entries.compactMap { entry -> Change? in
             guard let old = previousByID[entry.id] else {
@@ -1091,7 +1094,7 @@ private struct DiskTreemapView: View {
     let report: DiskReport
 
     private var entriesByID: [String: DiskEntry] {
-        Dictionary(uniqueKeysWithValues: report.entries.map { ($0.id, $0) })
+        Dictionary(report.entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     var body: some View {

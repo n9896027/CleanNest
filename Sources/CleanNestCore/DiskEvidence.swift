@@ -367,7 +367,11 @@ public struct DiskEvidenceIndexer: Sendable {
                     }
                     .prefix(options.maximumTopLevelEntries)
             )
-            let previousByID = Dictionary(uniqueKeysWithValues: (previous?.entries ?? []).map { ($0.id, $0) })
+            // previous 报告来自磁盘持久化；重复条目保留第一份，不崩溃。
+            let previousByID = Dictionary(
+                (previous?.entries ?? []).map { ($0.id, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
             var evidence: [DiskEvidenceEntry] = []
             evidence.reserveCapacity(entries.count)
 

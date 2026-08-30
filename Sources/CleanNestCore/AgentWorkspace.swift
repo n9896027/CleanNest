@@ -908,7 +908,10 @@ public struct AgentWorkspaceScanner: Sendable {
                 for (fileKind, part) in value.byKind {
                     metricsByKind[fileKind, default: WalkMetrics()].merge(part)
                 }
-                installerLeftoverDirectories.formUnion(value.installerLeftoverDirectories)
+                for directory in value.installerLeftoverDirectories
+                where installerLeftoverDirectories.count < WalkResult.maximumInstallerLeftoverDirectories {
+                    installerLeftoverDirectories.insert(directory)
+                }
             }
         }
 
