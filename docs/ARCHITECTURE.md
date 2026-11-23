@@ -13,7 +13,7 @@ AppStore 状态与任务编排
     │       ↓ 版本化 JSON Data，只返回进度与完整结果
     │  CleanNestCore：扫描、解码、安全策略、进程复核、SQLite 指标
     ├─ CleanNestMutation：仅 GUI 链接的废纸篓移动能力
-    ├─ Mole CLI：独立本地子进程，可替换、可升级
+    ├─ NativeSystemMonitor + NativeSystemSnapshotBuilder：原生系统状态与长期指标
     ├─ oMLX / mlx_lm.server：仅 127.0.0.1 的可选本机解释服务
             ↓ 严格 JSON 校验
        只读建议，不产生执行能力
@@ -40,7 +40,7 @@ macOS ServiceManagement
 
 ## 页面生命周期与内存边界（0.7.0）
 
-1. 冷启动只允许菜单栏原生监测、Mole 探测、指标存储准备和用户启用的本地模型运行时发现；不会加载指标图表、进程列表、模型目录、完全磁盘访问探测或 Agent 文件级结果。
+1. 冷启动只允许菜单栏原生监测、指标存储准备和用户启用的本地模型运行时发现；不会加载指标图表、进程列表、模型目录、完全磁盘访问探测或 Agent 文件级结果。
 2. `RootView` 以当前侧栏页面驱动 `AppLifecyclePolicy`。清理、卸载和磁盘页才探测文件访问；系统状态页才加载历史与进程；Agent 页才启动 XPC 遍历和原生开发工具账本；模型/设置页才读取模型目录。
 3. Agent 约 20 项高频状态位于独立 `AgentWorkspacePresentationState`，扫描进度不会触发无关页面与菜单栏的 `AppStore.objectWillChange`。冷启动只读取不含路径和动作能力的 `AgentWorkspaceSummary`。
 4. 菜单栏、指标、模型运行时和 Agent 监测都使用单一可取消 Task 槽；重新开始前取消旧任务。Agent 监测还要求 App 处于前台且 Agent 页仍为当前页面。
@@ -49,7 +49,7 @@ macOS ServiceManagement
 
 ## 任务优先信息架构（0.7.1）
 
-1. 总览任务队列只由已有确定性状态派生：磁盘/内存状态、清理扫描、活动失败、实测文件访问和 Mole 连接。任务按钮只导航、打开详情或运行已有只读扫描，不会因排序而新增自动执行。
+1. 总览任务队列只由已有确定性状态派生：磁盘/内存状态、清理扫描、活动失败和实测文件访问。任务按钮只导航、打开详情或运行已有只读扫描，不会因排序而新增自动执行。
 2. `CleanNestSettingsSection` 把设置分为七个页级状态。`AppLifecyclePolicy` 只为当前分栏启动必要工作：扫描与隐私运行文件访问实测，本机 AI 运行模型目录、运行时发现和回环健康探测；其他分栏不启动这些工作。
 3. 活动明细保存在 `activity.json`，独立累计成果保存在 `activity-lifetime-totals.json`。新的完成/部分完成记录同时追加累计；清空明细只删除前者，累计归零有单独确认入口。首次升级时如果累计文件不存在，仅从现有活动明细重建一次。
 4. 可点击卡使用按钮角色、可执行动作和完整语义标签；状态与统计元素合并子元素并以“只读”开头。总览最近结果通过稳定活动 ID 进入对应详情，不依赖列表位置或文本匹配。
@@ -131,8 +131,8 @@ macOS ServiceManagement
 
 CleanNest 有两条相互独立的状态链路：
 
-1. `NativeSystemMonitor` 按用户选定的 1/2/5/10 秒频率，从 Mach、`getifaddrs`、启动卷容量、IOBlockStorageDriver、IOAccelerator、IOPowerSources 和只读 AppleSMC 获取短期样本，驱动顶部菜单栏与系统状态页的实时仪表。高频样本通过独立 `CurrentValueSubject` 发送，只有总览、系统状态、菜单设置与菜单弹窗订阅；它不再触发整个 `AppStore`，因此磁盘/Agent 等长列表不会每 2 秒重排。这条链路不需要 Mole，只在内存中保留最近 90 个样本，退出 App 即停止。
-2. Mole 状态与原生内存探测合并为单次 `SystemSnapshot`。App 运行时每 60 秒写入 `metrics.sqlite3`，默认保留 30 天，用于长期趋势。
+1. `NativeSystemMonitor` 按用户选定的 1/2/5/10 秒频率，从 Mach、`getifaddrs`、启动卷容量、IOBlockStorageDriver、IOAccelerator、IOPowerSources 和只读 AppleSMC 获取短期样本，驱动顶部菜单栏与系统状态页的实时仪表。高频样本通过独立 `CurrentValueSubject` 发送，只有总览、系统状态、菜单设置与菜单弹窗订阅；它不再触发整个 `AppStore`，因此磁盘/Agent 等长列表不会每 2 秒重排。这条链路只在内存中保留最近 90 个样本，退出 App 即停止。
+2. `NativeSystemSnapshotBuilder` 将原生监测样本、原生内存与电源探测和真实进程计数合并为单次 `SystemSnapshot`；没有可靠证据的健康评分、缓存、交换空间或传感器字段保持为空。App 运行时每 60 秒写入 `metrics.sqlite3`，默认保留 30 天，用于长期趋势，不调用任何外部清理引擎。
 
 `NativeAlertThresholds` 是菜单栏、弹出面板和系统状态页的唯一异常判断来源。温度、磁盘剩余、低电量和风扇相对负载使用可调保守阈值；内存使用 macOS 压力等级；CPU/GPU/网络利用率始终只表示工作量。`SystemAlertTimeline` 最多原子保存 200 条异常、峰值与恢复到权限受限的本机 Application Support，采样空档超过 5 分钟会结束上一段，避免把睡眠或退出时间算入持续异常。
 

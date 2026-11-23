@@ -13,7 +13,7 @@ struct LocalModelsView: View {
             VStack(alignment: .leading, spacing: 24) {
                 PageHeader(
                     title: "本地模型",
-                    subtitle: "看清模型、监听地址与自动拉起来源；外部服务可连同精确 launchd 守护一起安全停用。"
+                    subtitle: "查看正在运行的模型，管理服务启停。"
                 ) {
                     HStack(spacing: 9) {
                         Toggle("菜单栏状态", isOn: Binding(
@@ -37,10 +37,6 @@ struct LocalModelsView: View {
                 }
 
                 runtimeSignalDeck
-
-                if !store.localModelRuntimeSnapshot.instances.isEmpty {
-                    runtimeTopologyCard
-                }
 
                 if phase == .runningUnverified {
                     InlineBanner(
@@ -68,15 +64,37 @@ struct LocalModelsView: View {
                     runtimeList
                 }
 
-                runtimeTransitionCard
-                modelDiagnosticsCard
-                platformCoverage
+                if !store.localModelRuntimeSnapshot.instances.isEmpty {
+                    CNDetailSection(
+                        title: "连接与运行关系",
+                        summary: "进程、地址、客户端和守护来源",
+                        symbol: "point.3.connected.trianglepath.dotted"
+                    ) {
+                        runtimeTopologyCard
+                    }
+                }
 
-                InlineBanner(
-                    title: "发现过程保持只读",
-                    detail: "只检查本机进程、监听端口、平台健康 API 与 launchd 配置元数据；不扫描局域网、不发送提示词、不保存内网地址，也不读取环境变量。",
-                    kind: .info
-                )
+                CNDetailSection(
+                    title: "测试与记录",
+                    summary: localModelDetailSummary,
+                    symbol: "waveform.path.ecg.rectangle"
+                ) {
+                    runtimeTransitionCard
+                    modelDiagnosticsCard
+                }
+
+                CNDetailSection(
+                    title: "支持的平台与隐私范围",
+                    summary: "只读发现；不扫描局域网或读取环境变量",
+                    symbol: "checkmark.shield"
+                ) {
+                    platformCoverage
+                    InlineBanner(
+                        title: "发现过程保持只读",
+                        detail: "只检查本机进程、监听端口、平台健康 API 与 launchd 配置元数据；不扫描局域网、不发送提示词、不保存内网地址，也不读取环境变量。",
+                        kind: .info
+                    )
+                }
             }
             .frame(maxWidth: CNTheme.contentMaxWidth, alignment: .leading)
             .padding(CNTheme.pagePadding)
@@ -113,9 +131,17 @@ struct LocalModelsView: View {
 
             Divider().opacity(0.65)
 
-            evidenceRail
-                .padding(.horizontal, 24)
-                .padding(.vertical, 17)
+            CNDetailSection(
+                title: "为什么这样判断",
+                summary: evidenceSummary,
+                symbol: "checkmark.seal",
+                initiallyExpanded: false
+            ) {
+                evidenceRail
+                    .padding(.top, 8)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 13)
         }
         .background {
             ZStack {
@@ -165,7 +191,7 @@ struct LocalModelsView: View {
     private var signalSummary: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
-                Text(store.localModelRuntimeStatusTitle)
+                Text(CNL10n.string(store.localModelRuntimeStatusTitle))
                     .font(.system(size: 19, weight: .semibold, design: .rounded))
                 if let runtime = store.primaryLocalModelRuntime {
                     StatusPill(
@@ -175,17 +201,35 @@ struct LocalModelsView: View {
                     )
                 }
             }
-            Text(store.primaryLocalModelRuntime?.primaryModelID ?? "没有确认到正在运行的模型")
+            Text(store.primaryLocalModelRuntime?.primaryModelID ?? CNL10n.string("没有确认到正在运行的模型"))
                 .font(.system(size: 27, weight: .semibold, design: .rounded))
                 .tracking(-0.45)
                 .lineLimit(2)
                 .textSelection(.enabled)
-            Text(store.localModelRuntimeDiagnostic)
+            Text(CNL10n.string(store.localModelRuntimeDiagnostic))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: 660, alignment: .leading)
+    }
+
+    private var evidenceSummary: String {
+        let evidence = Set(store.primaryLocalModelRuntime?.evidence ?? [])
+        let confirmed = [
+            evidence.contains(.process),
+            evidence.contains(.supervisor),
+            evidence.contains(.listener),
+            evidence.contains(.platformAPI)
+        ].filter { $0 }.count
+        return CNL10n.format("已确认 %@/4 项", String(describing: confirmed))
+    }
+
+    private var localModelDetailSummary: String {
+        if store.localModelRuntimeTransitions.isEmpty {
+            return CNL10n.string("可测速；本次没有启停记录")
+        }
+        return CNL10n.format("%@ 条本次运行记录", String(describing: store.localModelRuntimeTransitions.count))
     }
 
     @ViewBuilder
@@ -403,10 +447,10 @@ struct LocalModelsView: View {
                 .foregroundStyle(confirmed ? CNTheme.success : Color.secondary)
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
+                Text(CNL10n.string(title))
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text(value)
+                Text(CNL10n.string(value))
                     .font(.caption.weight(.medium))
                     .lineLimit(allowsWrapping ? 2 : 1)
                     .truncationMode(.middle)
@@ -429,7 +473,7 @@ struct LocalModelsView: View {
         VStack(alignment: .leading, spacing: 14) {
             ContentSectionHeader(
                 "运行实例",
-                detail: "模型短名来自平台 API；完整命令行与环境变量不会显示。",
+                detail: "先处理一个服务；地址和控制边界在详情中。",
                 symbol: "server.rack",
                 tint: CNTheme.cyan
             )
@@ -440,7 +484,7 @@ struct LocalModelsView: View {
     }
 
     private func runtimeRow(_ runtime: LocalModelRuntimeInstance) -> some View {
-        VStack(alignment: .leading, spacing: 15) {
+        VStack(alignment: .leading, spacing: 13) {
             HStack(alignment: .top, spacing: 13) {
                 CNIconTile(symbol: "rectangle.stack.badge.play", tint: runtime.phase.tint, size: 40)
                 VStack(alignment: .leading, spacing: 4) {
@@ -467,10 +511,10 @@ struct LocalModelsView: View {
                             style: controlLevelStyle(runtime.controlLevel)
                         )
                     }
-                    Text(runtime.primaryModelID ?? "模型短 ID 尚未确认")
+                    Text(runtime.primaryModelID ?? CNL10n.string("模型短 ID 尚未确认"))
                         .font(.system(size: 18, weight: .semibold, design: .rounded))
                         .textSelection(.enabled)
-                    Text(runtime.diagnostic)
+                    Text(CNL10n.string(runtime.diagnostic))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -513,9 +557,24 @@ struct LocalModelsView: View {
                 }
             }
 
-            Divider()
+            runtimeImmediateRisks(runtime)
 
-            LazyVGrid(
+            CNDetailSection(
+                title: "服务详情",
+                summary: runtimeDetailSummary(runtime),
+                symbol: "info.circle",
+                initiallyExpanded: false
+            ) {
+                runtimeTechnicalDetail(runtime)
+            }
+        }
+        .cnCard(tint: runtime.phase.tint)
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func runtimeTechnicalDetail(_ runtime: LocalModelRuntimeInstance) -> some View {
+        LazyVGrid(
                 columns: [GridItem(.adaptive(minimum: 210), spacing: 12)],
                 alignment: .leading,
                 spacing: 12
@@ -577,25 +636,19 @@ struct LocalModelsView: View {
                 }
             }
 
-            if let supervisor = runtime.supervisor {
-                InlineBanner(
-                    title: supervisor.isDisabled ? "守护服务已停用" : "检测到自动重启来源",
-                    detail: supervisor.isDisabled
-                        ? CNL10n.format(
-                            "%@ 当前被 launchd 禁用；配置文件仍保留，可从这里重新启用。",
-                            supervisor.label
-                        )
-                        : CNL10n.format(
-                            "%@ · %@。只结束 PID 可能马上出现新进程。",
-                            supervisor.label,
-                            CNL10n.string(supervisor.restartDescription)
-                        ),
-                    kind: supervisor.isDisabled ? .info : .warning
-                )
-            }
+        if let supervisor = runtime.supervisor, supervisor.isDisabled {
+            InlineBanner(
+                title: "守护服务已停用",
+                detail: CNL10n.format(
+                    "%@ 当前被 launchd 禁用；配置文件仍保留，可从这里重新启用。",
+                    supervisor.label
+                ),
+                kind: .info
+            )
+        }
 
-            if runtime.modelIDs.count > 1 {
-                VStack(alignment: .leading, spacing: 6) {
+        if runtime.modelIDs.count > 1 {
+            VStack(alignment: .leading, spacing: 6) {
                     Text("服务列出的模型短 ID")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
@@ -604,35 +657,55 @@ struct LocalModelsView: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
-                }
             }
+        }
 
-            ForEach(runtime.issues) { issue in
-                InlineBanner(
+        ForEach(runtime.issues.filter { !$0.isWarning }) { issue in
+            InlineBanner(
                     title: issue.title,
                     detail: issue.detail,
                     kind: issue.isWarning ? .warning : .info
-                )
-            }
-
-            if runtime.exposure == .localNetwork {
-                InlineBanner(
-                    title: "该服务可能被局域网访问",
-                    detail: runtime.localNetworkAddresses.isEmpty
-                        ? "监听地址不是回环地址；CleanNest 不会擅自修改防火墙。"
-                        : "本机地址：\(runtime.localNetworkAddresses.joined(separator: "、"))。CleanNest 不会保存这些地址或修改防火墙。",
-                    kind: .warning
-                )
-            }
-
-            if runtime.platform == .omlx {
-                Text("DFlash2：当前 oMLX 健康接口没有返回可验证的启用状态，因此这里只展示模型短 ID，不猜测加速配置。")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
+            )
         }
-        .cnCard(tint: runtime.phase.tint)
-        .accessibilityElement(children: .contain)
+
+        if runtime.platform == .omlx {
+            Text("DFlash2：当前 oMLX 健康接口没有返回可验证的启用状态，因此这里只展示模型短 ID，不猜测加速配置。")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    @ViewBuilder
+    private func runtimeImmediateRisks(_ runtime: LocalModelRuntimeInstance) -> some View {
+        if runtime.exposure == .localNetwork {
+            InlineBanner(
+                title: "这个模型服务可能被局域网访问",
+                detail: "它没有只监听本机回环地址。CleanNest 不会自动改防火墙；详情可查看确认到的地址。",
+                kind: .warning
+            )
+        }
+
+        if let supervisor = runtime.supervisor, !supervisor.isDisabled {
+            InlineBanner(
+                title: "停止后可能会自动重启",
+                detail: CNL10n.format(
+                    "%@ 正由 launchd 管理。仅结束进程可能立刻重新出现；要停用会先要求确认守护来源。",
+                    supervisor.label
+                ),
+                kind: .warning
+            )
+        }
+
+        ForEach(runtime.issues.filter(\.isWarning)) { issue in
+            InlineBanner(title: issue.title, detail: issue.detail, kind: .warning)
+        }
+    }
+
+    private func runtimeDetailSummary(_ runtime: LocalModelRuntimeInstance) -> String {
+        var parts = [CNL10n.string(runtime.exposure.displayName), CNL10n.string(runtime.controlLevel.title)]
+        if runtime.supervisor != nil { parts.append(CNL10n.string("含守护信息")) }
+        if !runtime.issues.isEmpty { parts.append(CNL10n.format("%@ 项提示", String(describing: runtime.issues.count))) }
+        return parts.joined(separator: " · ")
     }
 
     private var runtimeTopologyCard: some View {
@@ -670,7 +743,7 @@ struct LocalModelsView: View {
                                     topologyArrow
                                     topologyNode(
                                         "客户端",
-                                        service.clients.isEmpty ? "未观察到" : "\(service.clients.count) 个实连",
+                                        service.clients.isEmpty ? "未观察到" : CNL10n.format("%@ 个实连", String(describing: service.clients.count)),
                                         symbol: "link"
                                     )
                                     topologyArrow
@@ -687,7 +760,7 @@ struct LocalModelsView: View {
                                     topologyCompactRow("模型", service.modelIDs.first ?? "短 ID 未确认", "brain.head.profile")
                                     topologyCompactRow(
                                         "客户端",
-                                        service.clients.isEmpty ? "未观察到" : "\(service.clients.count) 个实连",
+                                        service.clients.isEmpty ? "未观察到" : CNL10n.format("%@ 个实连", String(describing: service.clients.count)),
                                         "link"
                                     )
                                     topologyCompactRow("守护", service.supervisorLabel ?? "未发现", "arrow.triangle.2.circlepath")
@@ -708,10 +781,10 @@ struct LocalModelsView: View {
 
     private func topologyNode(_ title: String, _ value: String, symbol: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Label(title, systemImage: symbol)
+            Label(CNL10n.string(title), systemImage: symbol)
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
-            Text(value)
+            Text(CNL10n.string(value))
                 .font(.caption.weight(.medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -729,11 +802,11 @@ struct LocalModelsView: View {
 
     private func topologyCompactRow(_ title: String, _ value: String, _ symbol: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Label(title, systemImage: symbol)
+            Label(CNL10n.string(title), systemImage: symbol)
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 76, alignment: .leading)
-            Text(value)
+            Text(CNL10n.string(value))
                 .font(.caption.weight(.medium))
                 .textSelection(.enabled)
         }
@@ -769,7 +842,7 @@ struct LocalModelsView: View {
                     }
                 }
                 if let checkedAt = store.localModelLastWakeCheckAt {
-                    Label("最近一次唤醒复核：\(checkedAt.formatted(date: .abbreviated, time: .standard))", systemImage: "sun.max.fill")
+                    Label(CNL10n.format("最近一次唤醒复核：%@", checkedAt.formatted(date: .abbreviated, time: .standard)), systemImage: "sun.max.fill")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -934,7 +1007,7 @@ struct LocalModelsView: View {
                     )
                 case .completed:
                     if let result = store.localAIBenchmarkResult {
-                        Text("本次实测对象：\(result.modelID)。这不是长文本吞吐或峰值内存承诺。")
+                        Text(CNL10n.format("本次实测对象：%@。这不是长文本吞吐或峰值内存承诺。", result.modelID))
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                             .textSelection(.enabled)
@@ -960,7 +1033,7 @@ struct LocalModelsView: View {
     private var platformCoverage: some View {
         SurfaceCard(title: "平台覆盖", symbol: "square.stack.3d.up", tint: CNTheme.violet) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("五类本地运行时共享同一套证据门；除进程与 API 外，还会识别 launchd 守护、自动重启和登录启动状态。")
+                Text("多类本地运行时共享同一套证据门；除进程与 API 外，还会识别 launchd 守护、自动重启和登录启动状态。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -998,13 +1071,13 @@ struct LocalModelsView: View {
 
     private func benchmarkFact(_ title: String, value: String, detail: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title)
+            Text(CNL10n.string(title))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text(value)
+            Text(CNL10n.string(value))
                 .font(.system(size: 18, weight: .semibold, design: .rounded))
                 .monospacedMetric()
-            Text(detail)
+            Text(CNL10n.string(detail))
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
@@ -1024,7 +1097,7 @@ struct LocalModelsView: View {
         if let rate = result.tokensPerSecond {
             return String(format: "%.1f token/s · %d token", rate, result.outputTokens ?? 0)
         }
-        return "\(result.outputCharacters) 个输出字符"
+        return CNL10n.format("%@ 个输出字符", String(describing: result.outputCharacters))
     }
 
     private var configuredLocalAIModel: LocalModelDescriptor? {
@@ -1046,7 +1119,7 @@ struct LocalModelsView: View {
         } else {
             verdict = "权重已接近本机物理内存，实际载入和长上下文可能出现明显压力"
         }
-        return "模型权重约 \(CleanNestFormatting.bytes(model.weightBytes))，本机物理内存 \(CleanNestFormatting.bytes(physical))：\(verdict)。这不是峰值内存承诺。"
+        return CNL10n.format("模型权重约 %@，本机物理内存 %@：%@。这不是峰值内存承诺。", String(describing: CleanNestFormatting.bytes(model.weightBytes)), String(describing: CleanNestFormatting.bytes(physical)), String(describing: verdict))
     }
 
     private func fact(_ title: String, value: String, symbol: String) -> some View {
@@ -1056,10 +1129,10 @@ struct LocalModelsView: View {
                 .foregroundStyle(CNTheme.cyan)
                 .frame(width: 19, height: 19)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
+                Text(CNL10n.string(title))
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text(value)
+                Text(CNL10n.string(value))
                     .font(.caption)
                     .lineLimit(2)
                     .truncationMode(.middle)
@@ -1072,10 +1145,10 @@ struct LocalModelsView: View {
     private func memoryDescription(_ runtime: LocalModelRuntimeInstance) -> String {
         var parts: [String] = []
         if let resident = runtime.process?.residentMemoryBytes {
-            parts.append("进程 RSS \(CleanNestFormatting.bytes(resident))")
+            parts.append(CNL10n.format("进程 RSS %@", String(describing: CleanNestFormatting.bytes(resident))))
         }
         if let engine = runtime.engineMemoryBytes {
-            parts.append("引擎报告 \(CleanNestFormatting.bytes(engine))")
+            parts.append(CNL10n.format("引擎报告 %@", String(describing: CleanNestFormatting.bytes(engine))))
         }
         return parts.nilIfEmpty ?? "平台未提供"
     }
@@ -1114,7 +1187,7 @@ private extension LocalModelRuntimePhase {
         }
     }
 
-    var accessibilityLabel: String { "本地模型状态：\(shortLabel)" }
+    var accessibilityLabel: String { CNL10n.format("本地模型状态：%@", String(describing: shortLabel)) }
 
     var pillStyle: StatusPill.Style {
         switch self {

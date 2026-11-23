@@ -29,15 +29,20 @@ public struct AgentWorkspaceRecoveryItem: Codable, Equatable, Sendable {
     public let candidate: AgentWorkspaceActionCandidate
     public let archiveRelativePath: String
     public let pendingFileName: String
+    /// 恢复进度标记：上一次恢复尝试已把该文件放回原位置的时间。
+    /// 崩溃后重试据此跳过已完成项；旧清单缺省解码为 nil（未恢复）。
+    public var restoredAt: Date?
 
     public init(
         candidate: AgentWorkspaceActionCandidate,
         archiveRelativePath: String,
-        pendingFileName: String
+        pendingFileName: String,
+        restoredAt: Date? = nil
     ) {
         self.candidate = candidate
         self.archiveRelativePath = archiveRelativePath
         self.pendingFileName = pendingFileName
+        self.restoredAt = restoredAt
     }
 }
 
@@ -47,7 +52,7 @@ public struct AgentWorkspaceRecoveryRecord: Identifiable, Codable, Equatable, Se
     public var completedAt: Date?
     public var restoredAt: Date?
     public var status: AgentWorkspaceRecoveryStatus
-    public let items: [AgentWorkspaceRecoveryItem]
+    public var items: [AgentWorkspaceRecoveryItem]
     public let originalAllocatedBytes: Int64
     public let originalLogicalBytes: Int64
     public var archiveAllocatedBytes: Int64
@@ -142,11 +147,11 @@ public enum AgentWorkspaceRecoveryError: LocalizedError, Equatable {
         case .emptySelection: return "还没有选择可处理的 Agent 文件。"
         case .selectionTooLarge(let count): return "一次最多处理 2,000 个文件；当前选择了 \(count) 个。"
         case .dataTooLarge(let bytes): return "单次安全备份上限为 50 GB；当前逻辑体积为 \(CleanNestFormatting.bytes(bytes))。"
-        case .unsupportedCategory: return "只处理 Codex/Claude 的可再生缓存、临时文件和日志。其他 Agent、会话、索引、记忆与凭据继续只读。"
+        case .unsupportedCategory: return "只处理 Codex/Claude 的缓存、临时文件、日志、安装包残留、陈旧备份、已归档会话、超时未用的虚拟机与超过保留期的会话。生成内容、记忆、索引、凭据与运行时继续只读。"
         case .outsideAllowedRoot: return "候选路径已经离开已验证的 Codex/Claude 默认目录。"
         case .symbolicLinkBoundary: return "候选路径包含符号链接边界，操作已停止。"
         case .fileChanged: return "文件在扫描后发生了变化；没有处理任何未确认目标。"
-        case .fileRecentlyModified: return "文件在近 15 分钟内仍有写入；本次操作已停止。"
+        case .fileRecentlyModified: return "文件未达到所属类别的静置门槛（缓存与安装残留 15 分钟，备份、已归档会话与虚拟机 30 天，活跃会话 60 天）；本次操作已停止。"
         case .fileOpen: return "至少一个候选文件正被进程打开；本次操作已停止。"
         case .activityProbeUnavailable: return "无法确认当前打开文件，安全处置已失败关闭。"
         case .ownerMismatch: return "候选文件不属于当前用户，CleanNest 不会处理。"
@@ -178,7 +183,13 @@ public enum AgentWorkspaceBackupCapacityPolicy {
     }
 }
 
-/// GUI-only, backup-first mutation boundary for Agent cache/log/temp files.
+/// GUI-only, backup-first mutation boundary for Agent workspace files.
+///
+/// Eligible kinds and per-kind age gates come from
+/// `AgentWorkspaceMutationPolicy` (caches/logs/temp/installer leftovers settle
+/// in minutes; backups, archived sessions and stale VM bundles in 30 days;
+/// active sessions in 60 days). Generated media, memory, state, credentials
+/// and runtimes stay read-only.
 ///
 /// The read-only MCP and scanner targets do not link this module. Every
 /// operation creates and verifies a local ZIP before originals leave their
@@ -187,6 +198,8 @@ public struct AgentWorkspaceRecoveryService: Sendable {
     public let homeDirectory: URL
     public let recoveryRoot: URL
     public let recentInterval: TimeInterval
+    public let oldInterval: TimeInterval
+    public let sessionCandidateInterval: TimeInterval
     public let maximumCandidates: Int
     public let maximumLogicalBytes: Int64
 
@@ -194,12 +207,16 @@ public struct AgentWorkspaceRecoveryService: Sendable {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         recoveryRoot: URL = CleanNestDataPaths.agentWorkspaceRecoveryDirectory(),
         recentInterval: TimeInterval = 15 * 60,
+        oldInterval: TimeInterval = 30 * 86_400,
+        sessionCandidateInterval: TimeInterval = 60 * 86_400,
         maximumCandidates: Int = 2_000,
         maximumLogicalBytes: Int64 = 50 * 1_024 * 1_024 * 1_024
     ) {
         self.homeDirectory = homeDirectory.standardizedFileURL
         self.recoveryRoot = recoveryRoot.standardizedFileURL
         self.recentInterval = max(60, recentInterval)
+        self.oldInterval = max(self.recentInterval, oldInterval)
+        self.sessionCandidateInterval = max(self.recentInterval, sessionCandidateInterval)
         self.maximumCandidates = max(1, maximumCandidates)
         self.maximumLogicalBytes = max(1_024 * 1_024, maximumLogicalBytes)
     }
@@ -281,7 +298,12 @@ public struct AgentWorkspaceRecoveryService: Sendable {
         var identities = Set<String>()
         for candidate in sorted {
             guard candidate.provider.supportsBackupFirstRecovery,
-                  [.caches, .temporaryFiles, .logs].contains(candidate.kind) else {
+                  AgentWorkspaceMutationPolicy.minimumSettleInterval(
+                      for: candidate.kind,
+                      recentInterval: recentInterval,
+                      oldInterval: oldInterval,
+                      sessionCandidateInterval: sessionCandidateInterval
+                  ) != nil else {
                 throw AgentWorkspaceRecoveryError.unsupportedCategory
             }
             let key = "\(candidate.identity.deviceID):\(candidate.identity.fileID)"
@@ -520,11 +542,24 @@ public struct AgentWorkspaceRecoveryService: Sendable {
 
         let pending = operationDirectory.appendingPathComponent("pending-originals", isDirectory: true)
         var needsArchiveExtraction = false
-        for item in record.items {
+        var needsContentCheck: [Int] = []
+        for (index, item) in record.items.enumerated() where item.restoredAt == nil {
             let original = URL(fileURLWithPath: item.candidate.path)
             if fileManager.fileExists(atPath: original.path) {
-                guard try AgentWorkspaceFileIdentity.capture(at: original) == item.candidate.identity else {
-                    throw AgentWorkspaceRecoveryError.restoreConflict(Self.abbreviatedPath(original.path, home: homeDirectory.path))
+                if try AgentWorkspaceFileIdentity.capture(at: original) == item.candidate.identity {
+                    // 文件带着原始身份在原位置：当初没有移动成功或已完整回滚。
+                    record.items[index].restoredAt = now
+                    continue
+                }
+                // 原位置存在身份不符的文件：可能是 Agent 重建的新文件（真冲突），
+                // 也可能是上一次恢复已经解压回去的自身产物（新 inode，必然不等）。
+                // 延迟到解压完成后与权威副本做内容比对再区分，不能直接判冲突，
+                // 否则恢复中途崩溃后的重试会被自己的产物永久阻塞。
+                needsContentCheck.append(index)
+                if !fileManager.fileExists(
+                    atPath: pending.appendingPathComponent(item.pendingFileName, isDirectory: false).path
+                ) {
+                    needsArchiveExtraction = true
                 }
                 continue
             }
@@ -557,14 +592,41 @@ public struct AgentWorkspaceRecoveryService: Sendable {
             }
         }
 
+        if !needsContentCheck.isEmpty {
+            do {
+                for index in needsContentCheck {
+                    let item = record.items[index]
+                    let original = URL(fileURLWithPath: item.candidate.path)
+                    let pendingURL = pending.appendingPathComponent(item.pendingFileName, isDirectory: false)
+                    let authoritative = fileManager.fileExists(atPath: pendingURL.path)
+                        ? pendingURL
+                        : restoreStaging.appendingPathComponent(item.archiveRelativePath, isDirectory: false)
+                    let existingIdentity = try AgentWorkspaceFileIdentity.capture(at: original)
+                    guard existingIdentity.logicalBytes == item.candidate.identity.logicalBytes,
+                          try Self.sha256(of: original) == Self.sha256(of: authoritative) else {
+                        throw AgentWorkspaceRecoveryError.restoreConflict(
+                            Self.abbreviatedPath(original.path, home: homeDirectory.path)
+                        )
+                    }
+                    // 内容与权威副本一致：这是上一次恢复的自身产物，视为已完成。
+                    record.items[index].restoredAt = now
+                }
+            } catch {
+                try? fileManager.removeItem(at: restoreStaging)
+                throw error
+            }
+            try? Self.writeRecord(record, operationDirectory: operationDirectory)
+        }
+
         struct RestoredMove {
+            let itemIndex: Int
             let original: URL
             let source: URL
             let expectedOriginalIdentity: AgentWorkspaceFileIdentity?
         }
         var restoredMoves: [RestoredMove] = []
         do {
-            for item in record.items {
+            for (index, item) in record.items.enumerated() where item.restoredAt == nil {
                 let original = URL(fileURLWithPath: item.candidate.path)
                 if fileManager.fileExists(atPath: original.path) { continue }
                 try createRestoreParent(for: original, provider: item.candidate.provider)
@@ -590,7 +652,12 @@ public struct AgentWorkspaceRecoveryService: Sendable {
                 if !preservesIdentity, restoredIdentity.logicalBytes != item.candidate.identity.logicalBytes {
                     throw AgentWorkspaceRecoveryError.backupVerificationFailed
                 }
+                // 每完成一项就持久化进度：恢复中途崩溃后重试可以续跑，
+                // 而不是被已恢复项的新文件身份挡成永久冲突。
+                record.items[index].restoredAt = now
+                try? Self.writeRecord(record, operationDirectory: operationDirectory)
                 restoredMoves.append(RestoredMove(
+                    itemIndex: index,
                     original: original,
                     source: source,
                     expectedOriginalIdentity: preservesIdentity ? item.candidate.identity : nil
@@ -605,10 +672,13 @@ public struct AgentWorkspaceRecoveryService: Sendable {
                         continue
                     }
                     try Self.exclusiveRename(source: move.original, destination: move.source)
+                    // 已回滚的项不再是"已恢复"，重试时重新处理。
+                    record.items[move.itemIndex].restoredAt = nil
                 } catch {
                     rollbackComplete = false
                 }
             }
+            try? Self.writeRecord(record, operationDirectory: operationDirectory)
             try? fileManager.removeItem(at: restoreStaging)
             if !rollbackComplete {
                 record.status = .interrupted
@@ -636,7 +706,12 @@ public struct AgentWorkspaceRecoveryService: Sendable {
         openPaths: Set<String>,
         now: Date
     ) throws {
-        guard [.caches, .temporaryFiles, .logs].contains(candidate.kind) else {
+        guard let minimumAge = AgentWorkspaceMutationPolicy.minimumSettleInterval(
+            for: candidate.kind,
+            recentInterval: recentInterval,
+            oldInterval: oldInterval,
+            sessionCandidateInterval: sessionCandidateInterval
+        ) else {
             throw AgentWorkspaceRecoveryError.unsupportedCategory
         }
         let source = URL(fileURLWithPath: candidate.path).standardizedFileURL
@@ -644,7 +719,7 @@ public struct AgentWorkspaceRecoveryService: Sendable {
         let identity = try AgentWorkspaceFileIdentity.capture(at: source)
         guard identity == candidate.identity else { throw AgentWorkspaceRecoveryError.fileChanged }
         guard identity.ownerUserID == geteuid() else { throw AgentWorkspaceRecoveryError.ownerMismatch }
-        guard now.timeIntervalSince(identity.modificationDate) > recentInterval else {
+        guard now.timeIntervalSince(identity.modificationDate) > minimumAge else {
             throw AgentWorkspaceRecoveryError.fileRecentlyModified
         }
         guard !openPaths.contains(source.path) else { throw AgentWorkspaceRecoveryError.fileOpen }
@@ -797,9 +872,17 @@ public struct AgentWorkspaceRecoveryService: Sendable {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = errorPipe
         try process.run()
+        // 子进程写满 stderr 管道缓冲后会阻塞在 write；父进程若先 waitUntilExit
+        // 再读管道，双方互等死锁。必须在等待期间并发排空。
+        let drainQueue = DispatchQueue(label: "com.zone.cleannest.recovery.stderr-drain")
+        var errorData = Data()
+        drainQueue.async {
+            errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        }
         process.waitUntilExit()
+        drainQueue.sync {}
         let detail = String(
-            data: errorPipe.fileHandleForReading.readDataToEndOfFile().prefix(16_384),
+            data: errorData.prefix(16_384),
             encoding: .utf8
         )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard process.terminationReason == .exit, process.terminationStatus == 0 else {

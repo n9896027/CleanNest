@@ -131,7 +131,7 @@ final class LocalModelMenuBarController: NSObject, NSPopoverDelegate {
         switch phase {
         case .runningHealthy:
             let runtime = snapshot.primaryInstance
-            return "\(runtime?.platform.displayName ?? "模型服务") 正在运行，\(runtime?.primaryModelID ?? "短 ID 已确认")"
+            return CNL10n.format("%@ 正在运行，%@", String(describing: runtime?.platform.displayName ?? "模型服务"), String(describing: runtime?.primaryModelID ?? "短 ID 已确认"))
         case .runningUnverified: return "发现进程或端口，模型身份尚未确认"
         case .failed: return "发现失败，可打开详情重试"
         case .discovering: return "正在检查进程、端口与模型 API"

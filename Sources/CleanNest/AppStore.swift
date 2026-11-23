@@ -15,7 +15,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     case maintenance = "系统维护"
     case agentWorkspace = "Agent 工作区"
     case models = "本地模型"
-    case evolution = "本机学习"
+    case evolution = "清理习惯"
     case activity = "活动记录"
     case settings = "设置"
 
@@ -39,8 +39,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     }
 
     static let spaceItems: [SidebarItem] = [.cleanup, .applications, .analyze]
-    static let systemItems: [SidebarItem] = [.status, .maintenance]
-    static let intelligenceItems: [SidebarItem] = [.agentWorkspace, .models, .evolution]
+    static let workshopItems: [SidebarItem] = [.status, .maintenance, .agentWorkspace, .models, .evolution]
 
     var lifecycleSurface: CleanNestSurface {
         switch self {
@@ -171,9 +170,10 @@ final class AppStore: ObservableObject {
 
     @Published var selection: SidebarItem? = .overview
     @Published var phase: OperationPhase = .idle
-    @Published var engine: EngineInstallation?
-    @Published var engineDiagnostic = "尚未检查"
-    @Published private(set) var engineLastCheckedAt: Date?
+
+    var builtInEngineDisplayName: String { "CleanNest Native" }
+    var builtInEngineStatusText: String { "内置引擎就绪" }
+    var builtInEngineDetailText: String { "无需额外安装" }
     @Published var systemSnapshot: SystemSnapshot?
     @Published private(set) var memoryAnalysis: MemoryAnalysis?
     @Published private(set) var memoryProcesses: [MemoryProcessSnapshot] = []
@@ -223,6 +223,11 @@ final class AppStore: ObservableObject {
     @Published var cleanupHasScanned = false
     @Published private(set) var cleanupScanCompletedAt: Date?
     @Published private(set) var cleanupScanIsActive = false
+    @Published private(set) var cleanupReviewItems: [CleanupReviewItem] = []
+    @Published private(set) var cleanupReviewRetryingID: String?
+    @Published var cleanupExecutionLedger = CleanupExecutionLedgerSnapshot()
+    @Published var cleanupExecutionLedgerDiagnostic: String?
+    @Published var cleanupRestoringItemID: String?
     @Published private(set) var mountedInstallerVolumes: [MountedInstallerVolume] = []
     @Published private(set) var ejectingMountedInstallerID: String?
     @Published private(set) var mountedInstallerMessage: String?
@@ -270,6 +275,7 @@ final class AppStore: ObservableObject {
     @Published var applicationsHaveScanned = false
 
     @Published var diskReport: DiskReport?
+    let systemDataState = SystemDataPresentationState()
     @Published var diskRoot = AppStore.startupDiskRoot
     @Published var diskHasScanned = false
     @Published private(set) var diskScanProgress: DiskScanProgress?
@@ -279,6 +285,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var diskScanElapsedSeconds: Double?
     @Published private(set) var diskScanCompletedAt: Date?
     @Published private(set) var diskVolumeSnapshot: DiskVolumeSnapshot?
+    @Published var diskAPFSDiagnosticReport: APFSDiagnosticReport?
+    @Published var diskAPFSDiagnosticsAreRefreshing = false
+    var diskAPFSDiagnosticsRequestID = UUID()
     @Published private(set) var diskScanCoverage: DiskScanCoverage?
     @Published private(set) var diskEvidenceProgress: DiskEvidenceProgress?
     @Published private(set) var diskEvidenceReport: DiskEvidenceReport?
@@ -393,7 +402,6 @@ final class AppStore: ObservableObject {
         get { agentWorkspaceState.nativeGitRepository }
         set { agentWorkspaceState.nativeGitRepository = newValue }
     }
-    @Published var customEnginePath = ""
     @Published var lastTechnicalDetail = ""
     @Published var showingTechnicalDetail = false
     @Published var showingUpdateChecker = false
@@ -411,6 +419,8 @@ final class AppStore: ObservableObject {
     private let nativeDeveloperStorageInspector = NativeDeveloperStorageInspector()
     private let processMemoryInspector = ProcessMemoryInspector()
     private let metricsStore = MetricsStore()
+    /// Retention pruning runs a full indexed DELETE; once a day is enough.
+    private var lastMetricsPruneDate: Date?
     private let nativeSystemMonitor = NativeSystemMonitor()
     private let trashService = TrashService(
         applicationRecycler: WorkspaceApplicationRecycler.recycle
@@ -462,7 +472,6 @@ final class AppStore: ObservableObject {
         agentRuleCatalog = ruleState.0
         agentRuleCatalogSource = ruleState.1
         agentRuleCatalogDiagnostic = ruleState.2
-        customEnginePath = settings.string(forKey: "customEnginePath") ?? ""
         if settings.object(forKey: "developerMode") != nil {
             developerMode = settings.bool(forKey: "developerMode")
         }
@@ -517,7 +526,7 @@ final class AppStore: ObservableObject {
                 // A probe can finish just before the process-exit callback. Invalidate
                 // that result so a dead owned service cannot be restored as ready.
                 self.localAIProbeID = UUID()
-                let detail = "CleanNest 启动的模型进程已退出（状态 \(status)）"
+                let detail = CNL10n.format("CleanNest 启动的模型进程已退出（状态 %@）", String(describing: status))
                 self.localAIServiceState = .unavailable(detail)
                 self.localAIDiagnostic = detail
             }
@@ -538,6 +547,7 @@ final class AppStore: ObservableObject {
             loadActivityLifetimeTotals()
             loadMaintenanceHistory()
             loadAgentWorkspaceSummary()
+            loadCleanupExecutionLedger()
             refreshDiskCapacity()
         }
         Task { await bootstrap() }
@@ -635,9 +645,9 @@ final class AppStore: ObservableObject {
         if let diskPrivacyBlockMessage { return diskPrivacyBlockMessage }
         guard currentDiskTraversalIsBlocked else { return nil }
         if fullDiskAccessProbeIsRunning {
-            return "正在由 CleanNest 自身做一次轻量访问测试；完成前不会启动 Mole 或原生递归扫描。"
+            return "正在由 CleanNest 自身做一次轻量访问测试；完成前不会启动任何外部引擎或递归扫描。"
         }
-        return "这个位置会遍历受 macOS 保护的应用数据。访问测试未通过前，CleanNest 不会启动 Mole、du 或原生递归扫描。"
+        return "这个位置会遍历受 macOS 保护的应用数据。访问测试未通过前，CleanNest 不会启动任何外部引擎或递归扫描。"
     }
 
     var diskPrivacyNoticeWasBlocked: Bool {
@@ -669,7 +679,7 @@ final class AppStore: ObservableObject {
             return "正在发现本地模型"
         case .runningHealthy:
             let count = localModelRuntimeSnapshot.healthyInstances.count
-            return count == 1 ? "1 个模型服务健康运行" : "\(count) 个模型服务健康运行"
+            return count == 1 ? "1 个模型服务健康运行" : CNL10n.format("%@ 个模型服务健康运行", String(describing: count))
         case .runningUnverified:
             return "发现运行迹象，等待确认"
         case .failed:
@@ -711,11 +721,6 @@ final class AppStore: ObservableObject {
             ?? localModelCatalog.descriptor(at: URL(fileURLWithPath: standardized, isDirectory: true))
     }
 
-    var engineCanUpdateWithHomebrew: Bool {
-        guard let path = engine?.executable.path else { return false }
-        return path.hasPrefix("/opt/homebrew/") || path.hasPrefix("/usr/local/")
-    }
-
     func bootstrap() async {
         if demoMode { return }
         let workloads = AppLifecyclePolicy.bootstrapWorkloads(
@@ -728,12 +733,7 @@ final class AppStore: ObservableObject {
         if workloads.contains(.metricsStorage) {
             await prepareMetricsStorage()
         }
-        if workloads.contains(.engineProbe) {
-            await refreshEngine()
-        }
-        if engine != nil {
-            startMetricsSampling()
-        }
+        startMetricsSampling()
         if workloads.contains(.localModelRuntimeDiscovery) {
             startLocalModelRuntimeMonitoring()
         }
@@ -893,7 +893,7 @@ final class AppStore: ObservableObject {
         let scanID = UUID()
         agentWorkspaceScanID = scanID
         agentWorkspacePhase = .scanning
-        agentWorkspaceDiagnostic = "正在按 \(agentRuleCatalog.providers.count) 个有界适配器统计文件元数据和活跃写入…"
+        agentWorkspaceDiagnostic = CNL10n.format("正在按 %@ 个有界适配器统计文件元数据和活跃写入…", String(describing: agentRuleCatalog.providers.count))
         let previous = loadAgentWorkspaceObservation()
         let home = FileManager.default.homeDirectoryForCurrentUser
         let request = AgentWorkspaceScannerRequest(
@@ -923,7 +923,7 @@ final class AppStore: ObservableObject {
             selectedAgentWorkspaceCandidateIDs.removeAll(keepingCapacity: false)
             selectedAgentWorkspaceProvider = nil
             agentWorkspaceDetailScanningProvider = nil
-            agentWorkspaceDiagnostic = "\(result.snapshot.diagnostic) 耗时 \(String(format: "%.1f", response.elapsedSeconds)) 秒。"
+            agentWorkspaceDiagnostic = CNL10n.format("%@ 耗时 %@ 秒。", String(describing: result.snapshot.diagnostic), String(describing: String(format: "%.1f", response.elapsedSeconds)))
             agentWorkspacePhase = .ready
             if result.snapshot.isComplete {
                 saveAgentWorkspaceObservation(result.observation)
@@ -943,7 +943,7 @@ final class AppStore: ObservableObject {
         } catch {
             guard agentWorkspaceScanID == scanID else { return }
             activeAgentWorkspaceScanTask = nil
-            let message = "Agent 工作区扫描没有完成：\(error.localizedDescription)"
+            let message = CNL10n.format("Agent 工作区扫描没有完成：%@", String(describing: error.localizedDescription))
             agentWorkspacePhase = .failed(message)
             agentWorkspaceDiagnostic = message
         }
@@ -955,6 +955,11 @@ final class AppStore: ObservableObject {
     }
 
     func closeAgentWorkspaceDetail() {
+        // 详情扫描在途时直接返回概览会让完成回调的选择器守卫提前 return，
+        // 扫描态永久卡在 scanning。先取消在途扫描，让其走取消分支正常解锁。
+        if agentWorkspaceDetailScanningProvider != nil {
+            activeAgentWorkspaceScanTask?.cancel()
+        }
         agentWorkspaceSnapshot = agentWorkspaceSnapshot?.withoutActionCandidates()
         selectedAgentWorkspaceProvider = nil
         agentWorkspaceDetailScanningProvider = nil
@@ -967,7 +972,7 @@ final class AppStore: ObservableObject {
         agentWorkspaceScanID = scanID
         agentWorkspacePhase = .scanning
         agentWorkspaceDetailScanningProvider = provider
-        agentWorkspaceDiagnostic = "正在重新验证 \(provider.displayName) 的类别、活跃文件和可恢复候选…"
+        agentWorkspaceDiagnostic = CNL10n.format("正在重新验证 %@ 的类别、活跃文件和可恢复候选…", String(describing: provider.displayName))
         let previous = loadAgentWorkspaceObservation()
         let request = AgentWorkspaceScannerRequest(
             requestID: scanID.uuidString,
@@ -990,7 +995,16 @@ final class AppStore: ObservableObject {
             }
             guard response.requestID == scanID.uuidString,
                   agentWorkspaceScanID == scanID,
-                  selectedAgentWorkspaceProvider == provider else { return }
+                  selectedAgentWorkspaceProvider == provider else {
+                // 详情扫描完成时用户已返回概览：结果丢弃，但扫描态必须解锁，
+                // 否则 isScanning 守卫会永久拒绝后续刷新。
+                if agentWorkspaceScanID == scanID {
+                    activeAgentWorkspaceScanTask = nil
+                    agentWorkspaceDetailScanningProvider = nil
+                    agentWorkspacePhase = agentWorkspaceSnapshot == nil ? .idle : .ready
+                }
+                return
+            }
             activeAgentWorkspaceScanTask = nil
             agentWorkspaceDetailScanningProvider = nil
             let detail = response.result.snapshot
@@ -1000,7 +1014,7 @@ final class AppStore: ObservableObject {
                 agentWorkspaceSnapshot = detail
             }
             selectedAgentWorkspaceCandidateIDs.formIntersection(Set(detail.actionCandidates.map(\.id)))
-            agentWorkspaceDiagnostic = "\(detail.diagnostic) 耗时 \(String(format: "%.1f", response.elapsedSeconds)) 秒。"
+            agentWorkspaceDiagnostic = CNL10n.format("%@ 耗时 %@ 秒。", String(describing: detail.diagnostic), String(describing: String(format: "%.1f", response.elapsedSeconds)))
             agentWorkspacePhase = .ready
             await refreshAgentDependencyGraph()
             scheduleAgentWorkspaceAllocatorRelief()
@@ -1009,12 +1023,12 @@ final class AppStore: ObservableObject {
             activeAgentWorkspaceScanTask = nil
             agentWorkspaceDetailScanningProvider = nil
             agentWorkspacePhase = agentWorkspaceSnapshot == nil ? .idle : .ready
-            agentWorkspaceDiagnostic = "\(provider.displayName) 详情扫描已取消；没有发布不完整结果。"
+            agentWorkspaceDiagnostic = CNL10n.format("%@ 详情扫描已取消；没有发布不完整结果。", String(describing: provider.displayName))
         } catch {
             guard agentWorkspaceScanID == scanID else { return }
             activeAgentWorkspaceScanTask = nil
             agentWorkspaceDetailScanningProvider = nil
-            let message = "\(provider.displayName) 详情扫描没有完成：\(error.localizedDescription)"
+            let message = CNL10n.format("%@ 详情扫描没有完成：%@", String(describing: provider.displayName), String(describing: error.localizedDescription))
             agentWorkspacePhase = .failed(message)
             agentWorkspaceDiagnostic = message
         }
@@ -1056,13 +1070,13 @@ final class AppStore: ObservableObject {
             let catalog = try agentRuleCatalogStore.install(from: url)
             agentRuleCatalog = catalog
             agentRuleCatalogSource = .signedBundle(agentRuleCatalogStore.installedBundleURL)
-            agentRuleCatalogDiagnostic = "规则 \(catalog.revision) 的代码签名、签名者和内容边界均已通过校验。"
+            agentRuleCatalogDiagnostic = CNL10n.format("规则 %@ 的代码签名、签名者和内容边界均已通过校验。", String(describing: catalog.revision))
             closeAgentWorkspaceDetail()
             agentWorkspaceSnapshot = nil
             selectedAgentWorkspaceCandidateIDs.removeAll()
             await refreshAgentWorkspace()
         } catch {
-            agentRuleCatalogDiagnostic = "规则没有导入：\(error.localizedDescription)"
+            agentRuleCatalogDiagnostic = CNL10n.format("规则没有导入：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -1077,7 +1091,7 @@ final class AppStore: ObservableObject {
             selectedAgentWorkspaceCandidateIDs.removeAll()
             await refreshAgentWorkspace()
         } catch {
-            agentRuleCatalogDiagnostic = "未能恢复内置规则：\(error.localizedDescription)"
+            agentRuleCatalogDiagnostic = CNL10n.format("未能恢复内置规则：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -1114,7 +1128,7 @@ final class AppStore: ObservableObject {
         }
         let candidates = selectedAgentWorkspaceCandidates
         guard !candidates.isEmpty else {
-            agentWorkspaceRecoveryMessage = "请先选择至少一个静置缓存、临时文件或日志。"
+            agentWorkspaceRecoveryMessage = "请先选择至少一个满足静置门槛的可处置文件。"
             agentWorkspaceRecoveryMessageIsWarning = true
             return
         }
@@ -1128,17 +1142,17 @@ final class AppStore: ObservableObject {
             let delta = result.record.apfsDeltaBytes ?? 0
             let deltaText: String
             if delta > 0 {
-                deltaText = "APFS 可用空间实测增加 \(CleanNestFormatting.bytes(delta))。"
+                deltaText = CNL10n.format("APFS 可用空间实测增加 %@。", String(describing: CleanNestFormatting.bytes(delta)))
             } else if delta < 0 {
-                deltaText = "APFS 可用空间实测减少 \(CleanNestFormatting.bytes(-delta))；压缩备份当前大于释放收益。"
+                deltaText = CNL10n.format("APFS 可用空间实测减少 %@；压缩备份当前大于释放收益。", String(describing: CleanNestFormatting.bytes(-delta)))
             } else {
                 deltaText = "APFS 可用空间实测没有可确认变化。"
             }
-            agentWorkspaceRecoveryMessage = "已处理 \(result.record.items.count) 个文件，Agent 目录减少 \(CleanNestFormatting.bytes(result.record.originalAllocatedBytes))；\(deltaText) 可随时从本页恢复。"
+            agentWorkspaceRecoveryMessage = CNL10n.format("已处理 %@ 个文件，Agent 目录减少 %@；%@ 可随时从本页恢复。", String(describing: result.record.items.count), String(describing: CleanNestFormatting.bytes(result.record.originalAllocatedBytes)), String(describing: deltaText))
             agentWorkspaceRecoveryMessageIsWarning = delta <= 0
             addActivity(
                 title: "Agent 安全处置",
-                detail: "压缩备份已校验并保存在本机恢复区；\(deltaText)",
+                detail: CNL10n.format("压缩备份已校验并保存在本机恢复区；%@", String(describing: deltaText)),
                 outcome: result.record.pendingOriginalBytes == 0 ? .success : .partial,
                 affectedItems: result.record.items.count,
                 bytes: max(0, delta),
@@ -1154,7 +1168,7 @@ final class AppStore: ObservableObject {
             agentWorkspaceRecoveryMessageIsWarning = true
             addActivity(
                 title: "Agent 安全处置",
-                detail: "没有完成：\(message)",
+                detail: CNL10n.format("没有完成：%@", String(describing: message)),
                 outcome: .failed,
                 affectedItems: candidates.count,
                 category: .cleanup
@@ -1170,7 +1184,7 @@ final class AppStore: ObservableObject {
         do {
             let result = try await agentWorkspaceRecoveryService.restore(operationID: record.id)
             loadAgentWorkspaceRecoveryRecords()
-            agentWorkspaceRecoveryMessage = "已恢复 \(result.record.items.count) 个文件；压缩备份仍保留在本机恢复区。"
+            agentWorkspaceRecoveryMessage = CNL10n.format("已恢复 %@ 个文件；压缩备份仍保留在本机恢复区。", String(describing: result.record.items.count))
             agentWorkspaceRecoveryMessageIsWarning = false
             addActivity(
                 title: "恢复 Agent 文件",
@@ -1189,7 +1203,7 @@ final class AppStore: ObservableObject {
             agentWorkspaceRecoveryMessageIsWarning = true
             addActivity(
                 title: "恢复 Agent 文件",
-                detail: "没有完成：\(message)",
+                detail: CNL10n.format("没有完成：%@", String(describing: message)),
                 outcome: .failed,
                 affectedItems: record.items.count,
                 category: .other
@@ -1213,7 +1227,7 @@ final class AppStore: ObservableObject {
             agentWorkspaceRecoveryRecords = try agentWorkspaceRecoveryService.listRecords()
         } catch {
             agentWorkspaceRecoveryRecords = []
-            lastTechnicalDetail = "Agent 恢复记录无法读取：\(error.localizedDescription)"
+            lastTechnicalDetail = CNL10n.format("Agent 恢复记录无法读取：%@", String(describing: error.localizedDescription))
         }
         hasLoadedAgentWorkspaceRecoveryRecords = true
     }
@@ -1292,11 +1306,11 @@ final class AppStore: ObservableObject {
             }
             let after = diskFreeSpaceBytes()
             let delta = max(0, after - before)
-            nativeDeveloperStorageMessage = "\(requestedTool.displayName) 原生清理已完成；APFS 可用空间实测增加 \(CleanNestFormatting.bytes(delta))。"
+            nativeDeveloperStorageMessage = CNL10n.format("%@ 原生清理已完成；APFS 可用空间实测增加 %@。", String(describing: requestedTool.displayName), String(describing: CleanNestFormatting.bytes(delta)))
             nativeDeveloperStorageMessageIsWarning = false
             addActivity(
-                title: "\(requestedTool.displayName) 原生清理",
-                detail: "执行前重新通过官方 dry-run；APFS 前后实测增加 \(CleanNestFormatting.bytes(delta))。",
+                title: CNL10n.format("%@ 原生清理", String(describing: requestedTool.displayName)),
+                detail: CNL10n.format("执行前重新通过官方 dry-run；APFS 前后实测增加 %@。", String(describing: CleanNestFormatting.bytes(delta))),
                 outcome: .success,
                 affectedItems: 1,
                 bytes: delta,
@@ -1308,11 +1322,11 @@ final class AppStore: ObservableObject {
             refreshDiskCapacity()
         } catch {
             let message = error.localizedDescription
-            nativeDeveloperStorageMessage = "\(requestedTool.displayName) 没有完成：\(message)"
+            nativeDeveloperStorageMessage = CNL10n.format("%@ 没有完成：%@", String(describing: requestedTool.displayName), String(describing: message))
             nativeDeveloperStorageMessageIsWarning = true
             addActivity(
-                title: "\(requestedTool.displayName) 原生清理",
-                detail: "没有完成：\(message)",
+                title: CNL10n.format("%@ 原生清理", String(describing: requestedTool.displayName)),
+                detail: CNL10n.format("没有完成：%@", String(describing: message)),
                 outcome: .failed,
                 category: .cleanup
             )
@@ -1372,7 +1386,7 @@ final class AppStore: ObservableObject {
         localAIModelCatalogIsRefreshing = false
         localAIModelCatalogDiagnostic = models.isEmpty
             ? "未发现完整模型，可手动选择包含 config.json 与 safetensors 的目录。"
-            : "发现 \(models.count) 个可用的 MLX 模型。"
+            : CNL10n.format("发现 %@ 个可用的 MLX 模型。", String(describing: models.count))
     }
 
     func refreshLocalModelRuntimes(force: Bool = false) async {
@@ -1424,8 +1438,8 @@ final class AppStore: ObservableObject {
             switch localModelStartReadiness {
             case .portOccupied(let runtime):
                 localModelRuntimeDiagnostic = runtime.phase == .runningHealthy
-                    ? "\(runtime.primaryAddress ?? "配置端口") 已有健康的 \(runtime.platform.displayName)；无需重复启动。"
-                    : "\(runtime.primaryAddress ?? "配置端口") 已被 \(runtime.process?.commandName ?? "其他进程") 占用，模型 API 尚未确认。"
+                    ? CNL10n.format("%@ 已有健康的 %@；无需重复启动。", String(describing: runtime.primaryAddress ?? "配置端口"), String(describing: runtime.platform.displayName))
+                    : CNL10n.format("%@ 已被 %@ 占用，模型 API 尚未确认。", String(describing: runtime.primaryAddress ?? "配置端口"), String(describing: runtime.process?.commandName ?? "其他进程"))
             case .configurationMissing(let detail), .unsupportedExecutable(let detail):
                 localModelRuntimeDiagnostic = detail
             case .busy:
@@ -1495,7 +1509,7 @@ final class AppStore: ObservableObject {
             externalLocalModelForceCandidateID = nil
             addActivity(
                 title: "关闭外部模型服务",
-                detail: "\(requestedRuntime.platform.displayName) · PID \(requestedProcess.pid) · 身份已变化",
+                detail: CNL10n.format("%@ · PID %@ · 身份已变化", String(describing: requestedRuntime.platform.displayName), String(describing: requestedProcess.pid)),
                 outcome: .failed
             )
             return
@@ -1504,12 +1518,12 @@ final class AppStore: ObservableObject {
             expected: requestedProcess,
             observed: currentProcess
         ) {
-            externalLocalModelStopMessage = "身份复核未通过：\(mismatch) CleanNest 没有发送信号。"
+            externalLocalModelStopMessage = CNL10n.format("身份复核未通过：%@ CleanNest 没有发送信号。", String(describing: mismatch))
             externalLocalModelStopMessageIsWarning = true
             externalLocalModelForceCandidateID = nil
             addActivity(
                 title: "关闭外部模型服务",
-                detail: "\(requestedRuntime.platform.displayName) · PID \(requestedProcess.pid) · 身份复核失败",
+                detail: CNL10n.format("%@ · PID %@ · 身份复核失败", String(describing: requestedRuntime.platform.displayName), String(describing: requestedProcess.pid)),
                 outcome: .failed
             )
             return
@@ -1529,12 +1543,12 @@ final class AppStore: ObservableObject {
             expected: currentProcess,
             observed: observedProcess
         ) {
-            externalLocalModelStopMessage = "系统身份复核未通过：\(mismatch) CleanNest 没有发送信号。"
+            externalLocalModelStopMessage = CNL10n.format("系统身份复核未通过：%@ CleanNest 没有发送信号。", String(describing: mismatch))
             externalLocalModelStopMessageIsWarning = true
             externalLocalModelForceCandidateID = nil
             addActivity(
                 title: "关闭外部模型服务",
-                detail: "\(requestedRuntime.platform.displayName) · PID \(requestedProcess.pid) · 系统身份复核失败",
+                detail: CNL10n.format("%@ · PID %@ · 系统身份复核失败", String(describing: requestedRuntime.platform.displayName), String(describing: requestedProcess.pid)),
                 outcome: .failed
             )
             return
@@ -1549,8 +1563,8 @@ final class AppStore: ObservableObject {
         switch result {
         case .terminated:
             externalLocalModelStopMessage = force
-                ? "\(currentRuntime.platform.displayName) · PID \(currentProcess.pid) 已被强制结束。模型文件和平台设置没有删除。"
-                : "\(currentRuntime.platform.displayName) · PID \(currentProcess.pid) 已正常退出。模型文件和平台设置没有删除。"
+                ? CNL10n.format("%@ · PID %@ 已被强制结束。模型文件和平台设置没有删除。", String(describing: currentRuntime.platform.displayName), String(describing: currentProcess.pid))
+                : CNL10n.format("%@ · PID %@ 已正常退出。模型文件和平台设置没有删除。", String(describing: currentRuntime.platform.displayName), String(describing: currentProcess.pid))
             externalLocalModelStopMessageIsWarning = false
             externalLocalModelForceCandidateID = nil
             addActivity(title: actionTitle, detail: activityDetail, outcome: .success, affectedItems: 1)
@@ -1563,11 +1577,11 @@ final class AppStore: ObservableObject {
 
         case .stillRunning:
             externalLocalModelStopMessage = force
-                ? "\(currentRuntime.platform.displayName) · PID \(currentProcess.pid) 仍在运行。它可能已被所属平台自动重启。"
-                : "\(currentRuntime.platform.displayName) · PID \(currentProcess.pid) 没有在 3 秒内退出。它可能正在保存状态；如确有需要，可再次确认后强制结束。"
+                ? CNL10n.format("%@ · PID %@ 仍在运行。它可能已被所属平台自动重启。", String(describing: currentRuntime.platform.displayName), String(describing: currentProcess.pid))
+                : CNL10n.format("%@ · PID %@ 没有在 3 秒内退出。它可能正在保存状态；如确有需要，可再次确认后强制结束。", String(describing: currentRuntime.platform.displayName), String(describing: currentProcess.pid))
             externalLocalModelStopMessageIsWarning = true
             externalLocalModelForceCandidateID = force ? nil : currentRuntime.id
-            addActivity(title: actionTitle, detail: "\(activityDetail) · 仍在运行", outcome: .partial)
+            addActivity(title: actionTitle, detail: CNL10n.format("%@ · 仍在运行", String(describing: activityDetail)), outcome: .partial)
 
         case .alreadyExited:
             externalLocalModelStopMessage = "原服务已退出，无需再次关闭。"
@@ -1578,7 +1592,7 @@ final class AppStore: ObservableObject {
             externalLocalModelStopMessage = "进程身份在关闭期间发生变化；CleanNest 没有向替换进程发送信号。"
             externalLocalModelStopMessageIsWarning = true
             externalLocalModelForceCandidateID = nil
-            addActivity(title: actionTitle, detail: "\(activityDetail) · 身份已变化", outcome: .failed)
+            addActivity(title: actionTitle, detail: CNL10n.format("%@ · 身份已变化", String(describing: activityDetail)), outcome: .failed)
 
         case .refused(let reason):
             externalLocalModelStopMessage = reason
@@ -1587,7 +1601,7 @@ final class AppStore: ObservableObject {
             addActivity(title: actionTitle, detail: "\(activityDetail) · \(reason)", outcome: .failed)
 
         case .failed(let reason):
-            externalLocalModelStopMessage = "没有关闭 \(currentRuntime.platform.displayName)：\(reason)"
+            externalLocalModelStopMessage = CNL10n.format("没有关闭 %@：%@", String(describing: currentRuntime.platform.displayName), String(describing: reason))
             externalLocalModelStopMessageIsWarning = true
             externalLocalModelForceCandidateID = nil
             addActivity(title: actionTitle, detail: "\(activityDetail) · \(reason)", outcome: .failed)
@@ -1602,7 +1616,7 @@ final class AppStore: ObservableObject {
                        currentRuntime.listeners.contains { $0.port == listener.port }
                    }.isEmpty
            }) {
-            externalLocalModelStopMessage = "原进程已退出，但所属平台已自动重启服务为 PID \(replacement.process?.pid ?? 0)。"
+            externalLocalModelStopMessage = CNL10n.format("原进程已退出，但所属平台已自动重启服务为 PID %@。", String(describing: replacement.process?.pid ?? 0))
             externalLocalModelStopMessageIsWarning = true
         }
     }
@@ -1654,11 +1668,11 @@ final class AppStore: ObservableObject {
             expected: requestedSupervisor,
             observed: currentSupervisor
         ) {
-            externalLocalModelStopMessage = "身份复核未通过：\(mismatch) CleanNest 没有修改 launchd。"
+            externalLocalModelStopMessage = CNL10n.format("身份复核未通过：%@ CleanNest 没有修改 launchd。", String(describing: mismatch))
             externalLocalModelStopMessageIsWarning = true
             addActivity(
                 title: "停用模型守护服务",
-                detail: "\(requestedRuntime.platform.displayName) · \(requestedSupervisor.label) · 身份复核失败",
+                detail: CNL10n.format("%@ · %@ · 身份复核失败", String(describing: requestedRuntime.platform.displayName), String(describing: requestedSupervisor.label)),
                 outcome: .failed
             )
             return
@@ -1679,11 +1693,11 @@ final class AppStore: ObservableObject {
                 timeout: 5
             )
             guard disableResult.exitCode == 0 else {
-                externalLocalModelStopMessage = "launchd 没有接受停用请求（退出码 \(disableResult.exitCode)）；当前进程未被关闭。"
+                externalLocalModelStopMessage = CNL10n.format("launchd 没有接受停用请求（退出码 %@）；当前进程未被关闭。", String(describing: disableResult.exitCode))
                 externalLocalModelStopMessageIsWarning = true
                 addActivity(
                     title: "停用模型守护服务",
-                    detail: "\(currentRuntime.platform.displayName) · \(currentSupervisor.label) · 停用失败",
+                    detail: CNL10n.format("%@ · %@ · 停用失败", String(describing: currentRuntime.platform.displayName), String(describing: currentSupervisor.label)),
                     outcome: .failed
                 )
                 return
@@ -1706,7 +1720,7 @@ final class AppStore: ObservableObject {
                 .first { $0.id == currentSupervisor.id && $0.isDisabled }
 
             if !stillRunning, disabledSupervisor != nil {
-                externalLocalModelStopMessage = "\(currentSupervisor.label) 已停用，PID \(currentProcess.pid) 已退出；launchd 不会再次自动拉起。可在本页重新启用。"
+                externalLocalModelStopMessage = CNL10n.format("%@ 已停用，PID %@ 已退出；launchd 不会再次自动拉起。可在本页重新启用。", String(describing: currentSupervisor.label), String(describing: currentProcess.pid))
                 externalLocalModelStopMessageIsWarning = false
                 addActivity(
                     title: "停用模型守护服务",
@@ -1723,12 +1737,12 @@ final class AppStore: ObservableObject {
             } else {
                 let bootoutDetail = bootoutResult.exitCode == 0
                     ? "launchd 尚未确认服务完全退出"
-                    : "bootout 返回退出码 \(bootoutResult.exitCode)"
-                externalLocalModelStopMessage = "自动启动已标记为停用，但 \(bootoutDetail)。请重新发现后再决定是否关闭残留进程。"
+                    : CNL10n.format("bootout 返回退出码 %@", String(describing: bootoutResult.exitCode))
+                externalLocalModelStopMessage = CNL10n.format("自动启动已标记为停用，但 %@。请重新发现后再决定是否关闭残留进程。", String(describing: bootoutDetail))
                 externalLocalModelStopMessageIsWarning = true
                 addActivity(
                     title: "停用模型守护服务",
-                    detail: "\(currentRuntime.platform.displayName) · \(currentSupervisor.label) · 部分完成",
+                    detail: CNL10n.format("%@ · %@ · 部分完成", String(describing: currentRuntime.platform.displayName), String(describing: currentSupervisor.label)),
                     outcome: .partial
                 )
             }
@@ -1737,7 +1751,7 @@ final class AppStore: ObservableObject {
             externalLocalModelStopMessageIsWarning = true
             await refreshLocalModelRuntimes(force: true)
         } catch {
-            externalLocalModelStopMessage = "没有停用守护服务：\(error.localizedDescription)"
+            externalLocalModelStopMessage = CNL10n.format("没有停用守护服务：%@", String(describing: error.localizedDescription))
             externalLocalModelStopMessageIsWarning = true
             await refreshLocalModelRuntimes(force: true)
         }
@@ -1785,7 +1799,7 @@ final class AppStore: ObservableObject {
             expected: requestedSupervisor,
             observed: currentSupervisor
         ) {
-            externalLocalModelStopMessage = "守护配置复核未通过：\(mismatch)"
+            externalLocalModelStopMessage = CNL10n.format("守护配置复核未通过：%@", String(describing: mismatch))
             externalLocalModelStopMessageIsWarning = true
             return
         }
@@ -1805,7 +1819,7 @@ final class AppStore: ObservableObject {
                 timeout: 5
             )
             guard enableResult.exitCode == 0 else {
-                externalLocalModelStopMessage = "launchd 没有接受启用请求（退出码 \(enableResult.exitCode)）。"
+                externalLocalModelStopMessage = CNL10n.format("launchd 没有接受启用请求（退出码 %@）。", String(describing: enableResult.exitCode))
                 externalLocalModelStopMessageIsWarning = true
                 return
             }
@@ -1821,7 +1835,7 @@ final class AppStore: ObservableObject {
                     && instance.process != nil
             }
             if let running {
-                externalLocalModelStopMessage = "\(currentSupervisor.label) 已重新启用，当前 PID 为 \(running.process?.pid ?? 0)。"
+                externalLocalModelStopMessage = CNL10n.format("%@ 已重新启用，当前 PID 为 %@。", String(describing: currentSupervisor.label), String(describing: running.process?.pid ?? 0))
                 externalLocalModelStopMessageIsWarning = running.phase != .runningHealthy
                 addActivity(
                     title: "启用模型守护服务",
@@ -1833,11 +1847,11 @@ final class AppStore: ObservableObject {
             } else {
                 externalLocalModelStopMessage = bootstrapResult.exitCode == 0
                     ? "守护服务已启用，但尚未发现运行进程；它可能仍在启动或启动失败。"
-                    : "启用状态已恢复，但 bootstrap 返回退出码 \(bootstrapResult.exitCode)。"
+                    : CNL10n.format("启用状态已恢复，但 bootstrap 返回退出码 %@。", String(describing: bootstrapResult.exitCode))
                 externalLocalModelStopMessageIsWarning = true
                 addActivity(
                     title: "启用模型守护服务",
-                    detail: "\(currentRuntime.platform.displayName) · \(currentSupervisor.label) · 等待启动",
+                    detail: CNL10n.format("%@ · %@ · 等待启动", String(describing: currentRuntime.platform.displayName), String(describing: currentSupervisor.label)),
                     outcome: .partial
                 )
             }
@@ -1846,7 +1860,7 @@ final class AppStore: ObservableObject {
             externalLocalModelStopMessageIsWarning = true
             await refreshLocalModelRuntimes(force: true)
         } catch {
-            externalLocalModelStopMessage = "没有启用守护服务：\(error.localizedDescription)"
+            externalLocalModelStopMessage = CNL10n.format("没有启用守护服务：%@", String(describing: error.localizedDescription))
             externalLocalModelStopMessageIsWarning = true
             await refreshLocalModelRuntimes(force: true)
         }
@@ -1889,6 +1903,17 @@ final class AppStore: ObservableObject {
     }
 
     func systemWillSleep() {
+        systemDataState.cancel()
+        if activeCleanupScanTask != nil { cancelCleanupScan() }
+        if activeDiskScanTask != nil { cancelDiskAnalysis() }
+        if activeAgentWorkspaceScanTask != nil {
+            agentWorkspaceScanID = UUID()
+            activeAgentWorkspaceScanTask?.cancel()
+            activeAgentWorkspaceScanTask = nil
+            agentWorkspaceDetailScanningProvider = nil
+            agentWorkspacePhase = agentWorkspaceSnapshot == nil ? .idle : .ready
+            agentWorkspaceDiagnostic = "Mac 即将休眠；Agent 扫描已取消，上一次完整结果保持不变。"
+        }
         localModelRuntimeDiagnostic = "Mac 即将休眠；CleanNest 不停止模型服务，唤醒后会重新核对进程、端口、模型和守护关系。"
     }
 
@@ -1916,10 +1941,10 @@ final class AppStore: ObservableObject {
             metricHistory = try await metricsStore.samples(range: metricHistoryRange)
             metricsDiagnostic = metricHistory.isEmpty
                 ? "历史记录已开启，等待首次采样。"
-                : "每 60 秒本机采样；当前显示 \(metricHistory.count) 个数据点。"
+                : CNL10n.format("每 60 秒本机采样；当前显示 %@ 个数据点。", String(describing: metricHistory.count))
         } catch {
             metricHistory = []
-            metricsDiagnostic = "暂时无法读取历史记录：\(error.localizedDescription)"
+            metricsDiagnostic = CNL10n.format("暂时无法读取历史记录：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -1938,9 +1963,10 @@ final class AppStore: ObservableObject {
         settings.set(validDays, forKey: "metricsRetentionDays")
         do {
             _ = try await metricsStore.prune(retainingDays: validDays)
+            lastMetricsPruneDate = Date()
             await refreshMetricHistory()
         } catch {
-            metricsDiagnostic = "无法更新保留期限：\(error.localizedDescription)"
+            metricsDiagnostic = CNL10n.format("无法更新保留期限：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -1955,7 +1981,7 @@ final class AppStore: ObservableObject {
             metricHistory = []
             metricsDiagnostic = "本机历史记录已清空；后续采样会重新开始。"
         } catch {
-            metricsDiagnostic = "无法清空历史记录：\(error.localizedDescription)"
+            metricsDiagnostic = CNL10n.format("无法清空历史记录：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -1963,9 +1989,10 @@ final class AppStore: ObservableObject {
         do {
             try await metricsStore.prepare()
             _ = try await metricsStore.prune(retainingDays: metricsRetentionDays)
+            lastMetricsPruneDate = Date()
             metricsDiagnostic = "历史记录已开启；进入系统状态时加载图表。"
         } catch {
-            metricsDiagnostic = "历史记录未能启用：\(error.localizedDescription)"
+            metricsDiagnostic = CNL10n.format("历史记录未能启用：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -1979,7 +2006,7 @@ final class AppStore: ObservableObject {
                 } catch {
                     break
                 }
-                guard let self, !self.isWorking, self.engine != nil else { continue }
+                guard let self, !self.isWorking else { continue }
                 await self.refreshSystemStatus(
                     silent: true,
                     includeProcesses: self.selection == .status
@@ -2000,13 +2027,16 @@ final class AppStore: ObservableObject {
                     temperatureCelsius: nativeMonitorSample?.temperatureCelsius
                 )
             )
-            _ = try await metricsStore.prune(retainingDays: metricsRetentionDays)
+            if lastMetricsPruneDate.map({ Date().timeIntervalSince($0) >= 86_400 }) ?? true {
+                _ = try await metricsStore.prune(retainingDays: metricsRetentionDays)
+                lastMetricsPruneDate = Date()
+            }
             if selection == .status {
                 metricHistory = try await metricsStore.samples(range: metricHistoryRange)
             }
-            metricsDiagnostic = "每 60 秒本机采样；保留 \(metricsRetentionDays) 天，不上传。"
+            metricsDiagnostic = CNL10n.format("每 60 秒本机采样；保留 %@ 天，不上传。", String(describing: metricsRetentionDays))
         } catch {
-            metricsDiagnostic = "本次历史采样未保存：\(error.localizedDescription)"
+            metricsDiagnostic = CNL10n.format("本次历史采样未保存：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -2166,7 +2196,7 @@ final class AppStore: ObservableObject {
         let samplingID = nativeMonitorSamplingID
         nativeMonitorIsActive = true
         let refreshSeconds = menuBarConfiguration.refreshInterval.rawValue
-        nativeMonitorDiagnostic = "每 \(refreshSeconds) 秒本机采样；不需要 Mole，不上传。"
+        nativeMonitorDiagnostic = CNL10n.format("每 %@ 秒由内置原生引擎本机采样；不上传。", String(describing: refreshSeconds))
         nativeMonitorTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { break }
@@ -2310,108 +2340,25 @@ final class AppStore: ObservableObject {
     nonisolated private static func performFullDiskAccessProbe(
         homeDirectory: URL
     ) -> FullDiskAccessProbeResult {
-        let probeURL = homeDirectory
-            .appendingPathComponent("Library/Application Support/com.apple.TCC/TCC.db", isDirectory: false)
-            .standardizedFileURL
-        let descriptor = probeURL.path.withCString { path in
-            Darwin.open(path, O_RDONLY | O_CLOEXEC)
+        // Some Macs have no per-user TCC.db. Test the system location too,
+        // without reading database contents or inferring a permission switch.
+        let probeURLs = [
+            homeDirectory.appendingPathComponent("Library/Application Support/com.apple.TCC/TCC.db"),
+            URL(fileURLWithPath: "/Library/Application Support/com.apple.TCC/TCC.db")
+        ]
+        var errorCodes: [Int32] = []
+        for probeURL in probeURLs {
+            let result = probeURL.path.withCString { path -> (Int32, Int32) in
+                let descriptor = Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+                return (descriptor, descriptor >= 0 ? 0 : errno)
+            }
+            errorCodes.append(result.1)
+            if result.0 >= 0 {
+                Darwin.close(result.0)
+                return .accessible
+            }
         }
-        guard descriptor >= 0 else {
-            return FullDiskAccessProbeResult.classify(errno: errno)
-        }
-        Darwin.close(descriptor)
-        return .accessible
-    }
-
-    func refreshEngine() async {
-        phase = .checking
-        defer { engineLastCheckedAt = Date() }
-        guard let executable = EngineLocator.locate(customPath: customEnginePath) else {
-            engine = nil
-            engineDiagnostic = EngineLocator.locateHomebrew() == nil
-                ? "未找到 Mole CLI，且未检测到 Homebrew。"
-                : "未找到 Mole CLI，可以直接在 App 内安装。"
-            phase = .idle
-            return
-        }
-
-        do {
-            let result = try await commandRunner.runChecked(executable: executable, arguments: ["--version"])
-            let version = result.standardOutput
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .split(separator: "\n")
-                .first
-                .map(String.init)
-            engine = EngineInstallation(executable: executable, version: version)
-            engineDiagnostic = "引擎已就绪"
-            phase = .idle
-        } catch {
-            engine = nil
-            engineDiagnostic = error.localizedDescription
-            phase = .failed("引擎检查未通过")
-            lastTechnicalDetail = error.localizedDescription
-        }
-    }
-
-    func installEngine() async {
-        guard !demoMode else { return }
-        guard let brew = EngineLocator.locateHomebrew() else {
-            phase = .failed("这台 Mac 尚未安装 Homebrew")
-            lastTechnicalDetail = "CleanNest 当前通过 Homebrew 安装 Mole CLI。可在设置中选择已经存在的 mo/mole 可执行文件。"
-            return
-        }
-
-        phase = .executing("正在安装本地清理引擎…")
-        do {
-            let result = try await commandRunner.runChecked(
-                executable: brew,
-                arguments: ["install", "mole"],
-                environment: commandEnvironment
-            )
-            lastTechnicalDetail = result.standardOutput + result.standardError
-            addActivity(title: "安装清理引擎", detail: "Mole CLI 已通过 Homebrew 安装。", outcome: .success)
-            await refreshEngine()
-        } catch {
-            phase = .failed("安装没有完成，尚未更改任何清理项目")
-            lastTechnicalDetail = error.localizedDescription
-            addActivity(title: "安装清理引擎", detail: error.localizedDescription, outcome: .failed)
-        }
-    }
-
-    func updateEngine() async {
-        guard !demoMode else { return }
-        guard engineCanUpdateWithHomebrew else {
-            phase = .failed("自定义引擎不由 Homebrew 管理")
-            lastTechnicalDetail = "请使用你选择的安装方式更新该引擎，然后在 CleanNest 中重新检测。"
-            return
-        }
-        guard let brew = EngineLocator.locateHomebrew() else {
-            phase = .failed("未检测到 Homebrew")
-            return
-        }
-        phase = .executing("正在检查引擎更新…")
-        do {
-            let result = try await commandRunner.run(
-                executable: brew,
-                arguments: ["upgrade", "mole"],
-                environment: commandEnvironment
-            )
-            lastTechnicalDetail = result.standardOutput + result.standardError
-            guard result.exitCode == 0 else { throw CommandRunnerError.nonZeroExit(result) }
-            addActivity(title: "更新清理引擎", detail: "Mole CLI 已检查并更新。", outcome: .success)
-            await refreshEngine()
-        } catch {
-            phase = .failed("更新没有完成")
-            lastTechnicalDetail = error.localizedDescription
-            addActivity(title: "更新清理引擎", detail: error.localizedDescription, outcome: .failed)
-        }
-    }
-
-    func setCustomEnginePath(_ path: String) async {
-        guard !demoMode else { return }
-        customEnginePath = path
-        settings.set(path, forKey: "customEnginePath")
-        await refreshEngine()
+        return FullDiskAccessProbeResult.classifyProbeResults(errorCodes)
     }
 
     func setLocalAIEnabled(_ enabled: Bool) {
@@ -2570,7 +2517,7 @@ final class AppStore: ObservableObject {
             localAIProcessOwned = localAIRuntime.ownsRunningProcess
             localAIServiceState = .ready(modelID: modelID)
             localAIProbeLatencyMilliseconds = max(0, Date().timeIntervalSince(probeStartedAt) * 1_000)
-            localAIDiagnostic = "已连接本机回环服务；API 模型为 \(modelID)。文件内容不会发送给模型。"
+            localAIDiagnostic = CNL10n.format("已连接本机回环服务；API 模型为 %@。文件内容不会发送给模型。", String(describing: modelID))
         } catch {
             guard localAIProbeID == probeID else { return }
             localAIProcessOwned = localAIRuntime.ownsRunningProcess
@@ -2595,7 +2542,7 @@ final class AppStore: ObservableObject {
             }
             localAIBenchmarkResult = result
             localAIBenchmarkPhase = .completed
-            localAIDiagnostic = "最小推理测速完成：首字 \(Int(result.firstTokenMilliseconds.rounded())) ms，总耗时 \(Int(result.totalMilliseconds.rounded())) ms。"
+            localAIDiagnostic = CNL10n.format("最小推理测速完成：首字 %@ ms，总耗时 %@ ms。", String(describing: Int(result.firstTokenMilliseconds.rounded())), String(describing: Int(result.totalMilliseconds.rounded())))
         } catch is CancellationError {
             localAIBenchmarkPhase = .idle
         } catch {
@@ -2622,7 +2569,7 @@ final class AppStore: ObservableObject {
                 let modelID = try resolvedServiceModelID(from: runningService)
                 localAIServiceState = .ready(modelID: modelID)
                 localAIProcessOwned = localAIRuntime.ownsRunningProcess
-                localAIDiagnostic = "已复用正在运行的本机模型服务；API 模型为 \(modelID)。"
+                localAIDiagnostic = CNL10n.format("已复用正在运行的本机模型服务；API 模型为 %@。", String(describing: modelID))
                 return
             }
             guard localAIEnabled, localAIProbeID == startupID else { return }
@@ -2655,7 +2602,7 @@ final class AppStore: ObservableObject {
                     let modelID = try resolvedServiceModelID(from: result)
                     localAIServiceState = .ready(modelID: modelID)
                     localAIProcessOwned = true
-                    localAIDiagnostic = "模型已由 CleanNest 在本机启动；API 模型为 \(modelID)。"
+                    localAIDiagnostic = CNL10n.format("模型已由 CleanNest 在本机启动；API 模型为 %@。", String(describing: modelID))
                     return
                 } catch {
                     lastError = error
@@ -2666,7 +2613,7 @@ final class AppStore: ObservableObject {
             localAIRuntime.stopOwnedProcess()
             localAIProcessOwned = false
             let log = localAIRuntime.recentLog.trimmingCharacters(in: .whitespacesAndNewlines)
-            let suffix = log.isEmpty ? "" : "\n\n模型日志：\n\(log)"
+            let suffix = log.isEmpty ? "" : CNL10n.format("\n\n模型日志：\n%@", String(describing: log))
             throw LocalAIError.serviceUnavailable(lastError.localizedDescription + suffix)
         } catch is CancellationError {
             localAIRuntime.stopOwnedProcess()
@@ -2728,7 +2675,7 @@ final class AppStore: ObservableObject {
             }
             cleanupAIAnalysis = analysis
             cleanupAIPhase = .completed
-            localAIDiagnostic = "已用 \(localAIModelDisplayName) 分析 \(analysis.requestedCount) 项元数据。"
+            localAIDiagnostic = CNL10n.format("已用 %@ 分析 %@ 项元数据。", String(describing: localAIModelDisplayName), String(describing: analysis.requestedCount))
         } catch is CancellationError {
             guard activeAIRequestID == requestID else { return }
             cleanupAIPhase = .idle
@@ -2890,6 +2837,7 @@ final class AppStore: ObservableObject {
     }
 
     func shutdownForTermination() {
+        systemDataState.cancel()
         metricsSamplingTask?.cancel()
         metricsSamplingTask = nil
         nativeMonitorSamplingID = UUID()
@@ -2917,10 +2865,16 @@ final class AppStore: ObservableObject {
             )
             saveMaintenanceHistory()
         }
+        fullDiskAccessProbeID = UUID()
+        appUpdateCheckID = UUID()
+        activeCleanupScanTask?.cancel()
+        activeCleanupScanTask = nil
+        cleanupScanIsActive = false
         activeDiskScanTask?.cancel()
         activeDiskScanTask = nil
         invalidateCleanupAI()
         _ = invalidateDiskAI()
+        pendingDiskAICancellationTask = nil
         commandRunner.terminateAll()
         shutdownLocalAI()
     }
@@ -2930,6 +2884,8 @@ final class AppStore: ObservableObject {
         includeProcesses: Bool = true
     ) async {
         guard !demoMode else { return }
+        if !silent { phase = .scanning("正在读取这台 Mac 的状态…") }
+
         let inspector = processMemoryInspector
         let nativeMemoryTask = Task.detached(priority: .utility) {
             SystemMemoryProbe.sample()
@@ -2937,82 +2893,58 @@ final class AppStore: ObservableObject {
         let processTask: Task<[MemoryProcessSnapshot], Never>? = includeProcesses
             ? Task.detached(priority: .utility) { inspector.topProcesses(limit: 40) }
             : nil
-        let batteryTask: Task<BatteryProbeResult, Never>? = includeProcesses
-            ? Task.detached(priority: .utility) { PowerSourceProbe.sample() }
+        let processCountTask: Task<Int?, Never>? = includeProcesses
+            ? Task.detached(priority: .utility) { inspector.processCount() }
             : nil
-        guard let engine else {
-            _ = await nativeMemoryTask.value
-            let processes = await processTask?.value ?? []
-            if let batteryTask {
-                batteryProbeResult = await batteryTask.value
-            }
-            if includeProcesses {
-                memoryProcesses = processes
-            }
-            if includeProcesses, let systemSnapshot {
-                memoryAnalysis = MemoryAnalyzer.analyze(
-                    snapshot: systemSnapshot,
-                    processes: processes
-                )
-            }
-            if !silent { phase = .failed("需要先安装或选择 Mole CLI") }
-            return
+        let batteryTask = Task.detached(priority: .utility) {
+            PowerSourceProbe.sample()
         }
-        if !silent { phase = .scanning("正在读取这台 Mac 的状态…") }
 
-        do {
-            let result = try await commandRunner.runChecked(
-                executable: engine.executable,
-                arguments: ["status", "--json"],
-                environment: commandEnvironment
-            )
-            guard let data = result.standardOutput.data(using: .utf8) else {
-                throw CocoaError(.fileReadCorruptFile)
+        var monitor = await nativeSystemMonitor.sample(configuration: menuBarConfiguration)
+        if monitor.cpuUsage == nil {
+            if let recent = nativeMonitorSample,
+               recent.cpuUsage != nil,
+               monitor.sampledAt.timeIntervalSince(recent.sampledAt) <= 5 {
+                monitor = recent
+            } else {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                monitor = await nativeSystemMonitor.sample(configuration: menuBarConfiguration)
             }
-            let nativeMemory = await nativeMemoryTask.value
-            let processes = await processTask?.value ?? []
-            if let batteryTask {
-                batteryProbeResult = await batteryTask.value
-            }
-            let snapshot = try MoleJSONDecoder.systemSnapshot(
-                from: data,
-                memoryProbe: nativeMemory
-            )
-            systemSnapshot = snapshot
-            if includeProcesses {
-                memoryProcesses = processes
-                memoryAnalysis = MemoryAnalyzer.analyze(
-                    snapshot: snapshot,
-                    processes: processes
-                )
-            }
-            if let forceID = forceTerminationProcessID,
-               includeProcesses,
-               !processes.contains(where: { $0.id == forceID }) {
-                forceTerminationProcessID = nil
-            }
-            lastTechnicalDetail = result.standardError
-            refreshDiskCapacity()
-            await recordMetric(snapshot)
-            phase = .idle
-        } catch {
-            _ = await nativeMemoryTask.value
-            let processes = await processTask?.value ?? []
-            if let batteryTask {
-                batteryProbeResult = await batteryTask.value
-            }
-            if includeProcesses {
-                memoryProcesses = processes
-            }
-            if includeProcesses, let systemSnapshot {
-                memoryAnalysis = MemoryAnalyzer.analyze(
-                    snapshot: systemSnapshot,
-                    processes: processes
-                )
-            }
-            if !silent { phase = .failed("系统状态暂时不可用") }
-            lastTechnicalDetail = error.localizedDescription
         }
+        applyNativeMonitorSample(monitor)
+
+        let nativeMemory = await nativeMemoryTask.value
+        let processes = await processTask?.value ?? []
+        let processCount = await processCountTask?.value ?? nil
+        let battery = await batteryTask.value
+        batteryProbeResult = battery
+        let snapshot = NativeSystemSnapshotBuilder.makeSnapshot(
+            monitor: monitor,
+            memoryProbe: nativeMemory,
+            batteryProbe: battery,
+            processCount: processCount,
+            host: ProcessInfo.processInfo.hostName,
+            logicalCPUCount: ProcessInfo.processInfo.processorCount,
+            uptimeSeconds: ProcessInfo.processInfo.systemUptime
+        )
+        systemSnapshot = snapshot
+        if includeProcesses {
+            memoryProcesses = processes
+            memoryAnalysis = MemoryAnalyzer.analyze(
+                snapshot: snapshot,
+                processes: processes
+            )
+        }
+        if let forceID = forceTerminationProcessID,
+           includeProcesses,
+           !processes.contains(where: { $0.id == forceID }) {
+            forceTerminationProcessID = nil
+        }
+        lastTechnicalDetail = "系统状态由 CleanNest 内置原生引擎读取；无法取得的传感器或指标显示为空。"
+        refreshDiskCapacity()
+        await recordMetric(snapshot)
+        phase = .idle
     }
 
     func terminateMemoryProcess(_ process: MemoryProcessSnapshot, force: Bool = false) async {
@@ -3036,8 +2968,8 @@ final class AppStore: ObservableObject {
         case .terminated:
             forceTerminationProcessID = nil
             memoryProcessMessage = force
-                ? "“\(process.name)”已被强制结束。"
-                : "“\(process.name)”已正常退出。"
+                ? CNL10n.format("“%@”已被强制结束。", String(describing: process.name))
+                : CNL10n.format("“%@”已正常退出。", String(describing: process.name))
             addActivity(
                 title: force ? "强制结束进程" : "结束进程",
                 detail: "\(process.name) · PID \(process.pid)",
@@ -3047,7 +2979,7 @@ final class AppStore: ObservableObject {
 
         case .stillRunning:
             forceTerminationProcessID = process.id
-            memoryProcessMessage = "“\(process.name)”没有退出。它可能正在保存数据、没有响应，或已被所属 App 重新启动；如确有需要，可再次确认后强制结束。"
+            memoryProcessMessage = CNL10n.format("“%@”没有退出。它可能正在保存数据、没有响应，或已被所属 App 重新启动；如确有需要，可再次确认后强制结束。", String(describing: process.name))
             memoryProcessMessageIsWarning = true
 
         case .alreadyExited, .identityChanged:
@@ -3061,7 +2993,7 @@ final class AppStore: ObservableObject {
 
         case .failed(let reason):
             forceTerminationProcessID = nil
-            memoryProcessMessage = "没有结束“\(process.name)”：\(reason)"
+            memoryProcessMessage = CNL10n.format("没有结束“%@”：%@", String(describing: process.name), String(describing: reason))
             memoryProcessMessageIsWarning = true
         }
 
@@ -3118,6 +3050,8 @@ final class AppStore: ObservableObject {
                 throw ScannerServiceClientError.invalidResponse
             }
             cleanupCandidates = response.candidates
+            cleanupReviewItems = []
+            cleanupReviewRetryingID = nil
             cleanupScanInsights = response.insights
             cleanupScanSession = response.session
             cleanupScanIncludedMediaAndDuplicates = includeMediaAndDuplicates
@@ -3126,7 +3060,7 @@ final class AppStore: ObservableObject {
             cleanupScanCompletedAt = response.session.completedAt
             await refreshMountedInstallerVolumes(reportFailure: true)
             persistCleanupPreview()
-            lastTechnicalDetail = "独立扫描服务已完成 \(response.candidates.count) 项结果，耗时 \(String(format: "%.2f", response.elapsedSeconds)) 秒；高成本文件遍历未在 CleanNest 主进程内执行。"
+            lastTechnicalDetail = CNL10n.format("独立扫描服务已完成 %@ 项结果，耗时 %@ 秒；高成本文件遍历未在 CleanNest 主进程内执行。", String(describing: response.candidates.count), String(describing: String(format: "%.2f", response.elapsedSeconds)))
             phase = .idle
         } catch is CancellationError {
             phase = .idle
@@ -3195,7 +3129,7 @@ final class AppStore: ObservableObject {
                     error.localizedDescription
                 )
                 mountedInstallerMessageIsWarning = true
-                lastTechnicalDetail += "\n挂载安装介质检测：\(error.localizedDescription)"
+                lastTechnicalDetail += CNL10n.format("\n挂载安装介质检测：%@", String(describing: error.localizedDescription))
             }
         }
     }
@@ -3281,25 +3215,30 @@ final class AppStore: ObservableObject {
         let effectiveIDs = selectedCleanupIDs.intersection(currentIDs)
         let selected = cleanupCandidates.filter { effectiveIDs.contains($0.id) }
         guard !selected.isEmpty else { return }
-        let candidateBytes = CleanupBasketSummary(
-            candidates: selected,
-            selectedIDs: effectiveIDs,
-            currentFreeBytes: 0
-        ).selectedBytes
         let freeBytesBefore = currentDiskCapacity()?.free ?? diskFreeBytes
+        let execution = beginCleanupExecution(
+            candidates: selected,
+            freeBytesBefore: freeBytesBefore
+        )
 
         phase = .executing("正在把所选内容移到废纸篓…")
         let outcomes = await trashService.trashCleanupCandidates(selected)
-        let succeededPaths = Set(outcomes.filter(\.succeeded).map { $0.source.standardizedFileURL.path })
-        let failed = outcomes.filter { !$0.succeeded }
+        refreshDiskCapacity()
+        let completed = completeCleanupExecution(
+            execution,
+            outcomes: outcomes,
+            freeBytesAfter: diskFreeBytes
+        )
+        let succeededPaths = Set(completed.items.filter { $0.status == .movedToTrash }.map {
+            $0.sourceURL.standardizedFileURL.path
+        })
+        let failedItems = completed.items.filter {
+            $0.status == .failed || $0.status == .indeterminate || $0.status == .pending
+        }
         let succeededCandidates = selected.filter {
             succeededPaths.contains($0.url.standardizedFileURL.path)
         }
-        let trashedBytes = CleanupBasketSummary(
-            candidates: succeededCandidates,
-            selectedIDs: Set(succeededCandidates.map(\.id)),
-            currentFreeBytes: 0
-        ).selectedBytes
+        let trashedBytes = completed.movedBytes
 
         for candidate in succeededCandidates {
             evolutionMemory.recordCleanup(candidate, decision: .cleaned)
@@ -3307,45 +3246,122 @@ final class AppStore: ObservableObject {
         if !succeededCandidates.isEmpty { saveEvolutionMemory() }
 
         cleanupCandidates.removeAll { succeededPaths.contains($0.url.standardizedFileURL.path) }
+        cleanupReviewItems = CleanupReviewItem.reconciling(
+            current: cleanupReviewItems,
+            candidates: cleanupCandidates,
+            outcomes: outcomes
+        )
         cleanupScanInsights = cleanupScanInsights.updatingCandidateCounts(from: cleanupCandidates)
         selectedCleanupIDs.subtract(selected.map(\.id))
         invalidateCleanupAI()
-        refreshDiskCapacity()
-        let freeBytesAfter = diskFreeBytes
-        let apfsDelta = freeBytesAfter >= freeBytesBefore
-            ? freeBytesAfter - freeBytesBefore
-            : -(freeBytesBefore - freeBytesAfter)
         let cleanupResult = CleanupActivityResult(
-            candidateBytes: candidateBytes,
+            candidateBytes: completed.candidateBytes,
             trashedBytes: trashedBytes,
-            apfsFreeBytesDelta: apfsDelta
+            apfsFreeBytesDelta: completed.immediateAPFSFreeBytesDelta ?? 0
         )
         persistCleanupPreview()
 
-        if failed.isEmpty {
-            phase = .success("已把 \(succeededPaths.count) 项移到废纸篓")
+        if failedItems.isEmpty {
+            phase = .success(CNL10n.format("已把 %@ 项移到废纸篓", String(describing: succeededPaths.count)))
             addActivity(
                 title: "清理空间",
-                detail: "所选内容已移到废纸篓，可在清空前恢复。",
+                detail: CNL10n.format("执行 %@ · 已移到废纸篓；最终 APFS 释放量待清空后复核", execution.id),
                 outcome: .success,
                 affectedItems: succeededPaths.count,
                 bytes: trashedBytes,
                 category: .cleanup,
-                cleanupResult: cleanupResult
+                cleanupResult: cleanupResult,
+                executionID: execution.id
             )
         } else {
-            phase = .failed("已完成 \(succeededPaths.count) 项，\(failed.count) 项未成功")
-            lastTechnicalDetail = failed.map { "\($0.source.path): \($0.errorDescription ?? "未知错误")" }.joined(separator: "\n")
+            phase = .failed(CNL10n.format("已完成 %@ 项，%@ 项未成功", String(describing: succeededPaths.count), String(describing: failedItems.count)))
+            lastTechnicalDetail = failedItems.map {
+                CNL10n.format("%@: %@", $0.sourceURL.path, $0.errorDescription ?? "未知错误")
+            }.joined(separator: "\n")
             addActivity(
                 title: "清理空间",
-                detail: "部分项目因权限或路径变化被安全跳过。",
+                detail: CNL10n.format("执行 %@ · 部分项目未通过复核或结果不确定", execution.id),
                 outcome: .partial,
                 affectedItems: succeededPaths.count,
                 bytes: trashedBytes,
                 category: .cleanup,
-                cleanupResult: cleanupResult
+                cleanupResult: cleanupResult,
+                executionID: execution.id
             )
         }
+    }
+
+    func retryCleanupReview(_ item: CleanupReviewItem) async {
+        guard !demoMode, item.action == .retry else { return }
+        guard !isWorking, cleanupReviewRetryingID == nil else { return }
+        guard let candidate = cleanupCandidates.first(where: {
+            $0.id == item.id && $0.url.standardizedFileURL == item.candidate.url.standardizedFileURL
+        }) else {
+            phase = .failed("候选已不在本次扫描中，请重新扫描")
+            return
+        }
+
+        cleanupReviewRetryingID = item.id
+        defer { cleanupReviewRetryingID = nil }
+        let freeBytesBefore = currentDiskCapacity()?.free ?? diskFreeBytes
+        let execution = beginCleanupExecution(
+            candidates: [candidate],
+            freeBytesBefore: freeBytesBefore
+        )
+        phase = .executing(CNL10n.format("正在重新复核“%@”…", candidate.name))
+        let outcomes = await trashService.trashCleanupCandidates([candidate])
+        refreshDiskCapacity()
+        let completed = completeCleanupExecution(
+            execution,
+            outcomes: outcomes,
+            freeBytesAfter: diskFreeBytes
+        )
+        let ledgerItem = completed.items[0]
+
+        cleanupReviewItems = CleanupReviewItem.reconciling(
+            current: cleanupReviewItems,
+            candidates: cleanupCandidates,
+            outcomes: outcomes
+        )
+        guard ledgerItem.status == .movedToTrash else {
+            phase = .failed(ledgerItem.errorDescription ?? "单项复核仍未通过，文件未移动")
+            lastTechnicalDetail = ledgerItem.technicalDescription
+                ?? CNL10n.format("%@: %@", candidate.url.path, ledgerItem.errorDescription ?? "未知错误")
+            addActivity(
+                title: "单项复核清理",
+                detail: CNL10n.format("执行 %@ · %@", execution.id, ledgerItem.errorDescription ?? "未知错误"),
+                outcome: .failed,
+                category: .cleanup,
+                executionID: execution.id
+            )
+            return
+        }
+
+        evolutionMemory.recordCleanup(candidate, decision: .cleaned)
+        saveEvolutionMemory()
+        cleanupCandidates.removeAll { $0.id == candidate.id }
+        cleanupScanInsights = cleanupScanInsights.updatingCandidateCounts(from: cleanupCandidates)
+        selectedCleanupIDs.remove(candidate.id)
+        invalidateCleanupAI()
+        let candidateBytes = max(0, candidate.allocatedBytes)
+        let cleanupResult = CleanupActivityResult(
+            candidateBytes: candidateBytes,
+            trashedBytes: candidateBytes,
+            apfsFreeBytesDelta: completed.immediateAPFSFreeBytesDelta ?? 0
+        )
+        persistCleanupPreview()
+        phase = .success("复核通过，已把 1 项移到废纸篓")
+        lastTechnicalDetail = CNL10n.format("执行 %@；路径、身份、活跃和废纸篓结果均已复核。", execution.id)
+        addActivity(
+            title: "单项复核清理",
+            detail: CNL10n.format("执行 %@ · 已移到废纸篓，最终释放量待清空后复核", execution.id),
+            outcome: .success,
+            affectedItems: 1,
+            bytes: candidateBytes,
+            category: .cleanup,
+            cleanupResult: cleanupResult,
+            executionID: execution.id
+        )
     }
 
     func scanApplications() async {
@@ -3388,7 +3404,8 @@ final class AppStore: ObservableObject {
         }
         let graph = await applicationScanner.dependencyGraph(
             for: application,
-            includeProtectedAppData: fullDiskAccessProbePassed
+            includeProtectedAppData: fullDiskAccessProbePassed,
+            applicationIsRunning: applicationIsRunning(application)
         )
         guard leftoverRequestID == requestID, selectedApplication?.id == application.id else { return }
         selectedApplicationDependencyGraph = graph
@@ -3449,7 +3466,7 @@ final class AppStore: ObservableObject {
         applicationUninstallRetryNodes = []
         updateApplicationUninstallStep(.quitApplication, .running)
         guard !applicationIsRunning(application) else {
-            phase = .failed("请先退出 \(application.name)")
+            phase = .failed(CNL10n.format("请先退出 %@", String(describing: application.name)))
             updateApplicationUninstallStep(.quitApplication, .failed("App 仍在运行；没有改动文件"))
             closeApplicationUninstallAfterFailure(
                 skippedReason: "App 尚未退出，后续步骤未执行",
@@ -3460,7 +3477,7 @@ final class AppStore: ObservableObject {
         updateApplicationUninstallStep(.quitApplication, .succeeded("已确认 App 当前未运行"))
         updateApplicationUninstallStep(.revalidateIdentity, .running)
         guard let expectedIdentity = application.fileIdentity else {
-            phase = .failed("\(application.name) 缺少扫描身份，请重新扫描后再试")
+            phase = .failed(CNL10n.format("%@ 缺少扫描身份，请重新扫描后再试", String(describing: application.name)))
             lastTechnicalDetail = "扫描时未能记录 App 的设备号、文件号与所有者；为避免卸载错误目标，本次操作已停止。"
             updateApplicationUninstallStep(.revalidateIdentity, .failed("缺少稳定文件身份"))
             closeApplicationUninstallAfterFailure(
@@ -3468,7 +3485,7 @@ final class AppStore: ObservableObject {
                 review: "确认相关文件零变更"
             )
             addActivity(
-                title: "卸载 \(application.name)",
+                title: CNL10n.format("卸载 %@", String(describing: application.name)),
                 detail: "缺少可复核的扫描身份，未改动任何文件。",
                 outcome: .failed,
                 category: .applicationUninstall
@@ -3478,14 +3495,14 @@ final class AppStore: ObservableObject {
 
         lastTechnicalDetail = ""
         guard let removalRequirement = applicationRemovalRequirement(for: application) else {
-            phase = .failed("\(application.name) 已发生变化，请重新扫描后再试")
+            phase = .failed(CNL10n.format("%@ 已发生变化，请重新扫描后再试", String(describing: application.name)))
             updateApplicationUninstallStep(.revalidateIdentity, .failed("路径、Bundle ID 或稳定身份已经变化"))
             closeApplicationUninstallAfterFailure(
                 skippedReason: "身份复核失败，未请求系统认证",
                 review: "确认相关文件零变更"
             )
             addActivity(
-                title: "卸载 \(application.name)",
+                title: CNL10n.format("卸载 %@", String(describing: application.name)),
                 detail: "App 身份已经变化，未改动任何文件。",
                 outcome: .failed,
                 category: .applicationUninstall
@@ -3502,7 +3519,7 @@ final class AppStore: ObservableObject {
             updateApplicationUninstallStep(.authenticate, .skipped("当前账户可直接移动，无需管理员认证"))
         }
         updateApplicationUninstallStep(.confirmApplicationTrash, .running)
-        phase = .executing("正在将 \(application.name) 移到废纸篓…")
+        phase = .executing(CNL10n.format("正在将 %@ 移到废纸篓…", String(describing: application.name)))
         let appOutcome = await trashService.trashApplication(
             application.url,
             expectedIdentity: expectedIdentity,
@@ -3510,19 +3527,19 @@ final class AppStore: ObservableObject {
         )
         guard appOutcome.succeeded else {
             if appOutcome.failureKind == .authorizationCancelled {
-                phase = .failed("已取消卸载 \(application.name)，没有改动任何文件")
+                phase = .failed(CNL10n.format("已取消卸载 %@，没有改动任何文件", String(describing: application.name)))
                 updateApplicationUninstallStep(.authenticate, .failed("你取消了 macOS 管理员认证"))
             } else if appOutcome.failureKind == .authorizationDenied {
                 phase = .failed("管理员认证未通过，没有改动任何文件")
                 updateApplicationUninstallStep(.authenticate, .failed("macOS 未批准管理员认证"))
             } else if appOutcome.failureKind == .targetChanged {
-                phase = .failed("\(application.name) 已发生变化，请重新扫描后再试")
+                phase = .failed(CNL10n.format("%@ 已发生变化，请重新扫描后再试", String(describing: application.name)))
                 updateApplicationUninstallStep(.revalidateIdentity, .failed("执行前身份复核发现变化"))
             } else if appOutcome.failureKind == .automationDenied {
                 phase = .failed("Finder 自动化权限被拒绝，没有改动任何文件")
                 updateApplicationUninstallStep(.confirmApplicationTrash, .failed("macOS 阻止 CleanNest 控制 Finder"))
             } else {
-                phase = .failed("未能卸载 \(application.name)，没有处理相关文件")
+                phase = .failed(CNL10n.format("未能卸载 %@，没有处理相关文件", String(describing: application.name)))
                 updateApplicationUninstallStep(
                     .confirmApplicationTrash,
                     .failed(appOutcome.errorDescription ?? "macOS 没有确认 App 已进入废纸篓")
@@ -3542,7 +3559,7 @@ final class AppStore: ObservableObject {
                 .compactMap { $0 }
                 .joined(separator: "\n\n")
             addActivity(
-                title: "卸载 \(application.name)",
+                title: CNL10n.format("卸载 %@", String(describing: application.name)),
                 detail: userMessage,
                 outcome: .failed,
                 category: .applicationUninstall
@@ -3583,12 +3600,12 @@ final class AppStore: ObservableObject {
             if failedLeftovers.isEmpty {
                 updateApplicationUninstallStep(
                     .removeRelatedFiles,
-                    .succeeded("\(successfulLeftovers.count) 项已移到废纸篓")
+                    .succeeded(CNL10n.format("%@ 项已移到废纸篓", String(describing: successfulLeftovers.count)))
                 )
             } else {
                 updateApplicationUninstallStep(
                     .removeRelatedFiles,
-                    .failed("\(successfulLeftovers.count) 项完成，\(failedLeftovers.count) 项保留")
+                    .failed(CNL10n.format("%@ 项完成，%@ 项保留", String(describing: successfulLeftovers.count), String(describing: failedLeftovers.count)))
                 )
             }
         }
@@ -3622,25 +3639,25 @@ final class AppStore: ObservableObject {
         refreshDiskCapacity()
 
         if failedLeftovers.isEmpty {
-            phase = .success("\(application.name) 已移到废纸篓")
+            phase = .success(CNL10n.format("%@ 已移到废纸篓", String(describing: application.name)))
             let authenticationDetail = removalRequirement == .administratorAuthentication
                 ? "App 已通过 macOS 原生管理员认证移到废纸篓。"
                 : "App 已移到废纸篓。"
             addActivity(
-                title: "卸载 \(application.name)",
+                title: CNL10n.format("卸载 %@", String(describing: application.name)),
                 detail: includeLeftovers
-                    ? "\(authenticationDetail) 精确匹配的相关文件也已移到废纸篓。"
-                    : "\(authenticationDetail) 相关文件已保留。",
+                    ? CNL10n.format("%@ 精确匹配的相关文件也已移到废纸篓。", String(describing: authenticationDetail))
+                    : CNL10n.format("%@ 相关文件已保留。", String(describing: authenticationDetail)),
                 outcome: .success,
                 affectedItems: 1 + leftoverOutcomes.filter(\.succeeded).count,
                 bytes: removedBytes,
                 category: .applicationUninstall
             )
         } else {
-            phase = .failed("App 已卸载，但 \(failedLeftovers.count) 个相关文件未处理")
-            lastTechnicalDetail = failedLeftovers.map { "\($0.source.path): \($0.errorDescription ?? "未知错误")" }.joined(separator: "\n")
+            phase = .failed(CNL10n.format("App 已卸载，但 %@ 个相关文件未处理", String(describing: failedLeftovers.count)))
+            lastTechnicalDetail = failedLeftovers.map { CNL10n.format("%@: %@", String(describing: $0.source.path), String(describing: $0.errorDescription ?? "未知错误")) }.joined(separator: "\n")
             addActivity(
-                title: "卸载 \(application.name)",
+                title: CNL10n.format("卸载 %@", String(describing: application.name)),
                 detail: "App 已移到废纸篓，部分相关文件因权限被保留。",
                 outcome: .partial,
                 affectedItems: 1 + leftoverOutcomes.filter(\.succeeded).count,
@@ -3687,8 +3704,8 @@ final class AppStore: ObservableObject {
         session.set(
             .removeRelatedFiles,
             failed.isEmpty
-                ? .succeeded("重试完成；\(succeeded.count) 项已移到废纸篓")
-                : .failed("仍有 \(failed.count) 项保持原位")
+                ? .succeeded(CNL10n.format("重试完成；%@ 项已移到废纸篓", String(describing: succeeded.count)))
+                : .failed(CNL10n.format("仍有 %@ 项保持原位", String(describing: failed.count)))
         )
         session.set(
             .finalReview,
@@ -3699,7 +3716,7 @@ final class AppStore: ObservableObject {
         if failed.isEmpty {
             phase = .success("未完成的相关文件已补充移到废纸篓")
         } else {
-            phase = .failed("仍有 \(failed.count) 个相关文件未处理")
+            phase = .failed(CNL10n.format("仍有 %@ 个相关文件未处理", String(describing: failed.count)))
             lastTechnicalDetail = failed.compactMap(\.technicalDescription).joined(separator: "\n\n")
         }
     }
@@ -3800,7 +3817,7 @@ final class AppStore: ObservableObject {
         ) { _, error in
             guard let error else { return }
             Task { @MainActor [weak self] in
-                self?.lastTechnicalDetail = "所属 App 未能打开：\(error.localizedDescription)"
+                self?.lastTechnicalDetail = CNL10n.format("所属 App 未能打开：%@", String(describing: error.localizedDescription))
             }
         }
     }
@@ -3817,13 +3834,13 @@ final class AppStore: ObservableObject {
             saveDiskManualDecisions()
             switch decision {
             case .reviewForCleanup:
-                lastTechnicalDetail = "已把 \(entry.name) 标记为待清理复核；不会自动勾选或删除。"
+                lastTechnicalDetail = CNL10n.format("已把 %@ 标记为待清理复核；不会自动勾选或删除。", String(describing: entry.name))
             case .keep:
-                lastTechnicalDetail = "已记住保留 \(entry.name)。"
+                lastTechnicalDetail = CNL10n.format("已记住保留 %@。", String(describing: entry.name))
             case .decideLater:
-                lastTechnicalDetail = "已把 \(entry.name) 设为稍后处理。"
+                lastTechnicalDetail = CNL10n.format("已把 %@ 设为稍后处理。", String(describing: entry.name))
             case nil:
-                lastTechnicalDetail = "\(entry.name) 已恢复为跟随系统建议。"
+                lastTechnicalDetail = CNL10n.format("%@ 已恢复为跟随系统建议。", String(describing: entry.name))
             }
         } catch {
             lastTechnicalDetail = error.localizedDescription
@@ -3855,7 +3872,7 @@ final class AppStore: ObservableObject {
         diskScanCoverage = nil
 
         guard !diskTraversalMayRequireFullDiskAccess(target) || fullDiskAccessProbePassed else {
-            diskPrivacyBlockMessage = "CleanNest 已在扫描前停止：\(target.path) 会遍历受 macOS 保护的应用数据。请到设置页由你手动打开系统设置；访问测试通过前不会启动 Mole 或原生扫描。"
+            diskPrivacyBlockMessage = CNL10n.format("CleanNest 已在扫描前停止：%@ 会遍历受 macOS 保护的应用数据。请到设置页由你手动打开系统设置；访问测试通过前不会启动任何外部引擎或递归扫描。", String(describing: target.path))
             lastTechnicalDetail = diskPrivacyBlockMessage ?? ""
             if let previousReport { diskRoot = previousReport.root }
             diskHasScanned = previousHasScanned
@@ -3876,7 +3893,7 @@ final class AppStore: ObservableObject {
         }
 
         diskPrivacyBlockMessage = nil
-        phase = .scanning("正在分析 \(target.lastPathComponent.isEmpty ? target.path : target.lastPathComponent)…")
+        phase = .scanning(CNL10n.format("正在分析 %@…", String(describing: target.lastPathComponent.isEmpty ? target.path : target.lastPathComponent)))
         diskScanProgress = DiskScanProgress(completed: 0, total: 0, currentName: target.lastPathComponent)
         if let cancelledCollectionTask {
             _ = await cancelledCollectionTask.value
@@ -3894,7 +3911,7 @@ final class AppStore: ObservableObject {
                 cache = try DiskScanCachePersistence.load(from: cacheURL)
             } catch {
                 cache = DiskScanCacheStore()
-                lastTechnicalDetail = "磁盘增量索引无法读取，本次改为完整扫描：\(error.localizedDescription)"
+                lastTechnicalDetail = CNL10n.format("磁盘增量索引无法读取，本次改为完整扫描：%@", String(describing: error.localizedDescription))
             }
             let historyURL = CleanNestDataPaths.diskEvidenceHistory()
             var evidenceHistory = (try? DiskEvidenceHistoryPersistence.load(from: historyURL))
@@ -3948,10 +3965,10 @@ final class AppStore: ObservableObject {
             diskScanCoverage = outcome.coverage
             let returnedBytes = await relieveAllocatorPressure()
             let scanDetail = outcome.usedCache
-                ? "独立磁盘扫描完成：复用 \(outcome.cacheHitCount) 项，实扫 \(outcome.scannedCount) 项，耗时 \(String(format: "%.2f", outcome.elapsedSeconds)) 秒。缓存只在元数据签名匹配且 15 分钟内复用。"
-                : "独立磁盘扫描完成：实扫 \(outcome.scannedCount) 项，耗时 \(String(format: "%.2f", outcome.elapsedSeconds)) 秒。"
+                ? CNL10n.format("独立磁盘扫描完成：复用 %@ 项，实扫 %@ 项，耗时 %@ 秒。缓存只在元数据签名匹配且 15 分钟内复用。", String(describing: outcome.cacheHitCount), String(describing: outcome.scannedCount), String(describing: String(format: "%.2f", outcome.elapsedSeconds)))
+                : CNL10n.format("独立磁盘扫描完成：实扫 %@ 项，耗时 %@ 秒。", String(describing: outcome.scannedCount), String(describing: String(format: "%.2f", outcome.elapsedSeconds)))
             lastTechnicalDetail = scanDetail
-                + " 已向系统归还约 \(CleanNestFormatting.bytes(Self.reportableByteCount(returnedBytes))) 的空闲分配页。"
+                + CNL10n.format(" 已向系统归还约 %@ 的空闲分配页。", String(describing: CleanNestFormatting.bytes(Self.reportableByteCount(returnedBytes))))
             phase = .idle
         } catch is CancellationError {
             if let previousReport {
@@ -4019,6 +4036,8 @@ final class AppStore: ObservableObject {
             // Agent 工作区使用独立客户端和独立界面状态，
             // 不覆盖用户正在查看的清理或磁盘扫描进度。
             break
+        case .systemDataInventory:
+            break
         case .completed:
             break
         }
@@ -4044,7 +4063,7 @@ final class AppStore: ObservableObject {
             diskScanCoverage = nil
             lastTechnicalDetail = "磁盘增量索引已清空；下次分析会重新读取大小。"
         } catch {
-            lastTechnicalDetail = "磁盘增量索引未能清空：\(error.localizedDescription)"
+            lastTechnicalDetail = CNL10n.format("磁盘增量索引未能清空：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -4060,7 +4079,7 @@ final class AppStore: ObservableObject {
               !diskAIPhase.isBusy else { return }
 
         guard !diskTraversalMayRequireFullDiskAccess(report.root) || fullDiskAccessProbePassed else {
-            diskPrivacyBlockMessage = "CleanNest 已在 AI 深度采样前停止：\(report.root.path) 会遍历受 macOS 保护的应用数据。访问测试通过前不会启动 Mole 或读取这些条目。"
+            diskPrivacyBlockMessage = CNL10n.format("CleanNest 已在 AI 深度采样前停止：%@ 会遍历受 macOS 保护的应用数据。访问测试通过前不会启动任何外部引擎或读取这些条目。", String(describing: report.root.path))
             lastTechnicalDetail = diskPrivacyBlockMessage ?? ""
             diskAIPhase = .idle
             return
@@ -4124,7 +4143,7 @@ final class AppStore: ObservableObject {
             }
             diskAIAnalysis = analysis
             diskAIPhase = .completed
-            localAIDiagnostic = "已用 \(localAIModelDisplayName) 深度解读 \(analysis.requestedCount) 个磁盘项目。"
+            localAIDiagnostic = CNL10n.format("已用 %@ 深度解读 %@ 个磁盘项目。", String(describing: localAIModelDisplayName), String(describing: analysis.requestedCount))
         } catch is CancellationError {
             guard activeDiskAIRequestID == requestID else { return }
             diskAIPhase = .idle
@@ -4171,24 +4190,23 @@ final class AppStore: ObservableObject {
         )
         guard !targets.isEmpty else { return [:] }
 
-        let runner = commandRunner
-        guard let currentEngine = engine else { return [:] }
-        let environment = commandEnvironment
         let scan: @Sendable (DiskEntry) async -> (String, DiskAIChildContext?) = { entry in
             guard !Task.isCancelled else { return (entry.id, nil) }
             do {
-                let result = try await runner.runChecked(
-                    executable: currentEngine.executable,
-                    arguments: ["analyze", "--json", entry.url.path],
-                    environment: environment,
-                    timeout: 90
+                // Each concurrent scan owns its connection; sharing a client would
+                // invalidate the other task's XPC connection.
+                let client = ScannerServiceClient()
+                let response = try await client.scanDisk(
+                    DiskScannerRequest(
+                        root: entry.url,
+                        homeDirectory: homeDirectory,
+                        cache: DiskScanCacheStore(),
+                        mode: .reuseFreshCache,
+                        previousEvidence: nil
+                    )
                 )
-                guard !Task.isCancelled,
-                      !Self.containsPermissionFailure(result.standardError),
-                      let data = result.standardOutput.data(using: .utf8) else {
-                    return (entry.id, nil)
-                }
-                let nestedReport = try MoleJSONDecoder.diskReport(from: data, fallbackRoot: entry.url)
+                guard !Task.isCancelled else { return (entry.id, nil) }
+                let nestedReport = response.outcome.report
                 let safeEntries = nestedReport.entries.filter {
                     Self.isAuthorizedDirectDiskChild($0.url, of: entry.url) && $0.bytes >= 0
                 }
@@ -4250,7 +4268,7 @@ final class AppStore: ObservableObject {
             fullDiskAccessProbeIsRunning = false
         }
         let normalizedDetail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
-        diskPrivacyBlockMessage = "\(source) 报告权限不足，CleanNest 已终止本次分析，不会再回退到原生扫描，避免连续触发系统授权弹窗。"
+        diskPrivacyBlockMessage = CNL10n.format("%@ 报告权限不足，CleanNest 已终止本次分析，不会再回退到原生扫描，避免连续触发系统授权弹窗。", String(describing: source))
         lastTechnicalDetail = normalizedDetail.isEmpty
             ? diskPrivacyBlockMessage ?? ""
             : "\(diskPrivacyBlockMessage ?? "")\n\n\(normalizedDetail)"
@@ -4285,7 +4303,7 @@ final class AppStore: ObservableObject {
     func diagnoseMaintenance(_ action: MaintenanceAction) async {
         guard !isWorking else { return }
         maintenanceStage = .diagnosing(action)
-        phase = .scanning("正在只读检查\(action.rawValue)…")
+        phase = .scanning(CNL10n.format("正在只读检查%@…", String(describing: action.rawValue)))
         let evidence = demoMode
             ? demoMaintenanceEvidence(action)
             : await maintenanceEvidenceSnapshot(action)
@@ -4298,14 +4316,14 @@ final class AppStore: ObservableObject {
         guard !isWorking else { return }
         let startedAt = Date()
         maintenanceStage = .diagnosing(action)
-        phase = .scanning("执行前正在重新检查\(action.rawValue)…")
+        phase = .scanning(CNL10n.format("执行前正在重新检查%@…", String(describing: action.rawValue)))
         let before = demoMode
             ? demoMaintenanceEvidence(action)
             : await maintenanceEvidenceSnapshot(action)
         maintenanceEvidence[action] = before
 
         maintenanceStage = .executing(action)
-        phase = .executing("正在\(action.rawValue)…")
+        phase = .executing(CNL10n.format("正在%@…", String(describing: action.rawValue)))
         var commandSucceeded = false
         var commandDetail = ""
 
@@ -4328,7 +4346,7 @@ final class AppStore: ObservableObject {
         }
 
         maintenanceStage = .verifying(action)
-        phase = .scanning("正在复核\(action.rawValue)是否恢复…")
+        phase = .scanning(CNL10n.format("正在复核%@是否恢复…", String(describing: action.rawValue)))
         let after = if demoMode {
             demoMaintenanceEvidence(action, afterExecution: true)
         } else {
@@ -4357,11 +4375,11 @@ final class AppStore: ObservableObject {
             ? .success(record.outcome.title)
             : .failed(record.outcome.title)
         lastTechnicalDetail = [
-            "执行前：\(before.headline)",
+            CNL10n.format("执行前：%@", String(describing: before.headline)),
             commandSucceeded
-                ? "命令已返回成功：\(action.executable.path) \(action.arguments.joined(separator: " "))"
-                : "命令未成功：\(commandDetail)",
-            "执行后：\(after.headline)",
+                ? CNL10n.format("命令已返回成功：%@ %@", String(describing: action.executable.path), String(describing: action.arguments.joined(separator: " ")))
+                : CNL10n.format("命令未成功：%@", String(describing: commandDetail)),
+            CNL10n.format("执行后：%@", String(describing: after.headline)),
             record.summary,
             commandDetail.isEmpty || !commandSucceeded ? nil : commandDetail
         ]
@@ -4484,10 +4502,6 @@ final class AppStore: ObservableObject {
         // access state changes solely after a later probe succeeds.
     }
 
-    func openMoleProject() {
-        if let url = URL(string: "https://github.com/tw93/Mole") { NSWorkspace.shared.open(url) }
-    }
-
     func presentUpdateChecker() {
         showingUpdateChecker = true
         guard !appUpdateState.isChecking else { return }
@@ -4586,7 +4600,6 @@ final class AppStore: ObservableObject {
             return
         }
         let keys = [
-            "customEnginePath",
             "developerMode",
             "localAIEnabled",
             "localAIEndpoint",
@@ -4600,7 +4613,6 @@ final class AppStore: ObservableObject {
         ]
         for key in keys { settings.removeObject(forKey: key) }
 
-        customEnginePath = ""
         developerMode = true
         includeApplicationCaches = false
         includeMediaAndDuplicates = true
@@ -4639,7 +4651,6 @@ final class AppStore: ObservableObject {
         invalidateCleanupAI()
         _ = invalidateDiskAI()
         cleanupHasScanned = false
-        await refreshEngine()
         lastTechnicalDetail = "设置已恢复为安全默认值。本机活动、扫描结果、学习规则、历史指标和 macOS 授权均未清除。"
     }
 
@@ -4732,7 +4743,7 @@ final class AppStore: ObservableObject {
 
         if !preferred.isEmpty {
             throw LocalAIError.modelUnavailable(
-                "oMLX 没有列出“\(preferred)”。请从 API 模型列表重新选择；不要填写文件路径。"
+                CNL10n.format("oMLX 没有列出“%@”。请从 API 模型列表重新选择；不要填写文件路径。", String(describing: preferred))
             )
         }
         guard !result.modelIDs.isEmpty else {
@@ -4784,7 +4795,7 @@ final class AppStore: ObservableObject {
                 to: CleanNestDataPaths.cleanupPreviewSnapshot()
             )
         } catch {
-            lastTechnicalDetail = "清理预览索引未能保存：\(error.localizedDescription)"
+            lastTechnicalDetail = CNL10n.format("清理预览索引未能保存：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -4797,7 +4808,7 @@ final class AppStore: ObservableObject {
             expiredTrials = evolutionMemory.expireTrials()
         } catch {
             evolutionMemory = EvolutionMemory()
-            lastTechnicalDetail = "本机学习记录无法读取，已使用空白记忆：\(error.localizedDescription)"
+            lastTechnicalDetail = CNL10n.format("清理习惯记录无法读取，已使用空白记忆：%@", String(describing: error.localizedDescription))
         }
         hasLoadedEvolutionMemory = true
         if expiredTrials > 0 { saveEvolutionMemory() }
@@ -4816,7 +4827,7 @@ final class AppStore: ObservableObject {
                 to: CleanNestDataPaths.evolutionMemory()
             )
         } catch {
-            lastTechnicalDetail = "本机学习记录无法保存：\(error.localizedDescription)"
+            lastTechnicalDetail = CNL10n.format("本机学习记录无法保存：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -4833,7 +4844,7 @@ final class AppStore: ObservableObject {
             )
         } catch {
             agentWorkspaceSummary = nil
-            lastTechnicalDetail = "Agent 聚合摘要无法读取；文件级扫描尚未运行：\(error.localizedDescription)"
+            lastTechnicalDetail = CNL10n.format("Agent 聚合摘要无法读取；文件级扫描尚未运行：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -4846,7 +4857,7 @@ final class AppStore: ObservableObject {
             )
             agentWorkspaceSummary = summary
         } catch {
-            lastTechnicalDetail = "Agent 聚合摘要未能保存：\(error.localizedDescription)"
+            lastTechnicalDetail = CNL10n.format("Agent 聚合摘要未能保存：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -4863,7 +4874,7 @@ final class AppStore: ObservableObject {
             )
             try data.write(to: url, options: .atomic)
         } catch {
-            lastTechnicalDetail = "Agent 工作区基线未能保存：\(error.localizedDescription)"
+            lastTechnicalDetail = CNL10n.format("Agent 工作区基线未能保存：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -4874,7 +4885,7 @@ final class AppStore: ObservableObject {
             )
         } catch {
             diskManualDecisions = DiskManualDecisionStore()
-            lastTechnicalDetail = "手动清理决策无法读取，已使用空白记录：\(error.localizedDescription)"
+            lastTechnicalDetail = CNL10n.format("手动清理决策无法读取，已使用空白记录：%@", String(describing: error.localizedDescription))
         }
         hasLoadedDiskManualDecisions = true
     }
@@ -4892,7 +4903,7 @@ final class AppStore: ObservableObject {
                 to: CleanNestDataPaths.diskManualDecisions()
             )
         } catch {
-            lastTechnicalDetail = "手动清理决策无法保存：\(error.localizedDescription)"
+            lastTechnicalDetail = CNL10n.format("手动清理决策无法保存：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -4913,14 +4924,15 @@ final class AppStore: ObservableObject {
         diskFreeBytes = capacity.free
     }
 
-    private func addActivity(
+    func addActivity(
         title: String,
         detail: String,
         outcome: ActivityEntry.Outcome,
         affectedItems: Int = 0,
         bytes: Int64 = 0,
         category: ActivityEntry.Category? = nil,
-        cleanupResult: CleanupActivityResult? = nil
+        cleanupResult: CleanupActivityResult? = nil,
+        executionID: String? = nil
     ) {
         let entry = ActivityEntry(
             title: title,
@@ -4929,7 +4941,8 @@ final class AppStore: ObservableObject {
             affectedItems: affectedItems,
             bytes: bytes,
             category: category,
-            cleanupResult: cleanupResult
+            cleanupResult: cleanupResult,
+            executionID: executionID
         )
         activities.insert(entry, at: 0)
         activities = Array(activities.prefix(100))
@@ -4949,7 +4962,7 @@ final class AppStore: ObservableObject {
         activities = []
         saveActivities()
         requestedActivityDetailID = nil
-        lastTechnicalDetail = "CleanNest 活动明细已清空；累计成果、废纸篓和 Mole 自身日志未改变。"
+        lastTechnicalDetail = "CleanNest 活动明细已清空；累计成果、扫描结果、文件和废纸篓未改变。"
     }
 
     func resetActivityLifetimeTotals() {
@@ -4988,7 +5001,7 @@ final class AppStore: ObservableObject {
             if !activities.isEmpty { saveActivityLifetimeTotals() }
         } catch {
             activityLifetimeTotals = ActivityLifetimeTotals(entries: activities)
-            lastTechnicalDetail = "累计成果记录无法读取，已从现有活动明细重建：\(error.localizedDescription)"
+            lastTechnicalDetail = CNL10n.format("累计成果记录无法读取，已从现有活动明细重建：%@", String(describing: error.localizedDescription))
             saveActivityLifetimeTotals()
         }
     }
@@ -5001,7 +5014,7 @@ final class AppStore: ObservableObject {
                 to: CleanNestDataPaths.activityLifetimeTotals()
             )
         } catch {
-            lastTechnicalDetail = "累计成果记录无法保存：\(error.localizedDescription)"
+            lastTechnicalDetail = CNL10n.format("累计成果记录无法保存：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -5012,7 +5025,7 @@ final class AppStore: ObservableObject {
             )
         } catch {
             maintenanceHistory = []
-            lastTechnicalDetail = "最近维护证据无法读取，已保留空白记录：\(error.localizedDescription)"
+            lastTechnicalDetail = CNL10n.format("最近维护证据无法读取，已保留空白记录：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -5024,7 +5037,7 @@ final class AppStore: ObservableObject {
                 to: CleanNestDataPaths.maintenanceHistory()
             )
         } catch {
-            lastTechnicalDetail = "最近维护证据无法保存：\(error.localizedDescription)"
+            lastTechnicalDetail = CNL10n.format("最近维护证据无法保存：%@", String(describing: error.localizedDescription))
         }
     }
 
@@ -5366,9 +5379,6 @@ final class AppStore: ObservableObject {
         fullDiskAccessProbeResult = .accessible
         fullDiskAccessProbeCompletedAt = Date()
         localAIEnabled = true
-        engine = EngineInstallation(executable: URL(fileURLWithPath: "/opt/homebrew/bin/mole"), version: "Mole 1.48.1")
-        engineDiagnostic = "演示引擎已就绪"
-        engineLastCheckedAt = Date()
         systemSnapshot = SystemSnapshot(
             host: "MacBook Pro",
             healthScore: 92,
@@ -5598,10 +5608,8 @@ final class AppStore: ObservableObject {
             insights: cleanupScanInsights,
             candidates: cleanupCandidates
         )
-        let demoModelID = "Qwen3.8-27B-Uncensored-8bit"
-        let demoModelPath = home
-            .appendingPathComponent("Models/MLX/Qwen3.8-27B-Uncensored-8bit", isDirectory: true)
-            .path
+        let demoModelID = "DemoCoder-14B-4bit"
+        let demoModelPath = "/Users/demo/Models/MLX/DemoCoder-14B-4bit"
         localAIEndpoint = "http://127.0.0.1:8080/v1"
         localAIModelPath = demoModelPath
         localAIExecutablePath = home.appendingPathComponent(".mlx-env/bin/mlx_lm.server").path
@@ -5610,10 +5618,10 @@ final class AppStore: ObservableObject {
                 path: demoModelPath,
                 canonicalPath: demoModelPath,
                 displayName: demoModelID,
-                architecture: "Qwen3_5ForConditionalGeneration",
-                modelType: "qwen3_5",
-                quantization: "8-bit",
-                weightBytes: 29_500_000_000,
+                architecture: "DemoForCausalLM",
+                modelType: "demo-coder",
+                quantization: "4-bit",
+                weightBytes: 14_600_000_000,
                 serviceAliases: [demoModelID]
             )
         ]
@@ -5633,10 +5641,10 @@ final class AppStore: ObservableObject {
         localAIBenchmarkPhase = .completed
         localAIDiagnostic = "演示模式：本机模型已连接"
         let demoSupervisor = LocalModelSupervisorSnapshot(
-            label: "homebrew.mxcl.omlx",
+            label: "com.cleannest.demo.omlx",
             domain: "gui/\(getuid())",
             kind: .userLaunchAgent,
-            sourcePath: home.appendingPathComponent("Library/LaunchAgents/homebrew.mxcl.omlx.plist").path,
+            sourcePath: "/Users/demo/Library/LaunchAgents/com.cleannest.demo.omlx.plist",
             sourceDeviceID: 1,
             sourceFileID: 9_001,
             programName: "omlx",
@@ -5644,21 +5652,21 @@ final class AppStore: ObservableObject {
             runAtLoad: true,
             isLoaded: true,
             isDisabled: false,
-            processID: 46_159,
+            processID: 4_242,
             isOwnedByCurrentUser: true,
             platform: .omlx
         )
         let demoRuntime = LocalModelRuntimeInstance(
-            id: "omlx:46159:8080",
+            id: "omlx:4242:8080",
             platform: .omlx,
             phase: .runningHealthy,
-            modelIDs: [demoModelID, "Qwen3.8-4B-4bit"],
+            modelIDs: [demoModelID, "DemoChat-3B-4bit"],
             defaultModelID: demoModelID,
             process: LocalModelProcessSnapshot(
-                pid: 46_159,
-                commandName: "omlx-server",
+                pid: 4_242,
+                commandName: "omlx-demo-server",
                 executablePath: "/opt/homebrew/bin/omlx",
-                residentMemoryBytes: 31_400_000_000,
+                residentMemoryBytes: 15_400_000_000,
                 startedAt: now.addingTimeInterval(-4_200),
                 ownerUserID: UInt32(getuid())
             ),
@@ -5668,11 +5676,11 @@ final class AppStore: ObservableObject {
             localNetworkAddresses: [],
             evidence: [.process, .supervisor, .listener, .platformAPI, .userConfiguration],
             diagnostic: "模型 API 已确认，并发现会自动拉起的用户守护。",
-            engineMemoryBytes: 29_500_000_000,
+            engineMemoryBytes: 14_600_000_000,
             clients: [
                 LocalModelClientConnection(
-                    processID: 8_812,
-                    commandName: "Codex",
+                    processID: 5_080,
+                    commandName: "Local Agent",
                     endpoint: LocalModelListener(host: "127.0.0.1", port: 53_456)
                 )
             ],
@@ -5680,13 +5688,13 @@ final class AppStore: ObservableObject {
                 LocalModelRuntimeIssue(
                     kind: .automaticRestart,
                     title: "关闭 PID 后可能自动重启",
-                    detail: "homebrew.mxcl.omlx 使用 KeepAlive 和登录时启动。",
+                    detail: "演示 LaunchAgent 使用 KeepAlive 和登录时启动。",
                     isWarning: true
                 ),
                 LocalModelRuntimeIssue(
                     kind: .activeClients,
                     title: "有客户端正在连接",
-                    detail: "当前观察到 Codex 的已建立 TCP 连接；关闭服务会中断请求。",
+                    detail: "当前观察到本机 Agent 的已建立 TCP 连接；关闭服务会中断请求。",
                     isWarning: true
                 )
             ]
@@ -5704,7 +5712,7 @@ final class AppStore: ObservableObject {
                 kind: .processReplaced,
                 runtimeID: demoRuntime.id,
                 title: "模型服务出现新进程",
-                detail: "oMLX 由用户 LaunchAgent 重新拉起；当前 PID 46159。"
+                detail: "oMLX 由演示 LaunchAgent 重新拉起；当前 PID 4242。"
             )
         ]
         cleanupAIAnalysis = CleanupAIAnalysis(

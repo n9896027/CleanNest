@@ -36,11 +36,11 @@ enum AgentRuleCatalogStoreError: LocalizedError {
         switch self {
         case .invalidBundle: return "所选项目不是有效的 CleanNest 规则包。"
         case .symbolicLink: return "规则包或规则文件是符号链接，已拒绝导入。"
-        case .unsignedBundle(let detail): return "规则包签名无效：\(detail)"
+        case .unsignedBundle(let detail): return CNL10n.format("规则包签名无效：%@", String(describing: detail))
         case .signerMismatch: return "规则包与当前 CleanNest 不是同一签名者，已拒绝导入。"
         case .missingCatalog: return "规则包缺少 Contents/Resources/AgentRules.json。"
         case .catalogTooLarge: return "规则文件超过 1 MB 安全上限。"
-        case .installFailed(let detail): return "规则包安装失败：\(detail)"
+        case .installFailed(let detail): return CNL10n.format("规则包安装失败：%@", String(describing: detail))
         }
     }
 }
@@ -64,7 +64,7 @@ struct AgentRuleCatalogStore {
             let catalog = try verifiedCatalog(at: installedBundleURL)
             return (catalog, .signedBundle(installedBundleURL), "外部规则签名与内容校验均已通过。")
         } catch {
-            return (.builtIn, .rejectedBundle(installedBundleURL), "外部规则未通过校验，已失败关闭并回退内置规则：\(error.localizedDescription)")
+            return (.builtIn, .rejectedBundle(installedBundleURL), CNL10n.format("外部规则未通过校验，已失败关闭并回退内置规则：%@", String(describing: error.localizedDescription)))
         }
     }
 
@@ -157,7 +157,7 @@ struct AgentRuleCatalogStore {
         var code: SecStaticCode?
         let creation = SecStaticCodeCreateWithPath(url as CFURL, [], &code)
         guard creation == errSecSuccess, let code else {
-            throw AgentRuleCatalogStoreError.unsignedBundle("无法读取代码签名（\(creation)）。")
+            throw AgentRuleCatalogStoreError.unsignedBundle(CNL10n.format("无法读取代码签名（%@）。", String(describing: creation)))
         }
         let validation = SecStaticCodeCheckValidity(
             code,
@@ -165,7 +165,7 @@ struct AgentRuleCatalogStore {
             nil
         )
         guard validation == errSecSuccess else {
-            throw AgentRuleCatalogStoreError.unsignedBundle("系统校验状态 \(validation)。")
+            throw AgentRuleCatalogStoreError.unsignedBundle(CNL10n.format("系统校验状态 %@。", String(describing: validation)))
         }
         var rawInformation: CFDictionary?
         let copied = SecCodeCopySigningInformation(

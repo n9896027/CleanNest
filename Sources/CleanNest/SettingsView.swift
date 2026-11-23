@@ -10,26 +10,27 @@ struct SettingsView: View {
     @State private var localAIExecutablePathDraft = ""
     @State private var showsClearMetricsConfirmation = false
     @State private var showsResetPreferencesConfirmation = false
-    @State private var engineAdvancedExpanded = false
     @State private var localAIAdvancedExpanded = false
     @State private var alertThresholdsExpanded = false
     @State private var nativeMonitorSample: NativeMonitorSample? = nil
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 18) {
                 PageHeader(
                     title: "设置",
-                    subtitle: "先选分栏，再只看这一类设置；不需要翻过无关卡片。"
+                    subtitle: ""
                 )
-
-                sectionNavigation
-                readinessDeck
-                selectedSectionContent
-            }
-            .frame(maxWidth: CNTheme.contentMaxWidth, alignment: .leading)
-            .padding(CNTheme.pagePadding)
+                HStack(alignment: .top, spacing: 20) {
+                    sectionNavigation.frame(width: 148)
+                    Divider()
+                    ScrollView {
+                        selectedSectionContent
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.bottom, 16)
+                    }
+                }
         }
+        .padding(CNTheme.pagePadding)
         .onAppear {
             syncLocalAIDrafts()
             store.refreshLaunchAtLoginStatus()
@@ -71,23 +72,32 @@ struct SettingsView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("会关闭由 CleanNest 启动的本机模型并重置引擎路径、模型连接、扫描开关和指标保留期限；不会清除活动、扫描结果、学习规则、历史指标或 macOS 授权。")
+            Text("会关闭由 CleanNest 启动的本机模型并重置模型连接、扫描开关和指标保留期限；不会清除活动、扫描结果、学习规则、历史指标或 macOS 授权。")
         }
     }
 
     private var sectionNavigation: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 9) {
+        ScrollView {
+            VStack(spacing: 4) {
                 ForEach(CleanNestSettingsSection.allCases) { section in
-                    SettingsSectionTab(
-                        section: section,
-                        isSelected: store.selectedSettingsSection == section
-                    ) {
+                    Button {
                         store.selectedSettingsSection = section
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: section.symbol).frame(width: 20)
+                            Text(CNL10n.string(section.title)).font(.subheadline)
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(store.selectedSettingsSection == section ? CNTheme.accent : Color.primary)
+                        .padding(.horizontal, 9).padding(.vertical, 11)
+                        .background(store.selectedSettingsSection == section ? CNTheme.accent.opacity(0.10) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 8))
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityValue(store.selectedSettingsSection == section ? CNL10n.string("已选中") : "")
                 }
             }
-            .padding(.vertical, 2)
         }
         .accessibilityLabel("设置分栏")
     }
@@ -95,18 +105,12 @@ struct SettingsView: View {
     @ViewBuilder
     private var selectedSectionContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            ContentSectionHeader(
-                store.selectedSettingsSection.title,
-                detail: store.selectedSettingsSection.subtitle,
-                symbol: store.selectedSettingsSection.symbol,
-                tint: store.selectedSettingsSection.tint
-            ) {
-                StatusPill(text: "当前分栏", symbol: "checkmark", style: .neutral)
-            }
-
             switch store.selectedSettingsSection {
             case .general:
                 engineCard
+                CNDetailSection(title: "连接状态", summary: "引擎、AI 与文件访问", symbol: "checkmark.shield") {
+                    readinessDeck
+                }
             case .menuBar:
                 menuBarCard
             case .scanAndPrivacy:
@@ -131,10 +135,10 @@ struct SettingsView: View {
             HStack(spacing: 10) {
                 readinessItem(
                     title: "本地引擎",
-                    status: store.engine == nil ? "需要连接" : "运行正常",
-                    detail: store.engine?.version ?? "Mole CLI",
+                    status: store.builtInEngineStatusText,
+                    detail: store.builtInEngineDetailText,
                     symbol: "gearshape.2",
-                    tint: store.engine == nil ? CNTheme.warning : CNTheme.success,
+                    tint: CNTheme.success,
                     section: .general
                 )
                 readinessItem(
@@ -155,7 +159,7 @@ struct SettingsView: View {
                 )
             }
             VStack(spacing: 10) {
-                readinessItem(title: "本地引擎", status: store.engine == nil ? "需要连接" : "运行正常", detail: store.engine?.version ?? "Mole CLI", symbol: "gearshape.2", tint: store.engine == nil ? CNTheme.warning : CNTheme.success, section: .general)
+                readinessItem(title: "本地引擎", status: store.builtInEngineStatusText, detail: store.builtInEngineDetailText, symbol: "gearshape.2", tint: CNTheme.success, section: .general)
                 readinessItem(title: "本机 AI 分析", status: store.localAIIsReady ? "模型已连接" : "等待设置", detail: store.localAIIsReady ? store.localAIModelDisplayName : "普通扫描仍可继续使用。", symbol: "brain.head.profile", tint: store.localAIIsReady ? CNTheme.cyan : CNTheme.warning, section: .localAI)
                 readinessItem(title: "文件访问", status: fullDiskAccessStatusText, detail: "由 CleanNest 自身实测", symbol: "lock.shield", tint: store.fullDiskAccessProbeResult == .accessible ? CNTheme.success : CNTheme.warning, section: .scanAndPrivacy)
             }
@@ -209,68 +213,29 @@ struct SettingsView: View {
     }
 
     private var engineCard: some View {
-        SurfaceCard(title: "本地引擎", symbol: "gearshape.2", tint: CNTheme.cyan) {
+        SurfaceCard(title: "内置原生引擎", symbol: "gearshape.2", tint: CNTheme.cyan) {
             VStack(spacing: 14) {
                 HStack(spacing: 12) {
                     Circle()
-                        .fill(store.engine == nil ? CNTheme.warning : CNTheme.success)
+                        .fill(CNTheme.success)
                         .frame(width: 9, height: 9)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(CNL10n.string(store.engine == nil ? "Mole CLI 尚未连接" : "Mole CLI 已就绪"))
+                        Text(store.builtInEngineDisplayName)
                             .font(.subheadline.weight(.semibold))
-                        Text(store.engine?.executable.path ?? store.engineDiagnostic)
-                            .font(.caption.monospaced())
+                        Text(store.builtInEngineDetailText)
+                            .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
                     }
                     Spacer()
-                    if let version = store.engine?.version {
-                        StatusPill(text: version, symbol: "checkmark", style: .success)
-                    }
+                    StatusPill(text: store.builtInEngineStatusText, symbol: "checkmark", style: .success)
                 }
 
                 Divider()
 
-                Text("保持 CLI 为独立本地进程，方便以后更新或替换引擎。")
+                Text("清理、磁盘、系统数据、Agent 与系统状态均由随 App 安装的原生组件完成，不需要下载额外引擎。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-
-                HStack(spacing: 8) {
-                    Button("重新检测") { Task { await store.refreshEngine() } }
-                    if store.engine == nil {
-                        Button("通过 Homebrew 免费安装") {
-                            Task { await store.installEngine() }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(store.isWorking)
-                    } else if store.engineCanUpdateWithHomebrew {
-                        Button("检查更新") {
-                            Task { await store.updateEngine() }
-                        }
-                        .disabled(store.isWorking)
-                    } else {
-                        StatusPill(text: "自定义管理", symbol: "person.crop.circle", style: .neutral)
-                    }
-                    Spacer()
-                }
-
-                DisclosureGroup(isExpanded: $engineAdvancedExpanded) {
-                    HStack(spacing: 8) {
-                        TextField("自定义 mo / mole 路径", text: $store.customEnginePath)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit {
-                                Task { await store.setCustomEnginePath(store.customEnginePath) }
-                            }
-                        Button("选择…") { chooseEngine() }
-                    }
-                    .padding(.top, 10)
-                } label: {
-                    Label("更换或指定引擎路径", systemImage: "slider.horizontal.3")
-                        .font(.caption.weight(.medium))
-                }
-                .tint(CNTheme.cyan)
             }
         }
     }
@@ -295,7 +260,7 @@ struct SettingsView: View {
                     Spacer(minLength: 10)
                     if store.nativeMonitorIsActive {
                         StatusPill(
-                            text: "\(store.menuBarConfiguration.refreshInterval.rawValue) 秒刷新",
+                            text: CNL10n.format("%@ 秒刷新", String(describing: store.menuBarConfiguration.refreshInterval.rawValue)),
                             symbol: "dot.radiowaves.left.and.right",
                             style: .success
                         )
@@ -336,7 +301,7 @@ struct SettingsView: View {
                             set: { store.setMenuBarRefreshInterval($0) }
                         )) {
                             ForEach(MenuBarRefreshInterval.allCases, id: \.self) { interval in
-                                Text("\(interval.rawValue) 秒").tag(interval)
+                                Text(CNL10n.format("%d 秒", interval.rawValue)).tag(interval)
                             }
                         }
                         .labelsHidden()
@@ -624,11 +589,11 @@ struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
                 Stepper(value: warning, in: range, step: 1) {
-                    Text("提醒 \(Int(warning.wrappedValue.rounded()))\(suffix)")
+                    Text(CNL10n.format("提醒 %d%@", Int(warning.wrappedValue.rounded()), suffix))
                         .font(.caption.monospacedDigit())
                 }
                 Stepper(value: critical, in: range, step: 1) {
-                    Text("严重 \(Int(critical.wrappedValue.rounded()))\(suffix)")
+                    Text(CNL10n.format("严重 %d%@", Int(critical.wrappedValue.rounded()), suffix))
                         .font(.caption.monospacedDigit())
                 }
             }
@@ -652,7 +617,7 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Stepper(value: value, in: range, step: 1) {
-                Text("提醒 \(Int(value.wrappedValue.rounded()))\(suffix)")
+                Text(CNL10n.format("提醒 %d%@", Int(value.wrappedValue.rounded()), suffix))
                     .font(.caption.monospacedDigit())
             }
         }
@@ -798,7 +763,7 @@ struct SettingsView: View {
             return "系统设置已由你手动打开；打开成功不等于已授权。确实离开并返回 CleanNest 后只会重新测试一次。"
         }
         if store.fullDiskAccessProbeIsRunning {
-            return "CleanNest 正在由自身做一次轻量访问测试，不会启动 Mole 或 du。"
+            return "CleanNest 正在由自身做一次轻量访问测试，不会启动任何外部引擎或递归扫描。"
         }
         switch store.fullDiskAccessProbeResult {
         case .accessible:
@@ -1076,7 +1041,7 @@ struct SettingsView: View {
         case .checking: return "正在检测本机模型…"
         case .starting: return "正在载入本机模型…"
         case .stopping: return "正在停止本机模型…"
-        case .ready: return "\(store.localAIModelDisplayName) 已连接"
+        case .ready: return CNL10n.format("%@ 已连接", String(describing: store.localAIModelDisplayName))
         case .unavailable: return "本机模型尚未连接"
         }
     }
@@ -1204,7 +1169,7 @@ struct SettingsView: View {
                 settingsRow(
                     symbol: "list.bullet.rectangle",
                     title: "活动明细",
-                    detail: "保留最近 \(store.activities.count) 条，可搜索、筛选、导出或单独清空。"
+                    detail: CNL10n.format("保留最近 %@ 条，可搜索、筛选、导出或单独清空。", String(describing: store.activities.count))
                 ) {
                     Button("管理明细") { store.selection = .activity }
                 }
@@ -1212,7 +1177,7 @@ struct SettingsView: View {
                 settingsRow(
                     symbol: "chart.bar.xaxis",
                     title: "累计成果",
-                    detail: "已处理 \(CleanNestFormatting.bytes(store.activityLifetimeTotals.processedBytes))；清空活动明细不会让这些计数归零。"
+                    detail: CNL10n.format("已处理 %@；清空活动明细不会让这些计数归零。", String(describing: CleanNestFormatting.bytes(store.activityLifetimeTotals.processedBytes)))
                 ) {
                     StatusPill(text: "独立保存", symbol: "checkmark", style: .success)
                 }
@@ -1323,15 +1288,12 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(AppMetadata.displayVersion)
                             .font(.headline)
-                        Text("独立、可修改的原生 macOS 客户端。不是 Mole 官方 App，也不使用官方图标。")
+                        Text("独立的原生 macOS 清理与系统维护客户端。")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                        Text("可选引擎：Mole CLI，由 tw93 与贡献者维护，GPL-3.0。CleanNest 不捆绑其二进制。")
+                        Text("内置原生引擎，无需安装 Homebrew 或任何外部清理引擎。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Button("查看 Mole 开源项目与许可证") { store.openMoleProject() }
-                            .buttonStyle(.link)
-                            .padding(.top, 3)
                     }
                     Spacer()
                 }
@@ -1438,17 +1400,6 @@ struct SettingsView: View {
         }
     }
 
-    private func chooseEngine() {
-        let panel = NSOpenPanel()
-        panel.title = CNL10n.string("选择 mo 或 mole 可执行文件")
-        panel.prompt = CNL10n.string("使用此引擎")
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await store.setCustomEnginePath(url.path) }
-    }
-
     private func chooseLocalAIModel() {
         let panel = NSOpenPanel()
         panel.title = CNL10n.string("选择 MLX 模型目录")
@@ -1543,7 +1494,7 @@ private extension CleanNestSettingsSection {
 
     var subtitle: String {
         switch self {
-        case .general: return "连接可替换的本地引擎；普通使用不需要终端。"
+        case .general: return "内置原生引擎开箱即用；普通使用不需要终端。"
         case .menuBar: return "控制常驻指标、排版、刷新频率、登录启动和快捷键。"
         case .scanAndPrivacy: return "明确扫描范围、完全磁盘访问实测与不可关闭的安全保护。"
         case .localAI: return "保存回环连接和模型短名；日常启停回到本地模型运行中心。"

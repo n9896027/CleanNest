@@ -170,6 +170,11 @@ public struct ProcessMemoryInspector: Sendable {
             .map { $0 }
     }
 
+    public func processCount() -> Int? {
+        let processIDs = allProcessIDs()
+        return processIDs.isEmpty ? nil : processIDs.count
+    }
+
     public func process(pid: Int32) -> MemoryProcessSnapshot? {
         guard pid > 0, let info = Self.bsdInfo(pid: pid) else { return nil }
 

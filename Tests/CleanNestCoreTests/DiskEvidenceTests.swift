@@ -3,6 +3,33 @@ import XCTest
 import CleanNestCore
 
 final class DiskEvidenceTests: XCTestCase {
+    func testDownloadCacheExplanationMatchesInventoryWithoutChangingCleanupBoundary() async throws {
+        let home = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        for id in ["npm", "pip"] {
+            let location = try XCTUnwrap(SystemDataCatalog.locations.first { $0.id == id })
+            let cache = location.url(in: home).appendingPathComponent("downloaded", isDirectory: true)
+            try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+            try Data([1, 2, 3]).write(to: cache.appendingPathComponent("package.bin"))
+            let entry = DiskEntry(name: "downloaded", url: cache, bytes: 3, isDirectory: true)
+            let report = DiskReport(root: home, entries: [entry], largeFiles: [], totalBytes: 3, totalFiles: 1)
+            let result = try await DiskEvidenceIndexer().build(report: report, homeDirectory: home)
+            let item = try XCTUnwrap(result.entries.first)
+            XCTAssertEqual(item.category, .packageManagerData)
+            XCTAssertEqual(item.cleanupBoundary, .reviewable)
+            XCTAssertEqual(item.minimumRisk, .low)
+            XCTAssertEqual(item.purpose, location.purpose)
+            XCTAssertEqual(item.likelyOwner, location.owner)
+            XCTAssertEqual(item.regeneration, location.impact)
+            XCTAssertTrue(item.cleanupDecision.whyLarge.contains("下载"))
+            XCTAssertFalse(item.cleanupDecision.whyLarge.contains("模拟器"))
+        }
+        let lookalike = home.appendingPathComponent("Documents/Example/.npm/_cacache")
+        let policy = DiskAISafetyPolicy.policy(for: lookalike, homeDirectory: home)
+        XCTAssertEqual(policy.category, .userContent)
+        XCTAssertEqual(policy.boundary, .protected)
+    }
+
     func testIndexerExplainsCacheProvenanceWithoutExposingHome() async throws {
         let home = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: home) }

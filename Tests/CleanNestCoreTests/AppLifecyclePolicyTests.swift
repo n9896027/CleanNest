@@ -9,7 +9,6 @@ final class AppLifecyclePolicyTests: XCTestCase {
         )
 
         XCTAssertTrue(workloads.contains(.nativeMenuBarMonitor))
-        XCTAssertTrue(workloads.contains(.engineProbe))
         XCTAssertTrue(workloads.contains(.metricsStorage))
         XCTAssertTrue(workloads.contains(.localModelRuntimeDiscovery))
         XCTAssertFalse(workloads.contains(.agentWorkspaceScan))

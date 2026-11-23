@@ -6,7 +6,7 @@ final class LocalModelRuntimeTopologyTests: XCTestCase {
     func testAdapterRegistryCoversSupportedPlatformsAndAPIStyles() throws {
         XCTAssertEqual(
             Set(LocalModelPlatformAdapterRegistry.adapters.map(\.platform)),
-            Set([.omlx, .mlxLM, .ollama, .lmStudio, .llamaCPP])
+            Set([.omlx, .mlxLM, .mlxServe, .ollama, .lmStudio, .llamaCPP])
         )
         XCTAssertEqual(
             LocalModelPlatformAdapterRegistry.adapter(for: .ollama)?.apiStyle,
@@ -16,7 +16,16 @@ final class LocalModelRuntimeTopologyTests: XCTestCase {
             LocalModelPlatformAdapterRegistry.adapter(for: .omlx)?.defaultPorts,
             [8_080]
         )
+        XCTAssertEqual(
+            LocalModelPlatformAdapterRegistry.adapter(for: .mlxServe)?.defaultPorts,
+            [11_234]
+        )
+        XCTAssertEqual(
+            LocalModelPlatformAdapterRegistry.adapter(for: .mlxServe)?.apiStyle,
+            .openAICompatible
+        )
         XCTAssertTrue(LocalModelPlatformAdapterRegistry.defaultPorts.contains(11_434))
+        XCTAssertTrue(LocalModelPlatformAdapterRegistry.defaultPorts.contains(11_234))
     }
 
     func testEstablishedConnectionsAreParsedAndLinkedToServerPort() throws {

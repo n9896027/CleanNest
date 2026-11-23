@@ -26,7 +26,7 @@
 
 ## 发布与回退
 
-完整流程见 [RELEASING.md](RELEASING.md)。已公开的 tag 和 Release 不移动；发现缺陷时停止继续分发、在发布说明中标记影响，然后以新版本修复。如果只发布源码，必须明确说明没有 Developer ID 签名和 Apple 公证的官方 App 下载。
+完整流程见 [RELEASING.md](RELEASING.md)。已公开的 tag 和 Release 不移动；发现缺陷时停止继续分发、在发布说明中标记影响，然后以新版本修复。如果只发布源码，必须明确说明该 Release 没有附带 Developer ID 签名和 Apple 公证的 App 下载；如果发布 PKG，必须附同一提交的架构、SHA-256、SBOM、PROVENANCE 与已知限制。
 
 ## 安全事件
 

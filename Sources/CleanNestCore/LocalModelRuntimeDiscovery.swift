@@ -4,6 +4,7 @@ import Foundation
 public enum LocalModelPlatform: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
     case omlx
     case mlxLM
+    case mlxServe
     case ollama
     case lmStudio
     case llamaCPP
@@ -15,6 +16,7 @@ public enum LocalModelPlatform: String, CaseIterable, Codable, Hashable, Identif
         switch self {
         case .omlx: return "oMLX"
         case .mlxLM: return "MLX-LM Server"
+        case .mlxServe: return "MLX Serve"
         case .ollama: return "Ollama"
         case .lmStudio: return "LM Studio"
         case .llamaCPP: return "llama.cpp"
@@ -26,6 +28,7 @@ public enum LocalModelPlatform: String, CaseIterable, Codable, Hashable, Identif
         switch self {
         case .omlx: return "oMLX"
         case .mlxLM: return "MLX-LM"
+        case .mlxServe: return "MLX Serve"
         case .ollama: return "Ollama"
         case .lmStudio: return "LM Studio"
         case .llamaCPP: return "llama.cpp"
@@ -307,7 +310,7 @@ public struct LocalModelListenerRecord: Equatable, Sendable {
 }
 
 public struct LocalModelRuntimeDiscovery: Sendable {
-    private struct ProcessRecord: Sendable {
+    struct ProcessRecord: Sendable {
         let snapshot: LocalModelProcessSnapshot
         let argumentsForClassification: String
         let platform: LocalModelPlatform?
@@ -376,7 +379,7 @@ public struct LocalModelRuntimeDiscovery: Sendable {
             let process = processRecords[record.pid]
             let platform = process?.platform
                 ?? Self.classifyPlatform(text: record.commandName)
-            guard platform != nil || [8080, 11434, 1234].contains(record.listener.port)
+            guard platform != nil || LocalModelPlatformAdapterRegistry.defaultPorts.contains(record.listener.port)
                     || record.listener.port == configuredPort else { continue }
             registerCandidate(
                 port: record.listener.port,
@@ -753,7 +756,7 @@ public struct LocalModelRuntimeDiscovery: Sendable {
         LocalModelPlatformAdapterRegistry.classify(processText: rawText)
     }
 
-    private static func parseProcessList(_ output: String) -> [Int32: ProcessRecord] {
+    static func parseProcessList(_ output: String) -> [Int32: ProcessRecord] {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "EEE MMM d HH:mm:ss yyyy"
@@ -771,12 +774,22 @@ public struct LocalModelRuntimeDiscovery: Sendable {
                 : ""
             let classificationText = command + " " + arguments
             let platform = classifyPlatform(text: classificationText)
-            let executable = String(components[8])
+            // `ps comm=` is limited to a short display width on macOS. For
+            // example, `/Users/zone/.mlx-serve/bin/mlx-serve` is reported as
+            // `/Users/zone/.mlx`, which is not a stable process identity and
+            // makes the later proc_pidpath check reject a perfectly valid
+            // stop request as PID reuse. Prefer the first absolute token from
+            // `args=` (the full executable path); retain the command field only
+            // when ps did not provide an absolute argv[0].
+            let executable = Self.executablePathFromProcessArguments(
+                command: command,
+                arguments: arguments
+            )
             records[pid] = ProcessRecord(
                 snapshot: LocalModelProcessSnapshot(
                     pid: pid,
                     commandName: command,
-                    executablePath: executable.hasPrefix("/") ? executable : nil,
+                    executablePath: executable,
                     residentMemoryBytes: max(0, rssKiB) * 1_024,
                     startedAt: formatter.date(from: dateText),
                     ownerUserID: ownerUserID
@@ -786,6 +799,17 @@ public struct LocalModelRuntimeDiscovery: Sendable {
             )
         }
         return records
+    }
+
+    private static func executablePathFromProcessArguments(
+        command: String,
+        arguments: String
+    ) -> String? {
+        if let first = arguments.split(whereSeparator: \.isWhitespace).first {
+            let value = String(first).trimmingCharacters(in: CharacterSet(charactersIn: "\\\"'"))
+            if value.hasPrefix("/") { return value }
+        }
+        return command.hasPrefix("/") ? command : nil
     }
 
     private static func probe(candidate: Candidate) async -> APIProbe? {

@@ -41,13 +41,40 @@ struct CleanupView: View {
         }
     }
 
+    private var scanCoverageWarning: (title: String, detail: String)? {
+        guard let session = store.cleanupScanSession else { return nil }
+        let blockedRoots = session.roots.filter { $0.status == .unreadable || $0.status == .unsafe }
+        let limitingSkips = session.skips.filter {
+            switch $0.reason {
+            case .unreadable, .unsafeRoot, .depthLimit, .fileLimit, .hashLimit:
+                return true
+            case .cloudPlaceholder, .symbolicLink, .packageBoundary:
+                return false
+            }
+        }
+        guard !blockedRoots.isEmpty || !limitingSkips.isEmpty else { return nil }
+
+        var parts: [String] = []
+        if !blockedRoots.isEmpty {
+            parts.append(CNL10n.format("%@ 个位置未能安全读取", String(describing: blockedRoots.count)))
+        }
+        if !limitingSkips.isEmpty {
+            let skippedCount = limitingSkips.reduce(0) { $0 + $1.count }
+            parts.append(CNL10n.format("%@ 项因读取或本轮上限未纳入", String(describing: skippedCount)))
+        }
+        return (
+            CNL10n.string("本次扫描不完整"),
+            CNL10n.format("%@。展开“本次扫描详情”可查看范围；未扫描内容不会被处理。", parts.joined(separator: "；"))
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     PageHeader(
                         title: "清理空间",
-                        subtitle: "把可重建缓存、桌面/下载安装包、个人媒体与重复副本分开判断。"
+                        subtitle: "先选择要处理的项目；所有操作都会先移到废纸篓。"
                     ) {
                         HStack(spacing: 8) {
                             Button("推荐项") {
@@ -72,15 +99,20 @@ struct CleanupView: View {
                     }
 
                     InlineBanner(
-                        title: "安全模式已开启",
-                        detail: "个人下载和媒体默认不勾选；重复文件执行前会重新核验保留副本与 SHA-256，失败时不会改为永久删除。",
+                        title: "安全处理已开启",
+                        detail: "个人文件默认不选；重复项会在处理前再次核验。",
                         kind: .success
                     )
 
-                    if let session = store.cleanupScanSession {
-                        CleanupScanSessionCard(
-                            session: session,
-                            mediaScanEnabled: store.cleanupScanIncludedMediaAndDuplicates
+                    if let warning = scanCoverageWarning {
+                        InlineBanner(title: warning.title, detail: warning.detail, kind: .warning)
+                    }
+
+                    if case .failed(let message) = store.cleanupAIPhase {
+                        InlineBanner(
+                            title: "本机 AI 分析未完成",
+                            detail: message + " 普通扫描与手动选择仍可正常使用。",
+                            kind: .warning
                         )
                     }
 
@@ -104,18 +136,29 @@ struct CleanupView: View {
                         )
                     }
 
-                    if !store.cleanupCandidates.isEmpty {
-                        LocalAIAdviceCard()
+                    if !store.cleanupReviewItems.isEmpty {
+                        CleanupReviewCard(items: store.cleanupReviewItems)
+                    }
+
+                    if let session = store.cleanupScanSession, !session.issues.isEmpty {
+                        CleanupScanIssuesCard(issues: session.issues)
+                    }
+
+                    if !store.cleanupExecutionLedger.records.isEmpty || store.cleanupExecutionLedgerDiagnostic != nil {
+                        CleanupExecutionLedgerCard(
+                            snapshot: store.cleanupExecutionLedger,
+                            diagnostic: store.cleanupExecutionLedgerDiagnostic
+                        )
                     }
 
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 14) {
                             cleanupSearchField
-                            cleanupScanToggles
+                            scanOptions
                         }
                         VStack(alignment: .leading, spacing: 10) {
                             cleanupSearchField
-                            cleanupScanToggles
+                            scanOptions
                         }
                     }
 
@@ -153,6 +196,23 @@ struct CleanupView: View {
                             }
                         }
                     }
+
+                    if !store.cleanupCandidates.isEmpty {
+                        LocalAIAdviceCard()
+                    }
+
+                    if let session = store.cleanupScanSession {
+                        CNDetailSection(
+                            title: "本次扫描详情",
+                            summary: CNL10n.format("%@ 项候选 · %@/%@ 个位置可读", String(describing: session.candidateCount), String(describing: session.checkedRootCount), String(describing: session.roots.count)),
+                            symbol: "doc.text.magnifyingglass"
+                        ) {
+                            CleanupScanSessionCard(
+                                session: session,
+                                mediaScanEnabled: store.cleanupScanIncludedMediaAndDuplicates
+                            )
+                        }
+                    }
                 }
                 .padding(CNTheme.pagePadding)
                 .padding(.bottom, store.cleanupCandidates.isEmpty ? 0 : 112)
@@ -167,7 +227,7 @@ struct CleanupView: View {
                 )
             }
         }
-        .alert("将 \(store.selectedCleanupCount) 项移到废纸篓？", isPresented: $confirmingTrash) {
+        .alert(CNL10n.format("将 %@ 项移到废纸篓？", String(describing: store.selectedCleanupCount)), isPresented: $confirmingTrash) {
             Button("返回检查", role: .cancel) { }
             Button("移到废纸篓") {
                 Task { await store.trashSelectedCleanup() }
@@ -208,17 +268,33 @@ struct CleanupView: View {
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CNTheme.divider, lineWidth: 0.7))
     }
 
-    private var cleanupScanToggles: some View {
-        HStack(spacing: 14) {
-            Toggle("下次扫描：媒体与重复文件", isOn: $store.includeMediaAndDuplicates)
-                .toggleStyle(.switch)
-                .help("只在本机读取媒体元数据；仅对同尺寸文件计算 SHA-256，不上传文件或哈希。")
-            Toggle("下次扫描：应用缓存", isOn: $store.includeApplicationCaches)
-                .toggleStyle(.switch)
-                .help("应用缓存默认不扫描；开启后也不会自动勾选。")
+    private var scanOptions: some View {
+        CNDetailSection(
+            title: "扫描选项",
+            summary: scanOptionsSummary,
+            symbol: "slider.horizontal.3"
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("检查媒体与重复文件", isOn: $store.includeMediaAndDuplicates)
+                    .toggleStyle(.switch)
+                    .help("只读取本机媒体元数据；只对同尺寸文件计算 SHA-256，不上传文件或哈希。")
+                Toggle("检查应用缓存", isOn: $store.includeApplicationCaches)
+                    .toggleStyle(.switch)
+                    .help("应用缓存不会自动勾选。")
+            }
+            .disabled(store.cleanupScanIsActive)
         }
         .fixedSize(horizontal: true, vertical: false)
-        .disabled(store.cleanupScanIsActive)
+    }
+
+    private var scanOptionsSummary: String {
+        let enabled = [
+            store.includeMediaAndDuplicates ? CNL10n.string("媒体与重复文件") : nil,
+            store.includeApplicationCaches ? CNL10n.string("应用缓存") : nil
+        ].compactMap { $0 }
+        return enabled.isEmpty
+            ? CNL10n.string("仅检查安装包与归档")
+            : CNL10n.format("已选：%@", enabled.joined(separator: "、"))
     }
 
     private var confirmationDetail: String {
@@ -243,6 +319,105 @@ struct CleanupView: View {
     }
 }
 
+private struct CleanupReviewCard: View {
+    @EnvironmentObject private var store: AppStore
+    let items: [CleanupReviewItem]
+
+    var body: some View {
+        SurfaceCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    CNIconTile(symbol: "checklist", tint: CNTheme.warning, size: 32)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("需要逐项复核")
+                            .font(.headline)
+                        Text("只重试仍可使用原证据的项目；身份或路径变化必须重新扫描。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    StatusPill(
+                        text: CNL10n.format("%d 项未移动", items.count),
+                        symbol: "hand.raised",
+                        style: .warning
+                    )
+                }
+
+                Divider()
+
+                ForEach(items) { item in
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack(spacing: 8) {
+                            Text(item.candidate.name)
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(1)
+                            StatusPill(text: item.title, symbol: "exclamationmark.shield", style: .warning)
+                            Spacer()
+                            Button("诊断") {
+                                store.lastTechnicalDetail = item.technicalDescription ?? item.detail
+                                store.showTechnicalDetail()
+                            }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                        }
+                        Text(item.candidate.url.path.replacingOccurrences(
+                            of: FileManager.default.homeDirectoryForCurrentUser.path,
+                            with: "~"
+                        ))
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        Text(item.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(item.guidance)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        HStack(spacing: 8) {
+                            if item.failureKind == .permissionDenied {
+                                Button("打开权限设置") { store.openFullDiskAccessSettings() }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                            }
+                            switch item.action {
+                            case .retry:
+                                Button {
+                                    Task { await store.retryCleanupReview(item) }
+                                } label: {
+                                    if store.cleanupReviewRetryingID == item.id {
+                                        ProgressView().controlSize(.small)
+                                    } else {
+                                        Label("重试此项", systemImage: "arrow.clockwise")
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                                .disabled(store.isWorking || store.cleanupReviewRetryingID != nil)
+                                .help("重新执行全部执行前安全检查，不会跳过活跃或身份复核")
+                            case .rescan:
+                                Button {
+                                    Task { await store.scanCleanup() }
+                                } label: {
+                                    Label("重新扫描", systemImage: "arrow.clockwise")
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(store.isWorking)
+                            }
+                        }
+                    }
+                    .padding(10)
+                    .background(CNTheme.warning.opacity(0.055), in: RoundedRectangle(cornerRadius: 9))
+                }
+            }
+        }
+    }
+}
+
 private struct CleanupProcessingBasketBar: View {
     let summary: CleanupBasketSummary
     let disabled: Bool
@@ -250,12 +425,12 @@ private struct CleanupProcessingBasketBar: View {
     let onReview: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 7) {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 16) { basketContent }
                 VStack(alignment: .leading, spacing: 10) { basketContent }
             }
-            Text("理论余量只是“以后清空废纸篓”的上限估算；本次操作只移入废纸篓，完成后会单独记录 APFS 实测变化。")
+            Text("本次只移入废纸篓；清空废纸篓后空间才会真正释放。")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -269,27 +444,27 @@ private struct CleanupProcessingBasketBar: View {
     @ViewBuilder
     private var basketContent: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("处理篮 · 已选 \(summary.selectedCount) 项")
+            Text(CNL10n.format("已选 %d 项", summary.selectedCount))
                 .font(.subheadline.weight(.semibold))
             Text(CleanNestFormatting.bytes(summary.selectedBytes))
                 .font(.title3.weight(.semibold))
                 .monospacedMetric()
         }
         basketFact(
-            "清空废纸篓后的理论余量",
+            "清空后的预估可用空间",
             CleanNestFormatting.bytes(summary.projectedFreeBytesAfterEmptyingTrash),
             symbol: "internaldrive"
         )
         basketFact("恢复方式", "清空前可从废纸篓放回", symbol: "arrow.uturn.backward.circle")
         basketFact(
-            "执行前重验",
-            "身份 \(summary.identityRevalidationCount) 项 · 路径边界 \(summary.pathRevalidationCount) 项 · 重复哈希 \(summary.duplicateCount) 项",
+            "安全核验",
+            CNL10n.format("%@ 项会在执行前重验", String(describing: summary.identityRevalidationCount + summary.pathRevalidationCount)),
             symbol: "checkmark.shield"
         )
         Spacer(minLength: 8)
         Button("清空选择", action: onClear)
             .disabled(summary.selectedCount == 0)
-        Button("复核并继续…", action: onReview)
+        Button("复核并移到废纸篓…", action: onReview)
             .buttonStyle(.borderedProminent)
             .disabled(disabled)
             .help("只打开最终复核；不会在这一步移动文件")
@@ -300,8 +475,8 @@ private struct CleanupProcessingBasketBar: View {
             Image(systemName: symbol)
                 .foregroundStyle(CNTheme.cyan)
             VStack(alignment: .leading, spacing: 1) {
-                Text(label).font(.caption2).foregroundStyle(.tertiary)
-                Text(value).font(.caption.weight(.semibold)).lineLimit(1)
+                Text(CNL10n.string(label)).font(.caption2).foregroundStyle(.tertiary)
+                Text(CNL10n.string(value)).font(.caption.weight(.semibold)).lineLimit(1)
             }
         }
         .accessibilityElement(children: .combine)
@@ -316,8 +491,7 @@ private struct CleanupScanSessionCard: View {
     private let evidenceColumns = [GridItem(.adaptive(minimum: 190), spacing: 8)]
 
     var body: some View {
-        SurfaceCard {
-            VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 10) {
                     Image(systemName: "doc.text.magnifyingglass")
                         .foregroundStyle(CNTheme.cyan)
@@ -332,7 +506,7 @@ private struct CleanupScanSessionCard: View {
                     }
                     Spacer()
                     StatusPill(
-                        text: "\(session.checkedRootCount)/\(session.roots.count) 个位置可读",
+                        text: CNL10n.format("%@/%@ 个位置可读", String(describing: session.checkedRootCount), String(describing: session.roots.count)),
                         symbol: "checklist",
                         style: session.roots.contains(where: { $0.status == .unsafe || $0.status == .unreadable }) ? .warning : .success
                     )
@@ -383,7 +557,7 @@ private struct CleanupScanSessionCard: View {
                     LazyVGrid(columns: evidenceColumns, alignment: .leading, spacing: 8) {
                         ForEach(session.categories) { category in
                             Label(
-                                "\(CNL10n.string(category.kind.rawValue)) \(category.count) 项 · \(CleanNestFormatting.bytes(category.allocatedBytes))",
+                                CNL10n.format("%@ %@ 项 · %@", String(describing: CNL10n.string(category.kind.rawValue)), String(describing: category.count), String(describing: CleanNestFormatting.bytes(category.allocatedBytes))),
                                 systemImage: category.kind.symbolName
                             )
                             .font(.caption.weight(.medium))
@@ -415,8 +589,8 @@ private struct CleanupScanSessionCard: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
-            }
         }
+        .padding(.vertical, 4)
     }
 
     private func evidenceSectionTitle(_ title: String) -> some View {
@@ -431,7 +605,7 @@ private struct CleanupScanSessionCard: View {
                 .foregroundStyle(rootStatusTint(root.status))
             VStack(alignment: .leading, spacing: 2) {
                 Text(root.name).font(.caption.weight(.semibold))
-                Text("\(root.pathHint) · \(rootStatusLabel(root.status))")
+                Text(CNL10n.format("%@ · %@", root.pathHint, rootStatusLabel(root.status)))
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -632,16 +806,28 @@ private struct EvidenceMetric: View {
 }
 
 private struct CleanupGroup: View {
+    private static let autoExpandLimit = 24
+
     @EnvironmentObject private var store: AppStore
     let kind: CleanupKind
     let candidates: [CleanupCandidate]
     @State private var isExpanded: Bool
+    @State private var pageIndex: Int
 
     private var total: Int64 { candidates.reduce(0) { $0 + $1.allocatedBytes } }
     private var selectedCount: Int {
         candidates.reduce(0) { $0 + (store.selectedCleanupIDs.contains($1.id) ? 1 : 0) }
     }
     private var allSelected: Bool { !candidates.isEmpty && selectedCount == candidates.count }
+    private var pageWindow: CleanupCandidatePageWindow {
+        CleanupCandidatePageWindow(
+            itemCount: candidates.count,
+            requestedPageIndex: pageIndex
+        )
+    }
+    private var visibleCandidates: [CleanupCandidate] {
+        Array(candidates[pageWindow.range])
+    }
     private var showsMediaClusters: Bool {
         kind == .screenshot || kind == .image || kind == .video || kind == .audio
     }
@@ -671,7 +857,8 @@ private struct CleanupGroup: View {
     init(kind: CleanupKind, candidates: [CleanupCandidate]) {
         self.kind = kind
         self.candidates = candidates
-        _isExpanded = State(initialValue: candidates.count <= 24)
+        _isExpanded = State(initialValue: candidates.count <= Self.autoExpandLimit)
+        _pageIndex = State(initialValue: 0)
     }
 
     var body: some View {
@@ -679,9 +866,8 @@ private struct CleanupGroup: View {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            isExpanded.toggle()
-                        }
+                        pageIndex = 0
+                        isExpanded.toggle()
                     } label: {
                         HStack {
                             Image(systemName: kind.symbolName)
@@ -753,22 +939,86 @@ private struct CleanupGroup: View {
                         }
                     }
                     .padding(.top, 9)
-                    .accessibilityLabel("媒体时间与体积分组：\(mediaClusterLabels.joined(separator: "，"))")
+                    .accessibilityLabel(CNL10n.format("媒体时间与体积分组：%@", mediaClusterLabels.joined(separator: "，")))
                 }
 
                 if isExpanded {
                     Divider()
                         .padding(.top, 10)
 
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
+                    VStack(spacing: 0) {
+                        ForEach(visibleCandidates) { candidate in
                             CleanupRow(candidate: candidate)
-                            if index < candidates.count - 1 { Divider().padding(.leading, 38) }
+                            if candidate.id != visibleCandidates.last?.id {
+                                Divider().padding(.leading, 38)
+                            }
                         }
+                    }
+
+                    if pageWindow.pageCount > 1 {
+                        Divider()
+                        cleanupPagination
                     }
                 }
             }
         }
+        .onChange(of: candidates.count) { _, _ in
+            pageIndex = pageWindow.pageIndex
+        }
+    }
+
+    private var cleanupPagination: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                paginationExplanation
+                Spacer(minLength: 12)
+                paginationControls
+            }
+            VStack(alignment: .leading, spacing: 9) {
+                paginationExplanation
+                paginationControls
+            }
+        }
+        .padding(.top, 10)
+    }
+
+    private var paginationExplanation: some View {
+        Text(
+            CNL10n.format(
+                "当前显示 %d–%d / %d 项。为避免大型列表卡住，每页最多加载 %d 项。",
+                pageWindow.displayedStartNumber,
+                pageWindow.displayedEndNumber,
+                candidates.count,
+                pageWindow.pageSize
+            )
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var paginationControls: some View {
+        HStack(spacing: 8) {
+            Button {
+                pageIndex = max(0, pageWindow.pageIndex - 1)
+            } label: {
+                Label(CNL10n.string("上一页"), systemImage: "chevron.left")
+            }
+            .disabled(!pageWindow.hasPreviousPage)
+
+            Text(CNL10n.format("第 %d / %d 页", pageWindow.pageIndex + 1, pageWindow.pageCount))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+
+            Button {
+                pageIndex = min(pageWindow.pageCount - 1, pageWindow.pageIndex + 1)
+            } label: {
+                Label(CNL10n.string("下一页"), systemImage: "chevron.right")
+            }
+            .disabled(!pageWindow.hasNextPage)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
     }
 }
 
@@ -802,7 +1052,7 @@ private struct CleanupRow: View {
             Toggle("", isOn: isSelected)
                 .labelsHidden()
                 .toggleStyle(.checkbox)
-                .accessibilityLabel("选择 \(candidate.name)")
+                .accessibilityLabel(CNL10n.format("选择 %@", candidate.name))
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 7) {
@@ -820,12 +1070,16 @@ private struct CleanupRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text("\(candidate.detail) · \(CleanNestFormatting.age(from: candidate.modifiedAt))")
+                Text(CNL10n.format(
+                    "%@ · %@",
+                    CNL10n.string(candidate.detail),
+                    CNL10n.age(CleanNestFormatting.age(from: candidate.modifiedAt))
+                ))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                 if let duplicate = candidate.duplicateEvidence {
                     Label(
-                        "保留副本：\(redactedPath(duplicate.retainedURL)) · 本组 \(duplicate.groupFileCount) 份",
+                        CNL10n.format("保留副本：%@ · 本组 %@ 份", String(describing: redactedPath(duplicate.retainedURL)), String(describing: duplicate.groupFileCount)),
                         systemImage: "checkmark.shield"
                     )
                     .font(.caption2.weight(.medium))
@@ -844,7 +1098,7 @@ private struct CleanupRow: View {
                             symbol: aiAdviceSymbol(advice),
                             style: aiAdviceStyle(advice)
                         )
-                        Text(advice.reason)
+                        Text(CNL10n.string(advice.reason))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(3)
@@ -854,7 +1108,7 @@ private struct CleanupRow: View {
                 if let learnedPreference {
                     HStack(spacing: 7) {
                         StatusPill(
-                            text: learnedPreference == .preferKeep ? "已学习：优先保留" : "已学习：优先清理",
+                            text: learnedPreference == .preferKeep ? "已记住：优先保留" : "已记住：优先清理",
                             symbol: learnedPreference == .preferKeep ? "hand.raised" : "sparkles",
                             style: learnedPreference == .preferKeep ? .warning : .success
                         )
@@ -870,7 +1124,7 @@ private struct CleanupRow: View {
                             symbol: ruleProposal.state == .pending ? "doc.badge.clock" : "pause.circle",
                             style: ruleProposal.state == .pending ? .warning : .neutral
                         )
-                        Text("不会改变排序，需到本机学习页确认")
+                        Text("不会自动改变排序；到“清理习惯”页启用后才生效")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -904,7 +1158,7 @@ private struct CleanupRow: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("创建或管理本机学习规则")
+            .help("查看或管理清理习惯")
         }
         .padding(.vertical, 10)
         .contentShape(Rectangle())
@@ -949,11 +1203,11 @@ private struct CleanupRow: View {
 
     private var learningDetail: String {
         guard let signal = learningSignal else { return "" }
-        if signal.explicitPreference != nil { return "来自你的明确判断" }
+        if signal.explicitPreference != nil { return CNL10n.string("来自你的明确判断") }
         if signal.successfulCleanupCount > 0 {
-            return "你曾安全清理 \(signal.successfulCleanupCount) 次"
+            return CNL10n.format("你曾安全清理 %@ 次", String(describing: signal.successfulCleanupCount))
         }
-        return "本机记录"
+        return CNL10n.string("本机记录")
     }
 
     private func redactedPath(_ url: URL) -> String {
@@ -988,11 +1242,11 @@ private struct CleanupRow: View {
     private func aiAdviceLabel(_ advice: CleanupAIAdvice) -> String {
         let verdict: String
         switch advice.verdict {
-        case .reclaimable: verdict = "适合清理"
-        case .review: verdict = "建议检查"
-        case .keep: verdict = "建议保留"
+        case .reclaimable: verdict = CNL10n.string("适合清理")
+        case .review: verdict = CNL10n.string("建议检查")
+        case .keep: verdict = CNL10n.string("建议保留")
         }
-        return "AI 优先 \(advice.priority)：\(verdict)"
+        return CNL10n.format("AI 优先 %@：%@", String(describing: advice.priority), verdict)
     }
 
     private func aiAdviceSymbol(_ advice: CleanupAIAdvice) -> String {
@@ -1016,17 +1270,15 @@ private struct LocalAIAdviceCard: View {
     @EnvironmentObject private var store: AppStore
 
     var body: some View {
-        SurfaceCard {
+        CNDetailSection(
+            title: "本机 AI 分析",
+            summary: aiSummary,
+            symbol: "brain.head.profile"
+        ) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 10) {
-                    Image(systemName: "brain.head.profile")
-                        .foregroundStyle(CNTheme.accent)
-                        .frame(width: 30, height: 30)
-                        .background(CNTheme.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("本机 AI 深度分析")
-                            .font(.headline)
-                        Text("只读扫描元数据，不读取文件内容，也不会改变你的勾选。")
+                        Text("只读分析，不会改动你的选择")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1043,7 +1295,7 @@ private struct LocalAIAdviceCard: View {
                 case .analyzing:
                     HStack(spacing: 9) {
                         ProgressView().controlSize(.small)
-                        Text("\(store.localAIModelDisplayName) 正在判断体积最大的 \(min(store.cleanupCandidates.count, CleanupAIRequestBuilder.maximumCandidates)) 项…")
+                        Text(CNL10n.format("%@ 正在判断体积最大的 %d 项…", store.localAIModelDisplayName, min(store.cleanupCandidates.count, CleanupAIRequestBuilder.maximumCandidates)))
                             .font(.subheadline)
                         Spacer()
                     }
@@ -1059,6 +1311,14 @@ private struct LocalAIAdviceCard: View {
                 }
             }
         }
+    }
+
+    private var aiSummary: String {
+        if let analysis = store.cleanupAIAnalysis {
+            return CNL10n.format("已分析 %@ 项", String(describing: analysis.requestedCount))
+        }
+        if store.localAIIsReady { return CNL10n.format("可用：%@", String(describing: store.localAIModelDisplayName)) }
+        return "未连接时仍可正常清理"
     }
 
     @ViewBuilder
@@ -1085,7 +1345,7 @@ private struct LocalAIAdviceCard: View {
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
                 StatusPill(
-                    text: "已分析 \(analysis.requestedCount) 项",
+                    text: CNL10n.format("已分析 %@ 项", String(describing: analysis.requestedCount)),
                     symbol: "checkmark.circle",
                     style: .success
                 )

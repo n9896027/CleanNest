@@ -32,6 +32,8 @@ jobs:
       - name: Validate build script syntax
         run: |
           bash -n build.sh
+          bash -n scripts/build-installer.sh
+          bash -n scripts/check-signing-prereqs.sh
           zsh -n scripts/verify-release-candidate.sh
           zsh -n scripts/verify-48h-soak-report.sh
 

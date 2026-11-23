@@ -179,6 +179,44 @@ public struct SafePathPolicy: Sendable {
         _ = try CleanupFileIdentity.capture(at: resolved)
     }
 
+    /// Validate and return the canonical path that passed the policy checks.
+    /// Mutation must use this URL rather than the caller-supplied one, so the
+    /// check and the operation refer to the same filesystem object.
+    public func resolvedCleanupTarget(_ target: URL) throws -> URL {
+        let resolved = try validatedExistingTarget(target)
+        guard isStrictDescendant(resolved, of: cleanupRoots) else {
+            throw SafePathError.outsideAllowedRoots
+        }
+        return resolved
+    }
+
+    public func resolvedCleanupCandidateTarget(_ candidate: CleanupCandidate) throws -> URL {
+        guard candidate.kind.isPersonalFile else {
+            return try resolvedCleanupTarget(candidate.url)
+        }
+        let resolved = try validatedExistingTarget(candidate.url)
+        guard isStrictDescendant(resolved, of: personalFileRoots) else {
+            throw SafePathError.outsideAllowedRoots
+        }
+        return resolved
+    }
+
+    /// Last-moment check that the canonical path is still a real, in-scope
+    /// entry and not a symlink swapped in after validation. This narrows the
+    /// TOCTOU window between the policy check and the trash operation.
+    public func revalidateBeforeMutation(_ target: URL) throws {
+        var info = stat()
+        guard target.path.withCString({ lstat($0, &info) }) == 0 else {
+            throw SafePathError.missing
+        }
+        guard info.st_mode & S_IFMT != S_IFLNK else {
+            throw SafePathError.symbolicLink
+        }
+        guard isStrictDescendant(target, of: cleanupRoots + personalFileRoots) else {
+            throw SafePathError.outsideAllowedRoots
+        }
+    }
+
     private func validatedExistingTarget(_ target: URL) throws -> URL {
         guard FileManager.default.fileExists(atPath: target.path) else { throw SafePathError.missing }
         if (try? target.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
@@ -235,16 +273,21 @@ public struct SafePathPolicy: Sendable {
 public struct TrashService: Sendable {
     public typealias ApplicationRecycler = @Sendable (ApplicationTrashRequest) async throws -> URL?
     public typealias ApplicationMovePermissionProbe = @Sendable (URL, URL) -> Bool
+    public typealias CleanupActivityProbe = @Sendable () async -> AgentWorkspaceOpenFileProbe.Result
     typealias DependencyRecycler = @Sendable (URL) throws -> URL?
+    typealias CleanupRecycler = @Sendable (URL) throws -> URL?
 
     private let policy: SafePathPolicy
     private let applicationRecycler: ApplicationRecycler
     private let applicationMovePermissionProbe: ApplicationMovePermissionProbe
     private let dependencyRecycler: DependencyRecycler
+    private let cleanupActivityProbe: CleanupActivityProbe
+    private let cleanupRecycler: CleanupRecycler
 
     public init(
         policy: SafePathPolicy = SafePathPolicy(),
-        applicationRecycler: @escaping ApplicationRecycler
+        applicationRecycler: @escaping ApplicationRecycler,
+        cleanupActivityProbe: @escaping CleanupActivityProbe = { await AgentWorkspaceOpenFileProbe().capture() }
     ) {
         self.policy = policy
         self.applicationRecycler = applicationRecycler
@@ -255,23 +298,30 @@ public struct TrashService: Sendable {
             )
         }
         self.dependencyRecycler = Self.recycleDependencyThroughFileManager
+        self.cleanupActivityProbe = cleanupActivityProbe
+        self.cleanupRecycler = Self.recycleCleanupThroughFileManager
     }
 
     public init(
         policy: SafePathPolicy,
         applicationRecycler: @escaping ApplicationRecycler,
-        applicationMovePermissionProbe: @escaping ApplicationMovePermissionProbe
+        applicationMovePermissionProbe: @escaping ApplicationMovePermissionProbe,
+        cleanupActivityProbe: @escaping CleanupActivityProbe = { await AgentWorkspaceOpenFileProbe().capture() }
     ) {
         self.policy = policy
         self.applicationRecycler = applicationRecycler
         self.applicationMovePermissionProbe = applicationMovePermissionProbe
         self.dependencyRecycler = Self.recycleDependencyThroughFileManager
+        self.cleanupActivityProbe = cleanupActivityProbe
+        self.cleanupRecycler = Self.recycleCleanupThroughFileManager
     }
 
     init(
         policy: SafePathPolicy,
         applicationRecycler: @escaping ApplicationRecycler,
-        dependencyRecycler: @escaping DependencyRecycler
+        dependencyRecycler: @escaping DependencyRecycler,
+        cleanupActivityProbe: @escaping CleanupActivityProbe = { await AgentWorkspaceOpenFileProbe().capture() },
+        cleanupRecycler: @escaping CleanupRecycler = Self.recycleCleanupThroughFileManager
     ) {
         self.policy = policy
         self.applicationRecycler = applicationRecycler
@@ -282,6 +332,8 @@ public struct TrashService: Sendable {
             )
         }
         self.dependencyRecycler = dependencyRecycler
+        self.cleanupActivityProbe = cleanupActivityProbe
+        self.cleanupRecycler = cleanupRecycler
     }
 
     public func applicationRemovalRequirement(
@@ -314,23 +366,25 @@ public struct TrashService: Sendable {
     }
 
     public func trashCleanupTargets(_ targets: [URL]) async -> [TrashOutcome] {
-        await trash(targets) { target in
-            try policy.validateCleanupTarget(target)
+        await trash(targets, activityProbe: cleanupActivityProbe, recycler: cleanupRecycler) { target in
+            try policy.resolvedCleanupTarget(target)
         }
     }
 
     public func trashCleanupCandidates(_ candidates: [CleanupCandidate]) async -> [TrashOutcome] {
         let candidatesByPath = Dictionary(
-            uniqueKeysWithValues: candidates.map {
+            candidates.map {
                 ($0.url.standardizedFileURL.path, $0)
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
-        return await trash(candidates.map(\.url)) { target in
+        return await trash(candidates.map(\.url), activityProbe: cleanupActivityProbe, recycler: cleanupRecycler) { target in
             guard let candidate = candidatesByPath[target.standardizedFileURL.path] else {
                 throw CleanupEvidenceError.targetChanged
             }
             try policy.validateCleanupCandidate(candidate)
             try CleanupEvidenceValidator.validate(candidate)
+            return try policy.resolvedCleanupCandidateTarget(candidate)
         }
     }
 
@@ -351,11 +405,12 @@ public struct TrashService: Sendable {
                           let expectedIdentity = node.identity else {
                         throw SafePathError.protectedPath
                     }
-                    try policy.validateCleanupTarget(source)
-                    guard try ApplicationDependencyIdentity.capture(at: source) == expectedIdentity else {
+                    let validated = try policy.resolvedCleanupTarget(source)
+                    guard try ApplicationDependencyIdentity.capture(at: validated) == expectedIdentity else {
                         throw SafePathError.applicationChanged
                     }
-                    let resultingURL = try dependencyRecycler(source)
+                    try policy.revalidateBeforeMutation(validated)
+                    let resultingURL = try dependencyRecycler(validated)
                     guard !FileManager.default.fileExists(atPath: source.path),
                           let destination = resultingURL,
                           FileManager.default.fileExists(atPath: destination.path) else {
@@ -393,6 +448,58 @@ public struct TrashService: Sendable {
         try FileManager.default.trashItem(at: source, resultingItemURL: &resultingURL)
         return resultingURL as URL?
     }
+
+    private static let recycleCleanupThroughFileManager: CleanupRecycler = { source in
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["CLEANNEST_UI_TEST_SAFE_RECYCLER"] != nil {
+            return try recycleCleanupIntoIsolatedHomeTrash(source)
+        }
+        #endif
+        var resultingURL: NSURL?
+        try FileManager.default.trashItem(at: source, resultingItemURL: &resultingURL)
+        return resultingURL as URL?
+    }
+
+    #if DEBUG
+    /// UI verification only: FileManager.trashItem ignores CFFIXED_USER_HOME
+    /// when choosing the real account's Trash. An explicit, matching test root
+    /// keeps debug fixture moves inside that fixture; release builds never
+    /// compile this alternate mutation path.
+    private static func recycleCleanupIntoIsolatedHomeTrash(_ source: URL) throws -> URL {
+        let fileManager = FileManager.default
+        let home = fileManager.homeDirectoryForCurrentUser.standardizedFileURL
+        guard let configuredRoot = ProcessInfo.processInfo.environment["CLEANNEST_UI_TEST_SAFE_RECYCLER"],
+              URL(fileURLWithPath: configuredRoot).standardizedFileURL == home,
+              source.standardizedFileURL.path.hasPrefix(home.path + "/") else {
+            throw NSError(
+                domain: "CleanNest.UITestSafeRecycler",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "隔离测试回收器的 Home 或源路径不匹配，未移动文件。"]
+            )
+        }
+        let trash = home.appendingPathComponent(".Trash", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: trash.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              try trash.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else {
+            throw NSError(
+                domain: "CleanNest.UITestSafeRecycler",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "隔离测试废纸篓不存在或不安全，未移动文件。"]
+            )
+        }
+        let destination = trash.appendingPathComponent(source.lastPathComponent)
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            throw NSError(
+                domain: "CleanNest.UITestSafeRecycler",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "隔离测试废纸篓已有同名项目，未覆盖任何文件。"]
+            )
+        }
+        try fileManager.moveItem(at: source, to: destination)
+        return destination
+    }
+    #endif
 
     public func trashApplication(
         _ target: URL,
@@ -466,39 +573,108 @@ public struct TrashService: Sendable {
 
     private func trash(
         _ targets: [URL],
-        validator: @escaping @Sendable (URL) throws -> Void
+        activityProbe: @escaping CleanupActivityProbe,
+        recycler: @escaping CleanupRecycler,
+        validator: @escaping @Sendable (URL) throws -> URL
     ) async -> [TrashOutcome] {
-        await Task.detached(priority: .userInitiated) {
-            targets.map { source in
+        let policy = self.policy
+        return await Task.detached(priority: .userInitiated) {
+            var outcomes: [Int: TrashOutcome] = [:]
+            var prepared: [(index: Int, source: URL, validated: URL)] = []
+
+            // Preserve the existing validation errors and their priority. Only
+            // candidates that still have valid scan evidence need an lsof pass.
+            for (index, source) in targets.enumerated() {
                 do {
-                    try validator(source)
-                    var resultingURL: NSURL?
-                    try FileManager.default.trashItem(at: source, resultingItemURL: &resultingURL)
-                    return TrashOutcome(
-                        source: source,
-                        trashedURL: resultingURL as URL?,
+                    let validated = try validator(source)
+                    prepared.append((index, source, validated))
+                } catch {
+                    outcomes[index] = Self.cleanupFailureOutcome(source: source, error: error)
+                }
+            }
+
+            // Batch gate: one snapshot classifies every prepared item. An
+            // unavailable table blocks all valid items; active evidence blocks
+            // only its matching target and never misattributes sibling paths.
+            if !prepared.isEmpty {
+                let snapshot = await activityProbe()
+                for item in prepared {
+                    do {
+                        try CleanupActivityPreflight.validate(target: item.validated, snapshot: snapshot)
+                    } catch {
+                        outcomes[item.index] = Self.cleanupFailureOutcome(source: item.source, error: error)
+                    }
+                }
+            }
+
+            for item in prepared where outcomes[item.index] == nil {
+                do {
+                    // Repeat identity/path validation and capture a fresh open-
+                    // file table immediately before this item's real mutation.
+                    let validated = try validator(item.source)
+                    try policy.revalidateBeforeMutation(validated)
+                    let identityBefore = try CleanupExecutionIdentity.capture(at: validated)
+                    let snapshot = await activityProbe()
+                    try CleanupActivityPreflight.validate(target: validated, snapshot: snapshot)
+                    try policy.revalidateBeforeMutation(validated)
+                    let resultingURL = try recycler(validated)
+                    guard let destination = resultingURL?.standardizedFileURL,
+                          !FileManager.default.fileExists(atPath: item.source.path),
+                          FileManager.default.fileExists(atPath: destination.path),
+                          destination.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
+                            == policy.homeDirectory.appendingPathComponent(".Trash", isDirectory: true)
+                                .resolvingSymlinksInPath().standardizedFileURL,
+                          try CleanupExecutionIdentity.capture(at: destination) == identityBefore else {
+                        throw WorkspaceRecycleError.missingResult
+                    }
+                    outcomes[item.index] = TrashOutcome(
+                        source: item.source,
+                        trashedURL: destination,
                         errorDescription: nil
                     )
                 } catch {
-                    let nsError = error as NSError
-                    let failureKind: TrashFailureKind
-                    if error is CleanupEvidenceError {
-                        failureKind = .targetChanged
-                    } else if error is SafePathError {
-                        failureKind = .validation
-                    } else {
-                        failureKind = .operationFailed
-                    }
-                    return TrashOutcome(
-                        source: source,
-                        trashedURL: nil,
-                        errorDescription: error.localizedDescription,
-                        failureKind: failureKind,
-                        technicalDescription: "错误域：\(nsError.domain)\n错误码：\(nsError.code)\n目标：\(source.path)\n系统说明：\(nsError.localizedDescription)"
-                    )
+                    outcomes[item.index] = Self.cleanupFailureOutcome(source: item.source, error: error)
                 }
             }
+
+            return targets.indices.map { index in
+                outcomes[index] ?? Self.cleanupFailureOutcome(
+                    source: targets[index],
+                    error: WorkspaceRecycleError.missingResult
+                )
+            }
         }.value
+    }
+
+    private static func cleanupFailureOutcome(source: URL, error: Error) -> TrashOutcome {
+        let nsError = error as NSError
+        let failureKind: TrashFailureKind
+        if error is CleanupEvidenceError {
+            failureKind = .targetChanged
+        } else if let activityError = error as? CleanupActivityError {
+            switch activityError {
+            case .activeFile:
+                failureKind = .activeFile
+            case .probeUnavailable:
+                failureKind = .activityProbeUnavailable
+            }
+        } else if error is SafePathError {
+            failureKind = .validation
+        } else if Self.isPermissionFailure(nsError) {
+            failureKind = .permissionDenied
+        } else {
+            failureKind = .operationFailed
+        }
+        let message = failureKind == .permissionDenied
+            ? "macOS 未授予移动此项目所需的权限；该项目未移动。"
+            : error.localizedDescription
+        return TrashOutcome(
+            source: source,
+            trashedURL: nil,
+            errorDescription: message,
+            failureKind: failureKind,
+            technicalDescription: "操作：通用清理执行前复核\n错误域：\(nsError.domain)\n错误码：\(nsError.code)\n目标：\(source.path)\n系统说明：\(nsError.localizedDescription)"
+        )
     }
 
     private func applicationFailureOutcome(source: URL, error: Error) -> TrashOutcome {

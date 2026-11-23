@@ -53,12 +53,13 @@ struct PageHeader<Accessory: View>: View {
                 }
             }
             Text(CNL10n.string(title))
-                .font(.system(size: 34, weight: .semibold, design: .rounded))
-                .tracking(-0.72)
-            Text(CNL10n.string(subtitle))
+                .font(.system(size: 28, weight: .semibold, design: .rounded))
+                .tracking(-0.5)
+            if !subtitle.isEmpty { Text(CNL10n.string(subtitle))
                 .font(.system(size: 13.5))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: 680, alignment: .leading)
+            }
         }
     }
 }
@@ -66,6 +67,58 @@ struct PageHeader<Accessory: View>: View {
 extension PageHeader where Accessory == EmptyView {
     init(title: String, subtitle: String, eyebrow: String? = nil) {
         self.init(title: title, subtitle: subtitle, eyebrow: eyebrow) { EmptyView() }
+    }
+}
+
+/// Optional context stays one click away; action gates and errors belong
+/// outside this container so collapsing help cannot hide a live problem.
+struct CNDetailSection<Content: View>: View {
+    let title: String
+    let summary: String?
+    let symbol: String
+    private let content: () -> Content
+    @State private var expanded: Bool
+
+    init(title: String, summary: String? = nil, symbol: String = "info.circle",
+         initiallyExpanded: Bool = false, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.summary = summary
+        self.symbol = symbol
+        self.content = content
+        _expanded = State(initialValue: initiallyExpanded)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { expanded.toggle() } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 20)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(CNL10n.string(title)).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+                        if let summary {
+                            Text(CNL10n.string(summary)).font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Spacer(minLength: 8)
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                }
+                .frame(minHeight: 32)
+                .padding(.vertical, 9).padding(.horizontal, 12)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(CNL10n.string(title))
+            .accessibilityValue(CNL10n.string(expanded ? "已展开" : "已折叠"))
+            .accessibilityHint(CNL10n.string(expanded ? "收起详情" : "展开详情"))
+            if expanded {
+                Divider().padding(.horizontal, 12)
+                content().padding(12)
+            }
+        }
+        .background(CNTheme.surface.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(CNTheme.divider.opacity(0.45), lineWidth: 0.5))
     }
 }
 
@@ -175,7 +228,7 @@ struct MetricCard: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
             }
-            Text(value)
+            Text(CNL10n.string(value))
                 .font(.system(size: 26, weight: .semibold, design: .rounded))
                 .tracking(-0.25)
                 .monospacedMetric()
@@ -453,9 +506,9 @@ struct ReviewBar: View {
     var body: some View {
         HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("已选 \(count) 项")
+                Text(CNL10n.format("已选 %d 项", count))
                     .font(.subheadline.weight(.semibold))
-                Text("预计可释放 \(CleanNestFormatting.bytes(bytes)) · 移到废纸篓")
+                Text(CNL10n.format("预计可释放 %@ · 移到废纸篓", CleanNestFormatting.bytes(bytes)))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

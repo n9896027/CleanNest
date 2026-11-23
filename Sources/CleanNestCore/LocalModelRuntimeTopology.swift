@@ -175,6 +175,7 @@ public enum LocalModelPlatformAdapterRegistry {
     public static let adapters: [LocalModelPlatformAdapterDescriptor] = [
         .init(platform: .omlx, processMarkers: ["omlx"], defaultPorts: [8_080], apiStyle: .openAICompatible),
         .init(platform: .mlxLM, processMarkers: ["mlx_lm.server", "mlx-lm-server"], defaultPorts: [8_080], apiStyle: .openAICompatible),
+        .init(platform: .mlxServe, processMarkers: ["mlx-serve"], defaultPorts: [11_234], apiStyle: .openAICompatible),
         .init(platform: .ollama, processMarkers: ["ollama"], defaultPorts: [11_434], apiStyle: .ollama),
         .init(platform: .lmStudio, processMarkers: ["lm studio", "lm-studio", "lmstudio"], defaultPorts: [1_234], apiStyle: .openAICompatible),
         .init(platform: .llamaCPP, processMarkers: ["llama-server", "llama_server", "llama.cpp"], defaultPorts: [8_080], apiStyle: .openAICompatible)

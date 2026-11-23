@@ -86,6 +86,15 @@ public enum FullDiskAccessProbeResult: Equatable, Sendable {
         }
     }
 
+    /// A missing per-user sentinel must not mask an actual successful access
+    /// check at another protected location. Neither missing nor I/O failure is
+    /// evidence of access. This still does not inspect the macOS TCC switch.
+    public static func classifyProbeResults(_ errorCodes: [Int32]) -> FullDiskAccessProbeResult {
+        if errorCodes.contains(0) { return .accessible }
+        if errorCodes.contains(EACCES) || errorCodes.contains(EPERM) { return .permissionDenied }
+        return .indeterminate
+    }
+
     /// Convenience for adapters that receive Foundation errors. Missing files
     /// and unrelated I/O failures remain indeterminate rather than being
     /// misreported as a denied Full Disk Access grant.

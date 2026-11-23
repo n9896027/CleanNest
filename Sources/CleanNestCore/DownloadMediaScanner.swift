@@ -240,15 +240,18 @@ public struct DownloadMediaScanResult: Sendable {
     public let candidates: [CleanupCandidate]
     public let insights: CleanupScanInsights
     public let roots: [CleanupScanRootEvidence]
+    public let issues: [CleanupScanIssue]
 
     public init(
         candidates: [CleanupCandidate],
         insights: CleanupScanInsights,
-        roots: [CleanupScanRootEvidence] = []
+        roots: [CleanupScanRootEvidence] = [],
+        issues: [CleanupScanIssue] = []
     ) {
         self.candidates = candidates
         self.insights = insights
         self.roots = roots
+        self.issues = issues
     }
 }
 
@@ -602,6 +605,7 @@ public struct DownloadMediaScanner: Sendable {
         let skippedDepthLimits: Int
         let skippedUnsafeRoots: Int
         let reachedFileLimit: Bool
+        let issues: [CleanupScanIssue]
     }
 
     public let homeDirectory: URL
@@ -684,7 +688,8 @@ public struct DownloadMediaScanner: Sendable {
             return DownloadMediaScanResult(
                 candidates: candidates,
                 insights: baseInsights.updatingCandidateCounts(from: candidates),
-                roots: collection.roots
+                roots: collection.roots,
+                issues: collection.issues
             )
         }
         return await withTaskCancellationHandler {
@@ -734,6 +739,11 @@ public struct DownloadMediaScanner: Sendable {
         var skippedDepthLimits = 0
         var skippedUnsafeRoots = 0
         var reachedFileLimit = false
+        var issues: [CleanupScanIssue] = []
+        func recordIssue(_ url: URL, _ reason: CleanupScanSkipReason) {
+            guard issues.count < CleanupScanIssue.maximumPerScanner else { return }
+            issues.append(CleanupScanIssue(url: url, reason: reason))
+        }
         let enumerationBatchSize = 256
 
         for ((role, root), evidence) in zip(roots, rootEvidence) {
@@ -742,9 +752,11 @@ public struct DownloadMediaScanner: Sendable {
                 break
             case .unsafe:
                 skippedUnsafeRoots += 1
+                recordIssue(root, .unsafeRoot)
                 continue
             case .unreadable:
                 skippedUnreadableItems += 1
+                recordIssue(root, .unreadable)
                 continue
             case .missing:
                 continue
@@ -753,12 +765,14 @@ public struct DownloadMediaScanner: Sendable {
                 at: root,
                 includingPropertiesForKeys: resourceKeys,
                 options: [.skipsHiddenFiles, .skipsPackageDescendants],
-                errorHandler: { _, _ in
+                errorHandler: { url, _ in
                     skippedUnreadableItems += 1
+                    recordIssue(url, .unreadable)
                     return true
                 }
             ) else {
                 skippedUnreadableItems += 1
+                recordIssue(root, .unreadable)
                 continue
             }
 
@@ -775,20 +789,24 @@ public struct DownloadMediaScanner: Sendable {
                         let depth = url.pathComponents.count - rootDepth
                         guard let values = try? url.resourceValues(forKeys: Set(resourceKeys)) else {
                             skippedUnreadableItems += 1
+                            recordIssue(url, .unreadable)
                             continue
                         }
 
                         if values.isSymbolicLink == true {
                             skippedSymbolicLinks += 1
+                            recordIssue(url, .symbolicLink)
                             if values.isDirectory == true { enumerator.skipDescendants() }
                             continue
                         }
                         if values.isDirectory == true {
                             if values.isPackage == true {
                                 skippedPackages += 1
+                                recordIssue(url, .packageBoundary)
                                 enumerator.skipDescendants()
                             } else if depth >= configuration.maximumDepth {
                                 skippedDepthLimits += 1
+                                recordIssue(url, .depthLimit)
                                 enumerator.skipDescendants()
                             }
                             continue
@@ -797,23 +815,30 @@ public struct DownloadMediaScanner: Sendable {
                         examinedFileCount += 1
                         guard depth <= configuration.maximumDepth else {
                             skippedDepthLimits += 1
+                            recordIssue(url, .depthLimit)
                             continue
                         }
 
                         if values.isUbiquitousItem == true,
                            values.ubiquitousItemDownloadingStatus != .current {
                             skippedCloudItems += 1
+                            recordIssue(url, .cloudPlaceholder)
                             continue
                         }
                         guard records.count < configuration.maximumFiles else {
                             reachedFileLimit = true
+                            recordIssue(root, .fileLimit)
                             exhausted = true
                             break
                         }
 
                         let logicalBytes = Int64(values.fileSize ?? 0)
-                        guard logicalBytes > 0,
-                              let identity = try? CleanupFileIdentity.capture(at: url) else { continue }
+                        guard logicalBytes > 0 else { continue }
+                        guard let identity = try? CleanupFileIdentity.capture(at: url) else {
+                            skippedUnreadableItems += 1
+                            recordIssue(url, .unreadable)
+                            continue
+                        }
                         let allocatedBytes = Int64(
                             values.totalFileAllocatedSize
                                 ?? values.fileAllocatedSize
@@ -846,7 +871,8 @@ public struct DownloadMediaScanner: Sendable {
             skippedUnreadableItems: skippedUnreadableItems,
             skippedDepthLimits: skippedDepthLimits,
             skippedUnsafeRoots: skippedUnsafeRoots,
-            reachedFileLimit: reachedFileLimit
+            reachedFileLimit: reachedFileLimit,
+            issues: issues
         )
     }
 
