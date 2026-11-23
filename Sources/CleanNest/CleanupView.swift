@@ -7,6 +7,8 @@ struct CleanupView: View {
     @State private var confirmingTrash = false
     @State private var confirmingMountedInstallerEject = false
     @State private var mountedInstallerPendingEject: MountedInstallerVolume?
+    @State private var showingScanDiagnostics = false
+    @State private var detailCandidate: CleanupCandidate?
 
     private var filteredCandidates: [CleanupCandidate] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -14,6 +16,7 @@ struct CleanupView: View {
         return store.cleanupCandidates.filter {
             $0.name.localizedCaseInsensitiveContains(query)
                 || $0.url.path.localizedCaseInsensitiveContains(query)
+                || $0.kind.displayName.localizedCaseInsensitiveContains(query)
                 || $0.kind.rawValue.localizedCaseInsensitiveContains(query)
         }
     }
@@ -41,6 +44,29 @@ struct CleanupView: View {
         }
     }
 
+    private var pageSubtitle: String {
+        guard store.cleanupHasScanned, !store.cleanupCandidates.isEmpty else {
+            return CNL10n.string("先选择要处理的项目；所有操作都会先移到废纸篓。")
+        }
+        let bytes = store.cleanupCandidates.reduce(Int64(0)) { $0 + $1.allocatedBytes }
+        return CNL10n.format(
+            "找到 %d 个可处理候选 · %@；未经选择不会处理。",
+            store.cleanupCandidates.count,
+            CleanNestFormatting.bytes(bytes)
+        )
+    }
+
+    private var scanDiagnosticsSummary: String {
+        guard let session = store.cleanupScanSession else { return "" }
+        return CNL10n.format(
+            "%@ 项候选 · %@/%@ 个位置可读 · %d 条未纳入路径",
+            String(describing: session.candidateCount),
+            String(describing: session.checkedRootCount),
+            String(describing: session.roots.count),
+            session.issues.count
+        )
+    }
+
     private var scanCoverageWarning: (title: String, detail: String)? {
         guard let session = store.cleanupScanSession else { return nil }
         let blockedRoots = session.roots.filter { $0.status == .unreadable || $0.status == .unsafe }
@@ -64,158 +90,164 @@ struct CleanupView: View {
         }
         return (
             CNL10n.string("本次扫描不完整"),
-            CNL10n.format("%@。展开“本次扫描详情”可查看范围；未扫描内容不会被处理。", parts.joined(separator: "；"))
+            CNL10n.format("%@。未扫描内容不会成为候选，也不会被处理。", parts.joined(separator: "；"))
         )
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    PageHeader(
-                        title: "清理空间",
-                        subtitle: "先选择要处理的项目；所有操作都会先移到废纸篓。"
-                    ) {
-                        HStack(spacing: 8) {
-                            Button("推荐项") {
-                                store.selectedCleanupIDs = Set(store.cleanupCandidates.filter(\.isRecommended).map(\.id))
-                            }
-                            .disabled(store.cleanupCandidates.isEmpty)
-                            if store.cleanupScanIsActive {
-                                Button("取消", role: .cancel) {
-                                    store.cancelCleanupScan()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        PageHeader(
+                            title: "清理空间",
+                            subtitle: pageSubtitle
+                        ) {
+                            HStack(spacing: 8) {
+                                Button("推荐项") {
+                                    store.selectedCleanupIDs = Set(store.cleanupCandidates.filter(\.isRecommended).map(\.id))
                                 }
-                                .buttonStyle(.borderedProminent)
-                            } else {
-                                Button {
-                                    Task { await store.scanCleanup() }
-                                } label: {
-                                    Label(store.cleanupHasScanned ? "重新扫描" : "开始扫描", systemImage: "arrow.clockwise")
+                                .disabled(store.cleanupCandidates.isEmpty)
+                                if store.cleanupScanIsActive {
+                                    Button("取消", role: .cancel) {
+                                        store.cancelCleanupScan()
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                } else {
+                                    Button {
+                                        Task { await store.scanCleanup() }
+                                    } label: {
+                                        Label(store.cleanupHasScanned ? "重新扫描" : "开始扫描", systemImage: "arrow.clockwise")
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .disabled(store.isWorking)
                                 }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(store.isWorking)
                             }
                         }
-                    }
 
-                    InlineBanner(
-                        title: "安全处理已开启",
-                        detail: "个人文件默认不选；重复项会在处理前再次核验。",
-                        kind: .success
-                    )
-
-                    if let warning = scanCoverageWarning {
-                        InlineBanner(title: warning.title, detail: warning.detail, kind: .warning)
-                    }
-
-                    if case .failed(let message) = store.cleanupAIPhase {
-                        InlineBanner(
-                            title: "本机 AI 分析未完成",
-                            detail: message + " 普通扫描与手动选择仍可正常使用。",
-                            kind: .warning
-                        )
-                    }
-
-                    if store.cleanupHasScanned, !store.mountedInstallerVolumes.isEmpty {
-                        MountedInstallerVolumesCard(
-                            volumes: store.mountedInstallerVolumes,
-                            ejectingID: store.ejectingMountedInstallerID
-                        ) { volume in
-                            mountedInstallerPendingEject = volume
-                            confirmingMountedInstallerEject = true
-                        }
-                    }
-
-                    if let mountedInstallerMessage = store.mountedInstallerMessage {
-                        InlineBanner(
-                            title: store.mountedInstallerMessageIsWarning
-                                ? "安装介质需要处理"
-                                : "安装介质已更新",
-                            detail: mountedInstallerMessage,
-                            kind: store.mountedInstallerMessageIsWarning ? .warning : .success
-                        )
-                    }
-
-                    if !store.cleanupReviewItems.isEmpty {
-                        CleanupReviewCard(items: store.cleanupReviewItems)
-                    }
-
-                    if let session = store.cleanupScanSession, !session.issues.isEmpty {
-                        CleanupScanIssuesCard(issues: session.issues)
-                    }
-
-                    if !store.cleanupExecutionLedger.records.isEmpty || store.cleanupExecutionLedgerDiagnostic != nil {
-                        CleanupExecutionLedgerCard(
-                            snapshot: store.cleanupExecutionLedger,
-                            diagnostic: store.cleanupExecutionLedgerDiagnostic
-                        )
-                    }
-
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 14) {
-                            cleanupSearchField
-                            scanOptions
-                        }
-                        VStack(alignment: .leading, spacing: 10) {
-                            cleanupSearchField
-                            scanOptions
-                        }
-                    }
-
-                    if !store.cleanupHasScanned {
-                        EmptyPanel(
-                            symbol: "sparkle.magnifyingglass",
-                            title: "先扫描，再做决定",
-                            detail: "CleanNest 会检查缓存、桌面/下载安装包、已挂载安装介质和大型媒体；启用媒体分析时还会用本机 SHA-256 查找字节完全相同的副本。扫描不会改动文件。",
-                            actionTitle: "扫描可清理内容"
-                        ) {
-                            Task { await store.scanCleanup() }
-                        }
-                    } else if store.cleanupCandidates.isEmpty {
-                        EmptyPanel(
-                            symbol: "checkmark.seal",
-                            title: "这里很干净",
-                            detail: "本次没有发现建议清理的内容。你可以稍后重新扫描。",
-                            actionTitle: "重新扫描"
-                        ) {
-                            Task { await store.scanCleanup() }
-                        }
-                    } else if groupedCandidates.isEmpty {
-                        EmptyPanel(
-                            symbol: "line.3.horizontal.decrease.circle",
-                            title: "没有符合筛选条件的项目",
-                            detail: "清除搜索词即可查看完整结果。",
-                            actionTitle: "清除搜索"
-                        ) {
-                            searchText = ""
-                        }
-                    } else {
-                        VStack(spacing: 12) {
-                            ForEach(groupedCandidates, id: \.0) { kind, items in
-                                CleanupGroup(kind: kind, candidates: items)
-                            }
-                        }
-                    }
-
-                    if !store.cleanupCandidates.isEmpty {
-                        LocalAIAdviceCard()
-                    }
-
-                    if let session = store.cleanupScanSession {
-                        CNDetailSection(
-                            title: "本次扫描详情",
-                            summary: CNL10n.format("%@ 项候选 · %@/%@ 个位置可读", String(describing: session.candidateCount), String(describing: session.checkedRootCount), String(describing: session.roots.count)),
-                            symbol: "doc.text.magnifyingglass"
-                        ) {
-                            CleanupScanSessionCard(
-                                session: session,
-                                mediaScanEnabled: store.cleanupScanIncludedMediaAndDuplicates
+                        if let warning = scanCoverageWarning {
+                            InlineBanner(
+                                title: warning.title,
+                                detail: warning.detail,
+                                kind: .warning,
+                                actionTitle: "查看扫描诊断",
+                                action: {
+                                    showingScanDiagnostics = true
+                                    withAnimation {
+                                        proxy.scrollTo("cleanup-scan-diagnostics", anchor: .top)
+                                    }
+                                }
                             )
                         }
+
+                        if store.cleanupHasScanned, !store.mountedInstallerVolumes.isEmpty {
+                            MountedInstallerVolumesCard(
+                                volumes: store.mountedInstallerVolumes,
+                                ejectingID: store.ejectingMountedInstallerID
+                            ) { volume in
+                                mountedInstallerPendingEject = volume
+                                confirmingMountedInstallerEject = true
+                            }
+                        }
+
+                        if let mountedInstallerMessage = store.mountedInstallerMessage {
+                            InlineBanner(
+                                title: store.mountedInstallerMessageIsWarning
+                                    ? "安装介质需要处理"
+                                    : "安装介质已更新",
+                                detail: mountedInstallerMessage,
+                                kind: store.mountedInstallerMessageIsWarning ? .warning : .success
+                            )
+                        }
+
+                        if !store.cleanupReviewItems.isEmpty {
+                            CleanupReviewCard(items: store.cleanupReviewItems)
+                        }
+
+                        if !store.cleanupExecutionLedger.records.isEmpty || store.cleanupExecutionLedgerDiagnostic != nil {
+                            CleanupExecutionLedgerCard(
+                                snapshot: store.cleanupExecutionLedger,
+                                diagnostic: store.cleanupExecutionLedgerDiagnostic
+                            )
+                        }
+
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 14) {
+                                cleanupSearchField
+                                scanOptions
+                            }
+                            VStack(alignment: .leading, spacing: 10) {
+                                cleanupSearchField
+                                scanOptions
+                            }
+                        }
+
+                        if !store.cleanupHasScanned {
+                            EmptyPanel(
+                                symbol: "sparkle.magnifyingglass",
+                                title: "先扫描，再做决定",
+                                detail: "CleanNest 会检查缓存、桌面/下载安装包、已挂载安装介质和大型媒体；启用媒体分析时还会用本机 SHA-256 查找字节完全相同的副本。扫描不会改动文件。",
+                                actionTitle: "扫描可清理内容"
+                            ) {
+                                Task { await store.scanCleanup() }
+                            }
+                        } else if store.cleanupCandidates.isEmpty {
+                            EmptyPanel(
+                                symbol: "checkmark.seal",
+                                title: "这里很干净",
+                                detail: "本次没有发现建议清理的内容。你可以稍后重新扫描。",
+                                actionTitle: "重新扫描"
+                            ) {
+                                Task { await store.scanCleanup() }
+                            }
+                        } else if groupedCandidates.isEmpty {
+                            EmptyPanel(
+                                symbol: "line.3.horizontal.decrease.circle",
+                                title: "没有符合筛选条件的项目",
+                                detail: "清除搜索词即可查看完整结果。",
+                                actionTitle: "清除搜索"
+                            ) {
+                                searchText = ""
+                            }
+                        } else {
+                            VStack(spacing: 12) {
+                                ForEach(groupedCandidates, id: \.0) { kind, items in
+                                    CleanupGroup(
+                                        kind: kind,
+                                        candidates: items,
+                                        onShowCandidateDetails: { detailCandidate = $0 }
+                                    )
+                                }
+                            }
+                        }
+
+                        if !store.cleanupCandidates.isEmpty {
+                            LocalAIAdviceCard()
+                        }
+
+                        if let session = store.cleanupScanSession {
+                            CNDetailSection(
+                                title: "扫描诊断",
+                                summary: scanDiagnosticsSummary,
+                                symbol: "doc.text.magnifyingglass",
+                                isExpanded: $showingScanDiagnostics
+                            ) {
+                                VStack(alignment: .leading, spacing: 18) {
+                                    if !session.issues.isEmpty {
+                                        CleanupScanIssuesCard(issues: session.issues)
+                                    }
+                                    CleanupScanSessionCard(
+                                        session: session,
+                                        mediaScanEnabled: store.cleanupScanIncludedMediaAndDuplicates
+                                    )
+                                }
+                            }
+                            .id("cleanup-scan-diagnostics")
+                        }
                     }
+                    .padding(CNTheme.pagePadding)
+                    .padding(.bottom, store.cleanupCandidates.isEmpty ? 0 : 112)
                 }
-                .padding(CNTheme.pagePadding)
-                .padding(.bottom, store.cleanupCandidates.isEmpty ? 0 : 112)
             }
 
             if !store.cleanupCandidates.isEmpty {
@@ -253,6 +285,9 @@ struct CleanupView: View {
             } else {
                 Text("原始安装包路径已不存在。推出后桌面图标会消失；若要再次打开，需要重新下载安装包。")
             }
+        }
+        .sheet(item: $detailCandidate) { candidate in
+            CleanupCandidateDetailView(candidate: candidate)
         }
     }
 
@@ -314,6 +349,7 @@ struct CleanupView: View {
                 store.selectedDuplicateCleanupCount
             ))
         }
+        parts.append(CNL10n.string("所有项目移动前还会复核路径、身份和活跃状态。"))
         parts.append(CNL10n.string("这些内容可在清空废纸篓前恢复。"))
         return parts.joined(separator: " ")
     }
@@ -450,17 +486,13 @@ private struct CleanupProcessingBasketBar: View {
                 .font(.title3.weight(.semibold))
                 .monospacedMetric()
         }
-        basketFact(
-            "清空后的预估可用空间",
-            CleanNestFormatting.bytes(summary.projectedFreeBytesAfterEmptyingTrash),
-            symbol: "internaldrive"
-        )
-        basketFact("恢复方式", "清空前可从废纸篓放回", symbol: "arrow.uturn.backward.circle")
-        basketFact(
-            "安全核验",
-            CNL10n.format("%@ 项会在执行前重验", String(describing: summary.identityRevalidationCount + summary.pathRevalidationCount)),
-            symbol: "checkmark.shield"
-        )
+        if summary.selectedCount > 0 {
+            basketFact(
+                "清空后的预估可用空间",
+                CleanNestFormatting.bytes(summary.projectedFreeBytesAfterEmptyingTrash),
+                symbol: "internaldrive"
+            )
+        }
         Spacer(minLength: 8)
         Button("清空选择", action: onClear)
             .disabled(summary.selectedCount == 0)
@@ -557,7 +589,7 @@ private struct CleanupScanSessionCard: View {
                     LazyVGrid(columns: evidenceColumns, alignment: .leading, spacing: 8) {
                         ForEach(session.categories) { category in
                             Label(
-                                CNL10n.format("%@ %@ 项 · %@", String(describing: CNL10n.string(category.kind.rawValue)), String(describing: category.count), String(describing: CleanNestFormatting.bytes(category.allocatedBytes))),
+                                CNL10n.format("%@ %@ 项 · %@", String(describing: CNL10n.string(category.kind.displayName)), String(describing: category.count), String(describing: CleanNestFormatting.bytes(category.allocatedBytes))),
                                 systemImage: category.kind.symbolName
                             )
                             .font(.caption.weight(.medium))
@@ -811,8 +843,10 @@ private struct CleanupGroup: View {
     @EnvironmentObject private var store: AppStore
     let kind: CleanupKind
     let candidates: [CleanupCandidate]
+    let onShowCandidateDetails: (CleanupCandidate) -> Void
     @State private var isExpanded: Bool
     @State private var pageIndex: Int
+    @State private var confirmingGroupSelection = false
 
     private var total: Int64 { candidates.reduce(0) { $0 + $1.allocatedBytes } }
     private var selectedCount: Int {
@@ -854,9 +888,14 @@ private struct CleanupGroup: View {
         }
     }
 
-    init(kind: CleanupKind, candidates: [CleanupCandidate]) {
+    init(
+        kind: CleanupKind,
+        candidates: [CleanupCandidate],
+        onShowCandidateDetails: @escaping (CleanupCandidate) -> Void
+    ) {
         self.kind = kind
         self.candidates = candidates
+        self.onShowCandidateDetails = onShowCandidateDetails
         _isExpanded = State(initialValue: candidates.count <= Self.autoExpandLimit)
         _pageIndex = State(initialValue: 0)
     }
@@ -872,7 +911,7 @@ private struct CleanupGroup: View {
                         HStack {
                             Image(systemName: kind.symbolName)
                                 .foregroundStyle(CNTheme.accent)
-                            Text(CNL10n.string(kind.rawValue)).font(.headline)
+                            Text(CNL10n.string(kind.displayName)).font(.headline)
                             StatusPill(text: CNL10n.format("%d 项", candidates.count), symbol: nil)
                             Spacer()
                             Text(CleanNestFormatting.bytes(total))
@@ -887,7 +926,7 @@ private struct CleanupGroup: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(CNL10n.format("%@，%d 项，%@", CNL10n.string(kind.rawValue), candidates.count, CleanNestFormatting.bytes(total)))
+                    .accessibilityLabel(CNL10n.format("%@，%d 项，%@", CNL10n.string(kind.displayName), candidates.count, CleanNestFormatting.bytes(total)))
                     .accessibilityHint(CNL10n.string(isExpanded ? "收起分组" : "展开查看全部项目"))
 
                     if kind == .screenshot {
@@ -908,6 +947,14 @@ private struct CleanupGroup: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                    } else if kind == .logs, !allSelected {
+                        Button {
+                            confirmingGroupSelection = true
+                        } label: {
+                            Label("选择本组…", systemImage: "checkmark.square")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     } else {
                         Button {
                             store.setCleanupSelection(candidates, selected: !allSelected)
@@ -920,6 +967,14 @@ private struct CleanupGroup: View {
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                     }
+                }
+
+                if kind == .logs {
+                    Text(CNL10n.string(CleanupLogPresentation().groupSummary))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 9)
                 }
 
                 if showsMediaClusters, !mediaClusterLabels.isEmpty {
@@ -948,7 +1003,10 @@ private struct CleanupGroup: View {
 
                     VStack(spacing: 0) {
                         ForEach(visibleCandidates) { candidate in
-                            CleanupRow(candidate: candidate)
+                            CleanupRow(
+                                candidate: candidate,
+                                onShowDetails: { onShowCandidateDetails(candidate) }
+                            )
                             if candidate.id != visibleCandidates.last?.id {
                                 Divider().padding(.leading, 38)
                             }
@@ -964,6 +1022,17 @@ private struct CleanupGroup: View {
         }
         .onChange(of: candidates.count) { _, _ in
             pageIndex = pageWindow.pageIndex
+        }
+        .alert("选择本组应用日志？", isPresented: $confirmingGroupSelection) {
+            Button("取消", role: .cancel) { }
+            Button("选择本组") {
+                store.setCleanupSelection(candidates, selected: true)
+            }
+        } message: {
+            Text(CNL10n.format(
+                "本组 %d 项均为应用日志。确认不再需要这些历史诊断记录后再选择；仍可在最终复核时取消。",
+                candidates.count
+            ))
         }
     }
 
@@ -1025,6 +1094,7 @@ private struct CleanupGroup: View {
 private struct CleanupRow: View {
     @EnvironmentObject private var store: AppStore
     let candidate: CleanupCandidate
+    let onShowDetails: () -> Void
 
     private var isSelected: Binding<Bool> {
         Binding(
@@ -1072,7 +1142,7 @@ private struct CleanupRow: View {
                     .truncationMode(.middle)
                 Text(CNL10n.format(
                     "%@ · %@",
-                    CNL10n.string(candidate.detail),
+                    CNL10n.string(candidate.logPresentation?.rowSummary ?? candidate.detail),
                     CNL10n.age(CleanNestFormatting.age(from: candidate.modifiedAt))
                 ))
                     .font(.caption2)
@@ -1141,6 +1211,11 @@ private struct CleanupRow: View {
                 Text("移到废纸篓")
                     .font(.caption2)
                     .foregroundStyle(CNTheme.success)
+                if candidate.logPresentation != nil {
+                    Button("查看详情", action: onShowDetails)
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                }
             }
 
             Button {
@@ -1164,6 +1239,10 @@ private struct CleanupRow: View {
         .contentShape(Rectangle())
         .onTapGesture { store.toggleCleanup(candidate) }
         .contextMenu {
+            if candidate.logPresentation != nil {
+                Button("查看详情", action: onShowDetails)
+                Divider()
+            }
             Button("在 Finder 中显示") { store.revealInFinder(candidate.url) }
             Divider()
             Button(store.selectedCleanupIDs.contains(candidate.id) ? "取消选择" : "选择") {
@@ -1232,6 +1311,8 @@ private struct CleanupRow: View {
             return ("截图 · 可批量选择", "camera.viewfinder", .warning)
         case .image, .video, .audio:
             return ("个人媒体 · 手动选择", "hand.raised", .warning)
+        case .logs:
+            return ("手动确认", "eye", .warning)
         default:
             return candidate.isRecommended
                 ? ("通常可重新生成", "checkmark.shield", .success)
@@ -1263,6 +1344,117 @@ private struct CleanupRow: View {
         case .medium: return .warning
         case .high: return .danger
         }
+    }
+}
+
+private struct CleanupCandidateDetailView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let candidate: CleanupCandidate
+
+    private var isSelected: Binding<Bool> {
+        Binding(
+            get: { store.selectedCleanupIDs.contains(candidate.id) },
+            set: { selected in
+                if selected {
+                    store.selectedCleanupIDs.insert(candidate.id)
+                } else {
+                    store.selectedCleanupIDs.remove(candidate.id)
+                }
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(alignment: .top, spacing: 12) {
+                        CNIconTile(symbol: candidate.kind.symbolName, tint: CNTheme.accent, size: 40)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(candidate.name)
+                                .font(.title2.weight(.semibold))
+                            Text(CNL10n.string(candidate.kind.displayName))
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(CleanNestFormatting.bytes(candidate.allocatedBytes))
+                            .font(.title3.weight(.semibold))
+                            .monospacedMetric()
+                    }
+
+                    Text(candidate.url.path.replacingOccurrences(
+                        of: FileManager.default.homeDirectoryForCurrentUser.path,
+                        with: "~"
+                    ))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                    if let presentation = candidate.logPresentation {
+                        detailSection(
+                            title: "这是什么？",
+                            text: presentation.what,
+                            symbol: "doc.text"
+                        )
+                        detailSection(
+                            title: "为什么列为候选？",
+                            text: presentation.reason,
+                            symbol: "checklist"
+                        )
+                        detailSection(
+                            title: "处理后有什么影响？",
+                            text: presentation.impact,
+                            symbol: "arrow.right.circle"
+                        )
+                        detailSection(
+                            title: "如何恢复？",
+                            text: presentation.recovery,
+                            symbol: "arrow.uturn.backward.circle"
+                        )
+                    } else {
+                        detailSection(
+                            title: "项目说明",
+                            text: candidate.detail,
+                            symbol: "info.circle"
+                        )
+                    }
+                }
+                .padding(24)
+            }
+
+            Divider()
+
+            HStack(spacing: 12) {
+                Toggle("选择此项目", isOn: isSelected)
+                    .toggleStyle(.checkbox)
+                Spacer()
+                Button("在 Finder 中显示") {
+                    store.revealInFinder(candidate.url)
+                }
+                Button("完成") { dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(16)
+        }
+        .frame(minWidth: 560, idealWidth: 620, minHeight: 600, idealHeight: 660)
+    }
+
+    private func detailSection(title: String, text: String, symbol: String) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(CNL10n.string(title), systemImage: symbol)
+                .font(.headline)
+            Text(CNL10n.string(text))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(CNTheme.surfaceElevated, in: RoundedRectangle(cornerRadius: 10))
     }
 }
 

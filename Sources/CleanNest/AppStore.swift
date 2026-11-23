@@ -406,10 +406,14 @@ final class AppStore: ObservableObject {
     @Published var showingTechnicalDetail = false
     @Published var showingUpdateChecker = false
     @Published private(set) var appUpdateState: AppUpdateState = .idle
+    @Published private(set) var appUpdateDownloadState: AppUpdateDownloadState = .idle
+    @Published var automaticallyChecksForUpdates = true
+    @Published private(set) var lastAppUpdateCheckAt: Date?
 
     let demoMode: Bool
 
     private let commandRunner = CommandRunner()
+    private lazy var appUpdateInstallerValidator = AppUpdateInstallerValidator(commandRunner: commandRunner)
     private let applicationScanner = ApplicationScanner()
     private let scannerServiceClient = ScannerServiceClient()
     private let agentWorkspaceScannerServiceClient = ScannerServiceClient()
@@ -451,6 +455,11 @@ final class AppStore: ObservableObject {
     private var activeCleanupScanTask: Task<Void, Never>?
     private var activeDiskScanTask: Task<Void, Never>?
     private var appUpdateCheckID = UUID()
+    private var appUpdateCheckIsAutomatic = false
+    private var appUpdateDownloadID = UUID()
+    private var appUpdateDownloadTask: Task<Void, Never>?
+    private var automaticAppUpdateCheckTask: Task<Void, Never>?
+    private var hasScheduledInitialAppUpdateCheck = false
     private var localModelDiscoveryID = UUID()
     private var localModelRuntimeMonitorTask: Task<Void, Never>?
     private var agentWorkspaceMonitorTask: Task<Void, Never>?
@@ -490,6 +499,11 @@ final class AppStore: ObservableObject {
            let saved = try? JSONDecoder().decode(MenuBarMonitorConfiguration.self, from: data) {
             menuBarConfiguration = saved.normalized
         }
+        if settings.object(forKey: "automaticallyChecksForUpdates") != nil {
+            automaticallyChecksForUpdates = settings.bool(forKey: "automaticallyChecksForUpdates")
+        }
+        lastAppUpdateCheckAt = settings.object(forKey: "lastAppUpdateCheckAt") as? Date
+        if demoMode { automaticallyChecksForUpdates = false }
         if !demoMode,
            var timeline = try? SystemAlertTimelinePersistence.load(
                from: CleanNestDataPaths.systemAlertTimeline()
@@ -737,6 +751,7 @@ final class AppStore: ObservableObject {
         if workloads.contains(.localModelRuntimeDiscovery) {
             startLocalModelRuntimeMonitoring()
         }
+        scheduleAutomaticAppUpdateCheck()
     }
 
     func activatePage(_ page: SidebarItem) async {
@@ -1904,6 +1919,14 @@ final class AppStore: ObservableObject {
 
     func systemWillSleep() {
         systemDataState.cancel()
+        automaticAppUpdateCheckTask?.cancel()
+        automaticAppUpdateCheckTask = nil
+        if appUpdateCheckIsAutomatic {
+            appUpdateCheckID = UUID()
+            appUpdateCheckIsAutomatic = false
+            appUpdateState = .idle
+        }
+        if appUpdateDownloadState.isBusy { invalidateAppUpdateDownload(removeFile: true) }
         if activeCleanupScanTask != nil { cancelCleanupScan() }
         if activeDiskScanTask != nil { cancelDiskAnalysis() }
         if activeAgentWorkspaceScanTask != nil {
@@ -1933,6 +1956,7 @@ final class AppStore: ObservableObject {
         localModelRuntimeTransitions = Array(localModelRuntimeTransitions.prefix(24))
         await refreshLocalModelRuntimes(force: true)
         if localAIEnabled { await probeLocalAI() }
+        scheduleAutomaticAppUpdateCheck()
     }
 
     func refreshMetricHistory() async {
@@ -2316,6 +2340,7 @@ final class AppStore: ObservableObject {
 
     func applicationDidBecomeActive() async {
         applicationIsActive = true
+        scheduleAutomaticAppUpdateCheck()
         if selection == .agentWorkspace, activeLifecyclePage == .agentWorkspace {
             startAgentWorkspaceMonitoring()
         }
@@ -2867,6 +2892,10 @@ final class AppStore: ObservableObject {
         }
         fullDiskAccessProbeID = UUID()
         appUpdateCheckID = UUID()
+        appUpdateCheckIsAutomatic = false
+        automaticAppUpdateCheckTask?.cancel()
+        automaticAppUpdateCheckTask = nil
+        if appUpdateDownloadState.isBusy { invalidateAppUpdateDownload(removeFile: true) }
         activeCleanupScanTask?.cancel()
         activeCleanupScanTask = nil
         cleanupScanIsActive = false
@@ -4508,8 +4537,29 @@ final class AppStore: ObservableObject {
         Task { await checkForUpdates() }
     }
 
-    func checkForUpdates() async {
+    func setAutomaticallyChecksForUpdates(_ enabled: Bool) {
+        automaticallyChecksForUpdates = enabled
+        if !demoMode { settings.set(enabled, forKey: "automaticallyChecksForUpdates") }
+        guard enabled else {
+            automaticAppUpdateCheckTask?.cancel()
+            automaticAppUpdateCheckTask = nil
+            if appUpdateCheckIsAutomatic {
+                appUpdateCheckID = UUID()
+                appUpdateCheckIsAutomatic = false
+                appUpdateState = .idle
+            }
+            return
+        }
+        scheduleAutomaticAppUpdateCheck()
+    }
+
+    func checkForUpdates(automatic: Bool = false) async {
         guard !appUpdateState.isChecking else { return }
+        if !automatic {
+            automaticAppUpdateCheckTask?.cancel()
+            automaticAppUpdateCheckTask = nil
+        }
+        invalidateAppUpdateDownload(removeFile: true)
         guard let currentVersion = AppMetadata.shortVersion, !currentVersion.isEmpty else {
             appUpdateState = .failed(
                 currentVersion: CNL10n.string("开发构建"),
@@ -4520,7 +4570,19 @@ final class AppStore: ObservableObject {
 
         let checkID = UUID()
         appUpdateCheckID = checkID
+        appUpdateCheckIsAutomatic = automatic
         appUpdateState = .checking(currentVersion: currentVersion)
+        lastAppUpdateCheckAt = Date()
+        if !demoMode { settings.set(lastAppUpdateCheckAt, forKey: "lastAppUpdateCheckAt") }
+
+        if demoMode {
+            appUpdateState = .updateAvailable(
+                currentVersion: currentVersion,
+                release: Self.demoUpdateRelease
+            )
+            return
+        }
+
 
         do {
             guard let release = try await appUpdateClient.latestRelease() else {
@@ -4537,6 +4599,11 @@ final class AppStore: ObservableObject {
             switch decision {
             case .updateAvailable:
                 appUpdateState = .updateAvailable(currentVersion: currentVersion, release: release)
+                if automatic,
+                   settings.string(forKey: "lastAutomaticUpdatePromptTag") != release.tagName {
+                    settings.set(release.tagName, forKey: "lastAutomaticUpdatePromptTag")
+                    showingUpdateChecker = true
+                }
             case .upToDate:
                 appUpdateState = .upToDate(currentVersion: currentVersion, release: release)
             case .localVersionAhead:
@@ -4551,6 +4618,95 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func downloadAndPrepareUpdate() {
+        guard case .updateAvailable(_, let release) = appUpdateState,
+              let package = release.installerPackage,
+              !appUpdateDownloadState.isBusy else { return }
+
+        invalidateAppUpdateDownload(removeFile: true)
+        let downloadID = UUID()
+        appUpdateDownloadID = downloadID
+        appUpdateDownloadState = .downloading(package: package)
+        appUpdateDownloadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                if self.demoMode {
+                    try await Task.sleep(for: .milliseconds(500))
+                    guard self.appUpdateDownloadID == downloadID else { return }
+                    let placeholderURL = URL(fileURLWithPath: "/tmp/CleanNest-demo-update.pkg")
+                    self.appUpdateDownloadState = .verifying(
+                        packageURL: placeholderURL,
+                        package: package
+                    )
+                    try await Task.sleep(for: .milliseconds(500))
+                    guard self.appUpdateDownloadID == downloadID else { return }
+                    self.appUpdateDownloadState = .failed(
+                        message: CNL10n.string("演示模式只展示更新流程，不会下载安装包或打开安装器。"),
+                        package: package
+                    )
+                    self.appUpdateDownloadTask = nil
+                    return
+                }
+
+                let downloaded = try await self.appUpdateClient.downloadInstallerPackage(for: release)
+                guard self.appUpdateDownloadID == downloadID else {
+                    try? FileManager.default.removeItem(at: downloaded.packageURL)
+                    return
+                }
+                self.appUpdateDownloadState = .verifying(
+                    packageURL: downloaded.packageURL,
+                    package: downloaded.package
+                )
+                try await self.appUpdateInstallerValidator.validate(packageAt: downloaded.packageURL)
+                guard self.appUpdateDownloadID == downloadID else {
+                    try? FileManager.default.removeItem(at: downloaded.packageURL)
+                    return
+                }
+                self.appUpdateDownloadState = .readyToInstall(
+                    packageURL: downloaded.packageURL,
+                    package: downloaded.package
+                )
+                self.appUpdateDownloadTask = nil
+            } catch {
+                guard self.appUpdateDownloadID == downloadID else { return }
+                if let packageURL = self.appUpdateDownloadState.packageURL {
+                    try? FileManager.default.removeItem(at: packageURL)
+                }
+                if error is CancellationError {
+                    self.appUpdateDownloadState = .idle
+                } else {
+                    self.appUpdateDownloadState = .failed(
+                        message: localizedAppUpdateError(error),
+                        package: package
+                    )
+                }
+                self.appUpdateDownloadTask = nil
+            }
+        }
+    }
+
+    func openDownloadedUpdateInstaller() {
+        guard !demoMode else { return }
+        let packageURL: URL
+        let package: AppUpdatePackage
+        switch appUpdateDownloadState {
+        case .readyToInstall(let url, let downloadedPackage),
+             .installerOpened(let url, let downloadedPackage):
+            packageURL = url
+            package = downloadedPackage
+        default:
+            return
+        }
+        guard NSWorkspace.shared.open(packageURL) else {
+            appUpdateDownloadState = .failed(
+                message: AppUpdateClientError.installerOpenFailed.localizedDescription,
+                package: package
+            )
+            return
+        }
+        appUpdateDownloadState = .installerOpened(packageURL: packageURL, package: package)
+    }
+
     func openLatestCleanNestRelease() {
         let url = appUpdateState.release?.pageURL ?? GitHubAppUpdateClient.releasesPageURL
         guard NSWorkspace.shared.open(url) else {
@@ -4560,6 +4716,64 @@ final class AppStore: ObservableObject {
             )
             return
         }
+    }
+
+    private func scheduleAutomaticAppUpdateCheck() {
+        guard automaticallyChecksForUpdates, !demoMode,
+              automaticAppUpdateCheckTask == nil, !appUpdateState.isChecking,
+              AppUpdateAutomaticCheckPolicy.shouldCheck(
+                isEnabled: automaticallyChecksForUpdates,
+                lastAttemptAt: lastAppUpdateCheckAt
+              ) else { return }
+
+        let startupDelay = hasScheduledInitialAppUpdateCheck ? 0 : 15
+        hasScheduledInitialAppUpdateCheck = true
+        automaticAppUpdateCheckTask = Task { [weak self] in
+            guard let self else { return }
+            if startupDelay > 0 {
+                do {
+                    try await Task.sleep(for: .seconds(startupDelay))
+                } catch {
+                    self.automaticAppUpdateCheckTask = nil
+                    return
+                }
+            }
+            guard !Task.isCancelled else {
+                self.automaticAppUpdateCheckTask = nil
+                return
+            }
+            self.automaticAppUpdateCheckTask = nil
+            await self.checkForUpdates(automatic: true)
+        }
+    }
+
+    private func invalidateAppUpdateDownload(removeFile: Bool) {
+        appUpdateDownloadID = UUID()
+        appUpdateDownloadTask?.cancel()
+        appUpdateDownloadTask = nil
+        if removeFile, let packageURL = appUpdateDownloadState.packageURL {
+            try? FileManager.default.removeItem(at: packageURL)
+        }
+        appUpdateDownloadState = .idle
+    }
+
+    private static var demoUpdateRelease: GitHubReleaseInfo {
+        let version = SemanticVersion(parsing: "99.0.0")!
+        let package = AppUpdatePackage(
+            name: "CleanNest-99.0.0-999.pkg",
+            downloadURL: URL(string: "https://github.com/n9896027/CleanNest/releases/download/v99.0.0/CleanNest-99.0.0-999.pkg")!,
+            byteCount: 20_000_000,
+            sha256: String(repeating: "0", count: 64)
+        )
+        return GitHubReleaseInfo(
+            version: version,
+            tagName: "v99.0.0",
+            title: "CleanNest 99.0.0 演示更新",
+            notes: "这是用于验收更新界面的合成版本，不会访问网络，也不会下载或安装任何文件。",
+            pageURL: URL(string: "https://github.com/n9896027/CleanNest/releases")!,
+            publishedAt: nil,
+            installerPackage: package
+        )
     }
 
     func openTrash() {
@@ -4609,7 +4823,10 @@ final class AppStore: ObservableObject {
             "recentLocalAIModelPaths",
             "localModelMenuBarEnabled",
             "metricsRetentionDays",
-            "menuBarMonitorConfiguration"
+            "menuBarMonitorConfiguration",
+            "automaticallyChecksForUpdates",
+            "lastAppUpdateCheckAt",
+            "lastAutomaticUpdatePromptTag"
         ]
         for key in keys { settings.removeObject(forKey: key) }
 
@@ -4648,6 +4865,11 @@ final class AppStore: ObservableObject {
         externalLocalModelStopMessageIsWarning = false
         externalLocalModelForceCandidateID = nil
         settings.set(true, forKey: "localModelMenuBarEnabled")
+        appUpdateCheckID = UUID()
+        appUpdateState = .idle
+        lastAppUpdateCheckAt = nil
+        invalidateAppUpdateDownload(removeFile: true)
+        setAutomaticallyChecksForUpdates(true)
         invalidateCleanupAI()
         _ = invalidateDiskAI()
         cleanupHasScanned = false

@@ -765,7 +765,16 @@ func runAppUpdatePolicyTests() throws {
       "html_url": "https://github.com/n9896027/CleanNest/releases/tag/v0.4.1",
       "draft": false,
       "prerelease": false,
-      "published_at": "2026-08-23T12:00:00Z"
+      "published_at": "2026-08-23T12:00:00Z",
+      "assets": [
+        {
+          "name": "CleanNest-0.4.1-51.pkg",
+          "state": "uploaded",
+          "size": 1024,
+          "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "browser_download_url": "https://github.com/n9896027/CleanNest/releases/download/v0.4.1/CleanNest-0.4.1-51.pkg"
+        }
+      ]
     }
     """
     let release = try GitHubReleaseParser.parse(
@@ -774,6 +783,15 @@ func runAppUpdatePolicyTests() throws {
         repository: "CleanNest"
     )
     try check(release.version.description == "0.4.1", "GitHub Release 版本解析错误")
+    try check(release.installerPackage?.name == "CleanNest-0.4.1-51.pkg", "官方 PKG 资产解析错误")
+    try check(
+        AppUpdateAutomaticCheckPolicy.shouldCheck(
+            isEnabled: true,
+            lastAttemptAt: Date(timeIntervalSince1970: 0),
+            now: Date(timeIntervalSince1970: 86_400)
+        ),
+        "自动更新检查没有遵守 24 小时间隔"
+    )
     let updateDecision = try AppUpdatePolicy.decision(
         localVersion: "0.4.0",
         release: release

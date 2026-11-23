@@ -1328,6 +1328,28 @@ struct SettingsView: View {
                     .padding(.vertical, 15)
 
                 HStack(spacing: 12) {
+                    CNIconTile(symbol: "clock.arrow.2.circlepath", tint: CNTheme.accent, size: 30)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("自动检查更新")
+                            .font(.subheadline.weight(.medium))
+                        Text("App 运行期间每 24 小时检查一次；发现新版本才提醒，不会自动下载或安装。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Toggle("", isOn: Binding(
+                        get: { store.automaticallyChecksForUpdates },
+                        set: { store.setAutomaticallyChecksForUpdates($0) }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .accessibilityLabel("自动检查更新")
+                }
+
+                Divider()
+                    .padding(.vertical, 15)
+
+                HStack(spacing: 12) {
                     CNIconTile(symbol: "arrow.counterclockwise", tint: CNTheme.warning, size: 30)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("恢复安全默认设置")

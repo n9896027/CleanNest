@@ -1,6 +1,6 @@
 # 隐私说明
 
-最后更新：2026-08-26。
+最后更新：2026-11-23。
 
 CleanNest 是本机 macOS 工具。当前开源版本没有账号系统、广告、遥测、崩溃上报或项目自建云服务。
 
@@ -43,7 +43,8 @@ CleanNest 是本机 macOS 工具。当前开源版本没有账号系统、广告
 
 - 本机 AI 客户端只接受 `http://127.0.0.1:<端口>/v1`，使用临时会话，不保存 Cookie/凭据、不使用代理并拒绝 HTTP 重定向。
 - 模型运行中心不会扫描局域网；它只检查本机监听进程、几个已支持平台的标准回环端口和用户明确配置的回环端点。发现通配监听时只用本机网卡地址解释可能的暴露范围，不向其他设备发请求。
-- 只有在用户点击“检查更新”时，CleanNest 才通过临时、无 Cookie、无登录令牌的 HTTPS 会话请求 GitHub 公开的最新正式 Release。请求的 User-Agent 包含当前 App 版本；GitHub 会看到 IP 地址等常规网络元数据，但不会收到文件清单、扫描结果、本机模型信息或 CleanNest 历史记录。App 只比较版本并打开经过官方仓库校验的发布页，不会自动下载或安装更新。
+- 更新检查默认开启，可在“设置 > 关于”关闭。App 启动后延迟检查，运行期间回到活跃或系统唤醒时按距上次尝试至少 24 小时再检查；App 完全退出后不在后台检查。CleanNest 通过临时、无 Cookie、无登录令牌的 HTTPS 会话请求 GitHub 公开的最新正式 Release，User-Agent 包含当前 App 版本；GitHub 会看到 IP 地址等常规网络元数据，但不会收到文件清单、扫描结果、本机模型信息或 CleanNest 历史记录。检查发现新版本才提醒，同一版本不重复自动弹窗。
+- 自动检查只读取 Release 元数据，不下载安装包。用户在更新弹窗中再次确认后，App 才从经过官方仓库路径校验的 GitHub Release 下载对应 PKG，保存到用户 Caches 下的 `CleanNest/Updates`；只接受受信任的 GitHub 资产重定向地址，并核对精确文件大小和 Release 提供的 SHA-256。随后本机运行 `pkgutil`、Apple `stapler` 和 Gatekeeper 检查 Developer ID Installer 团队签名、公证票据与系统评估；全部通过后仍需用户点击“打开安装器”，并在 macOS 安装器中最终确认。CleanNest 不静默安装、不自动替换 App，校验失败没有绕过入口。
 - CleanNest 不会自动下载 MLX 模型。你自行使用的模型仓库、Python 包管理器或本机服务有各自的条款。
 - 内置 MCP 不联网，只通过本机标准输入/输出响应。启用后，你选择的 MCP 客户端可以读取上述有界指标和脱敏证据；CleanNest 无法控制该客户端之后如何处理数据。
 - Agent 页的 Git、Docker、Hugging Face、npm 与 pip 检查不会访问软件仓库或下载内容。Docker 只连接本机 daemon；Hugging Face 设置离线与禁遥测环境变量。CleanNest 不控制用户另行启动的这些工具。
