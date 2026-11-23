@@ -427,9 +427,11 @@ public struct ModelConfigurationReferenceInspector: Sendable {
 
     private func references(from pairs: [(String, String)], configurationURL: URL, root: URL) -> [ModelConfigurationReference] {
         var output: [ModelConfigurationReference] = []
+        let standardizedRoot = root.standardizedFileURL
+        let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL
         let rootPaths = [
-            root.standardizedFileURL.path,
-            root.resolvingSymlinksInPath().standardizedFileURL.path,
+            standardizedRoot.path,
+            resolvedRoot.path,
             canonicalPath(root)
         ].compactMap { $0 }
         for (key, combinedValue) in pairs {
