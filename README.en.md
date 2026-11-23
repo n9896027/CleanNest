@@ -18,9 +18,17 @@ CleanNest brings Agent workspaces, local model services, system alerts, and stor
 
 </div>
 
-## 0.12.0: cleanup evidence, review, and recovery
+## 0.12.1: make cleanup candidates and explanations easier to use
 
-The unified version is **0.12.0 (Build 50)**. General cleanup now rechecks active files before execution, exposes path-specific review for blocked items, and records a persistent execution ledger with per-item recovery. APFS, sparse files, model-configuration references, and application containers use separate evidence rather than treating unknown or logical sizes as reclaimable space. An official PKG must still be built from the same clean, checked `main` commit; see [Releases](https://github.com/n9896027/CleanNest/releases) for actual downloads. Read the [0.12.0 roadmap](docs/ROADMAP-0.12.md) and [verification record](docs/VERIFICATION-0.12.0.md) for scope and limits.
+The current development candidate is **0.12.1 (Build 51)**. Cleanup candidates now appear first, while protected-path evidence moves into grouped diagnostics below them. Hundreds of paths no longer obscure the actionable list. Only unreadable paths offer permission recovery and rescanning; symbolic-link, package-boundary, and scan-limit groups explain why an identical rescan would not help.
+
+“Old logs” are now presented as “Application logs,” with per-item explanations of what they are, why they are candidates, what cleanup affects, and how to recover them. Batch selection asks for confirmation and nothing is preselected. All 0.12.0 protections remain, including active-file checks, path-specific safety boundaries, the execution ledger, recovery, and APFS reconciliation.
+
+The candidate has passed 292 tests, strict three-language audits, a local Debug build, and a read-only validation of the real cleanup page. It is not yet an official Universal 2 PKG; check [Releases](https://github.com/n9896027/CleanNest/releases) for actual public downloads.
+
+### 0.12.0 foundation: cleanup evidence, review, and recovery
+
+Version 0.12.0 (Build 50) introduced active-file rechecks, path-specific review for blocked items, a persistent execution ledger, and per-item recovery. APFS, sparse files, model-configuration references, and application containers use separate evidence rather than treating unknown or logical sizes as reclaimable space. Read the [0.12.0 roadmap](docs/ROADMAP-0.12.md) and [verification record](docs/VERIFICATION-0.12.0.md) for scope and limits.
 
 ### 0.10.1: complete MLX Serve monitoring
 
@@ -110,7 +118,7 @@ CleanNest is not a conventional cleaner with AI copy added on top. It is designe
 - **Model Workbench** — run a minimal streaming request that contains no scan metadata, then see loopback health latency, time to first output, total time, the exact API model ID, and memory-headroom guidance.
 - **Data controls** — export or clear the activity log independently; restoring safe defaults resets preferences without silently erasing activity, learning rules, disk indexes, metric history, or macOS permissions.
 - **Built-in native engine** — cleanup, disk, system data, Agent, and system status work without Homebrew or any additional cleanup engine.
-- **Update checks** — manually query the latest official GitHub Release from the app menu or About page; CleanNest only compares versions and opens a validated repository page, never silently downloading or installing.
+- **Automatic checks, confirmed updates** — CleanNest checks the latest official GitHub Release every 24 hours while running, with an opt-out on the About page. It notifies only when a newer version exists. After your confirmation, it downloads the official PKG and verifies its size, SHA-256, Developer ID team signature, Apple notarization, and Gatekeeper assessment. You then open macOS Installer and make the final system confirmation; CleanNest never silently installs or replaces itself.
 - **Native macOS experience** — SwiftUI/AppKit interface, light and dark appearance, permission recovery guidance, activity history, and a safe demo mode.
 - **Read-only MCP** — expose bounded, redacted local evidence to a trusted AI client over bundled stdio only; no HTTP listener, deletion, process control, or settings tools.
 - **Three-language resources** — a String Catalog provides English, Simplified Chinese, and Traditional Chinese for core navigation and primary screens.

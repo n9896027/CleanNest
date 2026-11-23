@@ -77,7 +77,12 @@ struct CNDetailSection<Content: View>: View {
     let summary: String?
     let symbol: String
     private let content: () -> Content
+    private let externalExpansion: Binding<Bool>?
     @State private var expanded: Bool
+
+    private var isExpanded: Binding<Bool> {
+        externalExpansion ?? $expanded
+    }
 
     init(title: String, summary: String? = nil, symbol: String = "info.circle",
          initiallyExpanded: Bool = false, @ViewBuilder content: @escaping () -> Content) {
@@ -85,12 +90,23 @@ struct CNDetailSection<Content: View>: View {
         self.summary = summary
         self.symbol = symbol
         self.content = content
+        self.externalExpansion = nil
         _expanded = State(initialValue: initiallyExpanded)
+    }
+
+    init(title: String, summary: String? = nil, symbol: String = "info.circle",
+         isExpanded: Binding<Bool>, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.summary = summary
+        self.symbol = symbol
+        self.content = content
+        self.externalExpansion = isExpanded
+        _expanded = State(initialValue: isExpanded.wrappedValue)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button { expanded.toggle() } label: {
+            Button { isExpanded.wrappedValue.toggle() } label: {
                 HStack(spacing: 10) {
                     Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 20)
                     VStack(alignment: .leading, spacing: 3) {
@@ -101,7 +117,7 @@ struct CNDetailSection<Content: View>: View {
                         }
                     }
                     Spacer(minLength: 8)
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    Image(systemName: isExpanded.wrappedValue ? "chevron.up" : "chevron.down")
                         .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 }
                 .frame(minHeight: 32)
@@ -110,9 +126,9 @@ struct CNDetailSection<Content: View>: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(CNL10n.string(title))
-            .accessibilityValue(CNL10n.string(expanded ? "已展开" : "已折叠"))
-            .accessibilityHint(CNL10n.string(expanded ? "收起详情" : "展开详情"))
-            if expanded {
+            .accessibilityValue(CNL10n.string(isExpanded.wrappedValue ? "已展开" : "已折叠"))
+            .accessibilityHint(CNL10n.string(isExpanded.wrappedValue ? "收起详情" : "展开详情"))
+            if isExpanded.wrappedValue {
                 Divider().padding(.horizontal, 12)
                 content().padding(12)
             }

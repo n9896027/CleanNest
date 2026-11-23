@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public struct SemanticVersion: Comparable, CustomStringConvertible, Sendable {
@@ -92,6 +93,22 @@ public struct SemanticVersion: Comparable, CustomStringConvertible, Sendable {
     }
 }
 
+public struct AppUpdatePackage: Equatable, Sendable {
+    public static let maximumByteCount: Int64 = 512 * 1_024 * 1_024
+
+    public let name: String
+    public let downloadURL: URL
+    public let byteCount: Int64
+    public let sha256: String
+
+    public init(name: String, downloadURL: URL, byteCount: Int64, sha256: String) {
+        self.name = name
+        self.downloadURL = downloadURL
+        self.byteCount = byteCount
+        self.sha256 = sha256
+    }
+}
+
 public struct GitHubReleaseInfo: Equatable, Sendable {
     public let version: SemanticVersion
     public let tagName: String
@@ -99,6 +116,7 @@ public struct GitHubReleaseInfo: Equatable, Sendable {
     public let notes: String
     public let pageURL: URL
     public let publishedAt: Date?
+    public let installerPackage: AppUpdatePackage?
 
     public init(
         version: SemanticVersion,
@@ -106,7 +124,8 @@ public struct GitHubReleaseInfo: Equatable, Sendable {
         title: String,
         notes: String,
         pageURL: URL,
-        publishedAt: Date?
+        publishedAt: Date?,
+        installerPackage: AppUpdatePackage? = nil
     ) {
         self.version = version
         self.tagName = tagName
@@ -114,6 +133,7 @@ public struct GitHubReleaseInfo: Equatable, Sendable {
         self.notes = notes
         self.pageURL = pageURL
         self.publishedAt = publishedAt
+        self.installerPackage = installerPackage
     }
 }
 
@@ -123,6 +143,8 @@ public enum GitHubReleaseParsingError: LocalizedError, Equatable, Sendable {
     case unpublishedRelease
     case invalidVersionTag(String)
     case untrustedReleaseURL
+    case invalidInstallerPackage
+    case untrustedPackageURL
 
     public var errorDescription: String? {
         switch self {
@@ -136,6 +158,10 @@ public enum GitHubReleaseParsingError: LocalizedError, Equatable, Sendable {
             return "GitHub 版本标签格式无法识别：\(tag)"
         case .untrustedReleaseURL:
             return "GitHub 返回的下载页面不属于 CleanNest 官方仓库。"
+        case .invalidInstallerPackage:
+            return "GitHub Release 中没有唯一、完整且符合版本命名的 CleanNest 安装包。"
+        case .untrustedPackageURL:
+            return "安装包下载地址不属于 CleanNest 官方 Release。"
         }
     }
 }
@@ -185,6 +211,13 @@ public enum GitHubReleaseParser {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedNotes = (response.body ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let package = try parseInstallerPackage(
+            assets: response.assets,
+            version: version,
+            tagName: response.tagName,
+            owner: owner,
+            repository: repository
+        )
 
         return GitHubReleaseInfo(
             version: version,
@@ -192,8 +225,101 @@ public enum GitHubReleaseParser {
             title: trimmedTitle.isEmpty ? response.tagName : trimmedTitle,
             notes: String(trimmedNotes.prefix(12_000)),
             pageURL: pageURL,
-            publishedAt: response.publishedAt
+            publishedAt: response.publishedAt,
+            installerPackage: package
         )
+    }
+
+    public static func isTrustedPackageURL(
+        _ url: URL,
+        package: AppUpdatePackage,
+        owner: String,
+        repository: String,
+        tagName: String
+    ) -> Bool {
+        guard hasSecureURLShape(url), url.query == nil, url.fragment == nil else { return false }
+        let expectedPath = "/\(owner)/\(repository)/releases/download/\(tagName)/\(package.name)"
+        return url.host?.lowercased() == "github.com" && url.path == expectedPath
+    }
+
+    public static func isTrustedPackageResponseURL(
+        _ url: URL,
+        package: AppUpdatePackage,
+        owner: String,
+        repository: String,
+        tagName: String
+    ) -> Bool {
+        guard hasSecureURLShape(url) else { return false }
+        let host = url.host?.lowercased()
+        if host == "github.com" {
+            return isTrustedPackageURL(
+                url,
+                package: package,
+                owner: owner,
+                repository: repository,
+                tagName: tagName
+            )
+        }
+        return host == "release-assets.githubusercontent.com"
+            || host == "objects.githubusercontent.com"
+    }
+
+    private static func hasSecureURLShape(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "https"
+            && url.host != nil
+            && url.port == nil
+            && url.user == nil
+            && url.password == nil
+    }
+
+    private static func parseInstallerPackage(
+        assets: [ReleaseAsset]?,
+        version: SemanticVersion,
+        tagName: String,
+        owner: String,
+        repository: String
+    ) throws -> AppUpdatePackage? {
+        guard let assets else { return nil }
+        let packageAssets = assets.filter { $0.name.lowercased().hasSuffix(".pkg") }
+        guard !packageAssets.isEmpty else { return nil }
+
+        let expectedPrefix = "CleanNest-\(version.description)-"
+        let matchingAssets = packageAssets.filter { asset in
+            guard asset.name.hasPrefix(expectedPrefix), asset.name.hasSuffix(".pkg") else { return false }
+            let build = asset.name.dropFirst(expectedPrefix.count).dropLast(4)
+            return !build.isEmpty && build.allSatisfy(\.isNumber)
+        }
+        guard packageAssets.count == 1, matchingAssets.count == 1,
+              let asset = matchingAssets.first,
+              asset.state == "uploaded",
+              asset.size > 0, asset.size <= AppUpdatePackage.maximumByteCount,
+              let digest = asset.digest,
+              digest.hasPrefix("sha256:") else {
+            throw GitHubReleaseParsingError.invalidInstallerPackage
+        }
+
+        let sha256 = String(digest.dropFirst("sha256:".count)).lowercased()
+        guard sha256.count == 64,
+              sha256.allSatisfy({ $0.isHexDigit }),
+              let downloadURL = URL(string: asset.browserDownloadURL) else {
+            throw GitHubReleaseParsingError.invalidInstallerPackage
+        }
+        let package = AppUpdatePackage(
+            name: asset.name,
+            downloadURL: downloadURL,
+            byteCount: asset.size,
+            sha256: sha256
+        )
+        guard isTrustedPackageURL(
+            downloadURL,
+            package: package,
+            owner: owner,
+            repository: repository,
+            tagName: tagName
+        ) else {
+            throw GitHubReleaseParsingError.untrustedPackageURL
+        }
+        return package
     }
 
     private struct ReleaseResponse: Decodable {
@@ -204,6 +330,7 @@ public enum GitHubReleaseParser {
         let draft: Bool
         let prerelease: Bool
         let publishedAt: Date?
+        let assets: [ReleaseAsset]?
 
         enum CodingKeys: String, CodingKey {
             case tagName = "tag_name"
@@ -213,6 +340,23 @@ public enum GitHubReleaseParser {
             case draft
             case prerelease
             case publishedAt = "published_at"
+            case assets
+        }
+    }
+
+    private struct ReleaseAsset: Decodable {
+        let name: String
+        let state: String
+        let size: Int64
+        let digest: String?
+        let browserDownloadURL: String
+
+        enum CodingKeys: String, CodingKey {
+            case name
+            case state
+            case size
+            case digest
+            case browserDownloadURL = "browser_download_url"
         }
     }
 }
@@ -234,5 +378,70 @@ public enum AppUpdatePolicy {
         if localVersion < release.version { return .updateAvailable }
         if release.version < localVersion { return .localVersionAhead }
         return .upToDate
+    }
+}
+
+public enum AppUpdateAutomaticCheckPolicy {
+    public static let interval: TimeInterval = 24 * 60 * 60
+
+    public static func shouldCheck(
+        isEnabled: Bool,
+        lastAttemptAt: Date?,
+        now: Date = Date()
+    ) -> Bool {
+        guard isEnabled else { return false }
+        guard let lastAttemptAt else { return true }
+        return now.timeIntervalSince(lastAttemptAt) >= interval
+            || now.timeIntervalSince(lastAttemptAt) < 0
+    }
+}
+
+public enum AppUpdatePackageVerificationError: LocalizedError, Equatable, Sendable {
+    case invalidFile
+    case sizeMismatch(expected: Int64, actual: Int64)
+    case digestMismatch
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidFile:
+            return "下载结果不是可读取的普通安装包文件。"
+        case .sizeMismatch(let expected, let actual):
+            return "安装包大小不匹配：预期 \(expected) 字节，实际 \(actual) 字节。"
+        case .digestMismatch:
+            return "安装包 SHA-256 与 GitHub Release 摘要不一致。"
+        }
+    }
+}
+
+public enum AppUpdatePackageVerifier {
+    public static func verify(fileAt url: URL, package: AppUpdatePackage) throws {
+        guard package.byteCount > 0 else {
+            throw AppUpdatePackageVerificationError.invalidFile
+        }
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw AppUpdatePackageVerificationError.invalidFile
+        }
+
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let fileSize = try handle.seekToEnd()
+        guard fileSize == UInt64(package.byteCount) else {
+            throw AppUpdatePackageVerificationError.sizeMismatch(
+                expected: package.byteCount,
+                actual: fileSize > UInt64(Int64.max) ? Int64.max : Int64(fileSize)
+            )
+        }
+        try handle.seek(toOffset: 0)
+        var hasher = SHA256()
+        while true {
+            let data = try handle.read(upToCount: 1_048_576) ?? Data()
+            if data.isEmpty { break }
+            hasher.update(data: data)
+        }
+        let actualDigest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        guard actualDigest == package.sha256 else {
+            throw AppUpdatePackageVerificationError.digestMismatch
+        }
     }
 }

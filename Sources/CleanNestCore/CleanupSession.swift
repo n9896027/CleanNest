@@ -146,10 +146,11 @@ public struct CleanupScanIssue: Codable, Equatable, Identifiable, Sendable {
     public var guidance: String {
         switch reason {
         case .unreadable: return "检查 macOS 文件访问权限后重新扫描；不会直接生成清理候选。"
-        case .unsafeRoot, .symbolicLink: return "安全边界未通过，重新扫描也不会跟随或清理链接目标。"
+        case .unsafeRoot: return "路径身份未通过安全检查，重新扫描不会绕过这条边界。"
+        case .symbolicLink: return "为避免触及链接目标，重新扫描也不会跟随或清理链接目标。"
         case .packageBoundary: return "App 或资料库包保持完整；请使用所属 App 管理，不展开清理。"
         case .cloudPlaceholder: return "先在云端服务中完成下载或释放本地副本，再重新扫描。"
-        case .depthLimit, .fileLimit, .hashLimit: return "本轮有界扫描未覆盖此处；可调整范围后重新扫描，不会自动扩大执行权限。"
+        case .depthLimit, .fileLimit, .hashLimit: return "本轮有界扫描未覆盖此处；相同设置下重扫不会扩大范围或执行权限。"
         }
     }
 }

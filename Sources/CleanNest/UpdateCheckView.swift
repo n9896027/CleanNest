@@ -4,6 +4,7 @@ import CleanNestCore
 struct UpdateCheckView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @State private var showsDownloadConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -48,21 +49,27 @@ struct UpdateCheckView: View {
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxHeight: 130)
+                    .frame(maxHeight: 110)
                 }
                 .cnInsetPanel()
-                .padding(.top, 20)
+                .padding(.top, 18)
             }
 
-            Spacer(minLength: 22)
+            if case .updateAvailable(_, let release) = store.appUpdateState,
+               release.installerPackage != nil {
+                downloadStatusPanel
+                    .padding(.top, 16)
+            }
 
-            HStack(alignment: .center, spacing: 8) {
+            Spacer(minLength: 18)
+
+            HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "network")
-                Text("仅在你点击检查时访问 GitHub；会发送当前 App 版本，GitHub 可看到 IP 等常规网络信息，但不会收到文件清单或扫描结果。")
+                Text("自动检查可在设置中关闭。检查只读取公开 Release；只有你确认后才会下载 PKG，不会发送文件清单或扫描结果。GitHub 可看到当前 App 版本、IP 等常规网络信息。")
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
-            .padding(.bottom, 18)
+            .padding(.bottom, 16)
 
             Divider()
                 .padding(.horizontal, -24)
@@ -72,6 +79,7 @@ struct UpdateCheckView: View {
                     Button("重新检查") {
                         Task { await store.checkForUpdates() }
                     }
+                    .disabled(store.appUpdateDownloadState.isBusy)
                 }
 
                 Spacer()
@@ -80,17 +88,32 @@ struct UpdateCheckView: View {
                     Button(gitHubButtonTitle) {
                         store.openLatestCleanNestRelease()
                     }
-                    .buttonStyle(.borderedProminent)
-                } else {
-                    Button("完成") { dismiss() }
-                        .keyboardShortcut(.defaultAction)
                 }
+
+                primaryAction
             }
             .padding(.top, 16)
         }
         .padding(24)
-        .frame(width: 520)
-        .frame(minHeight: 330)
+        .frame(width: 560)
+        .frame(minHeight: 360)
+        .confirmationDialog(
+            "下载并安装 CleanNest？",
+            isPresented: $showsDownloadConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("下载并校验") {
+                store.downloadAndPrepareUpdate()
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            if let package = store.appUpdateState.release?.installerPackage {
+                Text(CNL10n.format(
+                    "将从 CleanNest 官方 GitHub Release 下载 %@ 安装包，核对 SHA-256、Developer ID 签名、Apple 公证和 Gatekeeper。全部通过后仍需你点击“打开安装器”，并在 macOS 安装器中最终确认。",
+                    CleanNestFormatting.bytes(package.byteCount)
+                ))
+            }
+        }
     }
 
     @ViewBuilder
@@ -108,6 +131,84 @@ struct UpdateCheckView: View {
             }
         }
         .frame(width: 52, height: 52)
+    }
+
+    @ViewBuilder
+    private var downloadStatusPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            switch store.appUpdateDownloadState {
+            case .idle:
+                Label("官方 PKG 安装包已就绪，等待你确认下载。", systemImage: "shippingbox")
+                    .foregroundStyle(.secondary)
+            case .downloading(let package):
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text(CNL10n.format(
+                        "正在下载官方安装包（%@）…",
+                        CleanNestFormatting.bytes(package.byteCount)
+                    ))
+                }
+            case .verifying:
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("正在校验 SHA-256、Developer ID 签名、Apple 公证与 Gatekeeper…")
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            case .readyToInstall:
+                Label("全部安全校验已通过。点击“打开安装器”后，由 macOS 安装器继续。", systemImage: "checkmark.seal.fill")
+                    .foregroundStyle(CNTheme.success)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .installerOpened:
+                Label("macOS 安装器已打开。请在安装器中核对版本并完成系统确认。", systemImage: "arrow.up.forward.app.fill")
+                    .foregroundStyle(CNTheme.accent)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .failed(let message, _):
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(CNTheme.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .font(.caption)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cnInsetPanel()
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var primaryAction: some View {
+        if case .updateAvailable(_, let release) = store.appUpdateState,
+           release.installerPackage != nil {
+            switch store.appUpdateDownloadState {
+            case .idle, .failed:
+                Button("下载并安装…") {
+                    showsDownloadConfirmation = true
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            case .downloading:
+                Button("正在下载…") { }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(true)
+            case .verifying:
+                Button("正在校验…") { }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(true)
+            case .readyToInstall:
+                Button("打开安装器") {
+                    store.openDownloadedUpdateInstaller()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            case .installerOpened:
+                Button("重新打开安装器") {
+                    store.openDownloadedUpdateInstaller()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        } else if !showsGitHubButton {
+            Button("完成") { dismiss() }
+                .keyboardShortcut(.defaultAction)
+        }
     }
 
     private var statusTitle: String {
@@ -139,8 +240,15 @@ struct UpdateCheckView: View {
                 currentVersion
             )
         case .updateAvailable(let currentVersion, let release):
+            if release.installerPackage != nil {
+                return CNL10n.format(
+                    "当前版本 %@，最新正式版本 %@。自动检查不会下载；只有你确认后才会获取并校验安装包。",
+                    currentVersion,
+                    release.version.description
+                )
+            }
             return CNL10n.format(
-                "当前版本 %@，最新正式版本 %@。CleanNest 不会自动替换 App，请前往 GitHub 核对说明后下载。",
+                "当前版本 %@，最新正式版本 %@。这个 Release 没有符合要求的 PKG，请前往 GitHub 核对说明并手动下载。",
                 currentVersion,
                 release.version.description
             )
@@ -193,6 +301,10 @@ struct UpdateCheckView: View {
     }
 
     private var gitHubButtonTitle: String {
+        if case .updateAvailable(_, let release) = store.appUpdateState,
+           release.installerPackage != nil {
+            return CNL10n.string("发布页")
+        }
         if case .updateAvailable = store.appUpdateState {
             return CNL10n.string("打开 GitHub 下载")
         }

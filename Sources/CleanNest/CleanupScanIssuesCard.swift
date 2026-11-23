@@ -5,78 +5,147 @@ struct CleanupScanIssuesCard: View {
     @EnvironmentObject private var store: AppStore
     let issues: [CleanupScanIssue]
 
-    private let displayLimit = 100
+    @State private var expandedGroups = Set<CleanupScanSkipReason>()
+
+    private var groups: [CleanupScanIssueGroup] {
+        CleanupScanIssuePresentation.groups(for: issues)
+    }
 
     var body: some View {
-        SurfaceCard {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 10) {
-                    CNIconTile(symbol: "magnifyingglass", tint: CNTheme.warning, size: 32)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("扫描保护项逐路径复核")
-                            .font(.headline)
-                        Text("这些路径没有生成清理候选；请补充权限或重新扫描，不能直接重试移动。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    StatusPill(
-                        text: CNL10n.format("%d 条路径证据", issues.count),
-                        symbol: "location",
-                        style: .warning
-                    )
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                CNIconTile(symbol: "tray.full", tint: CNTheme.warning, size: 32)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("未纳入本次清理")
+                        .font(.headline)
+                    Text("这些不是清理候选，也不会被处理。按原因查看路径证据。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+                Spacer()
+                StatusPill(
+                    text: CNL10n.format("%d 条路径证据", issues.count),
+                    symbol: "location",
+                    style: .neutral
+                )
+            }
 
+            if !groups.isEmpty {
                 Divider()
 
-                ForEach(Array(issues.prefix(displayLimit))) { issue in
-                    VStack(alignment: .leading, spacing: 7) {
-                        HStack(spacing: 8) {
-                            Text(issue.name)
-                                .font(.subheadline.weight(.semibold))
-                                .lineLimit(1)
-                            StatusPill(text: title(for: issue.reason), symbol: "shield", style: .warning)
-                            Spacer()
-                            Button("在 Finder 中显示") { store.revealInFinder(issue.url) }
-                                .buttonStyle(.borderless)
-                                .controlSize(.small)
-                        }
-                        Text(displayPath(issue.url))
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text(issue.guidance)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        HStack(spacing: 8) {
-                            if issue.reason == .unreadable {
-                                Button("打开权限设置") { store.openFullDiskAccessSettings() }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                            }
-                            Button {
-                                Task { await store.scanCleanup() }
-                            } label: {
-                                Label("重新扫描", systemImage: "arrow.clockwise")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .disabled(store.isWorking)
-                        }
+                VStack(spacing: 10) {
+                    ForEach(groups) { group in
+                        issueGroup(group)
                     }
-                    .padding(10)
-                    .background(CNTheme.warning.opacity(0.055), in: RoundedRectangle(cornerRadius: 9))
-                }
-
-                if issues.count > displayLimit {
-                    Text(CNL10n.format("仅显示前 %d 条；完整数量保留在本次扫描证据中。", displayLimit))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
                 }
             }
         }
+    }
+
+    private func issueGroup(_ group: CleanupScanIssueGroup) -> some View {
+        let isExpanded = expandedGroups.contains(group.reason)
+        let isBoundary = group.disposition == .safetyBoundary
+
+        return VStack(alignment: .leading, spacing: 0) {
+            Button {
+                if isExpanded {
+                    expandedGroups.remove(group.reason)
+                } else {
+                    expandedGroups.insert(group.reason)
+                }
+            } label: {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: isBoundary ? "shield.lefthalf.filled" : "exclamationmark.circle")
+                        .foregroundStyle(isBoundary ? CNTheme.cyan : CNTheme.warning)
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 7) {
+                            Text(title(for: group.reason))
+                                .font(.subheadline.weight(.semibold))
+                            StatusPill(
+                                text: CNL10n.string(isBoundary ? "安全边界" : "需要处理"),
+                                symbol: nil,
+                                style: isBoundary ? .neutral : .warning
+                            )
+                        }
+                        Text(CNL10n.string(group.summary))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Text(CNL10n.format("%d 条", group.issues.count))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(CNL10n.format("%@，%d 条", title(for: group.reason), group.issues.count))
+            .accessibilityValue(CNL10n.string(isExpanded ? "已展开" : "已折叠"))
+
+            if isExpanded {
+                Divider().padding(.vertical, 10)
+
+                if group.allowsAuthorizationAndRescan {
+                    HStack(spacing: 8) {
+                        Button("打开权限设置") { store.openFullDiskAccessSettings() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        Button {
+                            Task { await store.scanCleanup() }
+                        } label: {
+                            Label("授权后重新扫描", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(store.isWorking)
+                    }
+                    .padding(.bottom, 10)
+                }
+
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(group.issues.enumerated()), id: \.element.id) { index, issue in
+                        issueRow(issue)
+                        if index < group.issues.count - 1 {
+                            Divider().padding(.leading, 24)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            (isBoundary ? CNTheme.cyan : CNTheme.warning).opacity(0.045),
+            in: RoundedRectangle(cornerRadius: 10)
+        )
+    }
+
+    private func issueRow(_ issue: CleanupScanIssue) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "folder")
+                .foregroundStyle(.secondary)
+                .frame(width: 14)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(issue.name)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                Text(displayPath(issue.url))
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 8)
+            Button("在 Finder 中显示") { store.revealInFinder(issue.url) }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+        }
+        .padding(.vertical, 7)
     }
 
     private func displayPath(_ url: URL) -> String {

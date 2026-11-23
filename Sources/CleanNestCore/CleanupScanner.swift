@@ -99,7 +99,7 @@ public struct CleanupScanner: Sendable {
                     minimumAgeDays: 30,
                     allowedExtensions: nil,
                     recommended: false,
-                    detail: "旧日志，仅在不再排查问题时选择",
+                    detail: "应用或服务日志 · 用于运行记录与故障排查",
                     maximumChildren: 250
                 )
             ]
