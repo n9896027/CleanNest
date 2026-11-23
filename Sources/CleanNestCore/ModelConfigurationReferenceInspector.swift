@@ -429,9 +429,10 @@ public struct ModelConfigurationReferenceInspector: Sendable {
         var output: [ModelConfigurationReference] = []
         let standardizedRoot = root.standardizedFileURL
         let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL
+        // NSURL.path preserves the legacy property semantics without the newer property/method ambiguity.
         let rootPaths = [
-            standardizedRoot.path,
-            resolvedRoot.path,
+            (standardizedRoot as NSURL).path,
+            (resolvedRoot as NSURL).path,
             canonicalPath(root)
         ].compactMap { $0 }
         for (key, combinedValue) in pairs {
