@@ -138,6 +138,12 @@ public actor MetricsStore {
     public let databaseURL: URL
     public let access: MetricsStoreAccess
 
+    /// WAL mode and the schema are persisted in the database file. The actor
+    /// only needs to (re)create them on its first connection, not on every
+    /// sample — `PRAGMA user_version=` is a write, so repeating it on each of
+    /// the three connections opened per minute was pure write amplification.
+    private var schemaInitialized = false
+
     public init(
         databaseURL: URL = CleanNestDataPaths.metricsDatabase(),
         access: MetricsStoreAccess = .readWrite
@@ -219,14 +225,46 @@ public actor MetricsStore {
         }
     }
 
+    /// Returns real samples spread across the *whole* requested window.
+    ///
+    /// A plain `ORDER BY sampled_at DESC LIMIT n` silently truncates long
+    /// ranges: with the 60-second sampler, a "30 days" chart would only show
+    /// roughly the last day (1500 samples). Instead the window is split into
+    /// `maximumSamples` equal time buckets and the newest real sample from each
+    /// bucket is kept. Points stay untouched (no averaging or synthesis), the
+    /// count stays bounded, and the chart actually covers the selected range.
     public func samples(
         range: MetricHistoryRange,
         now: Date = Date()
     ) throws -> [MetricSample] {
-        try samples(
-            since: now.addingTimeInterval(-range.duration),
-            limit: range.maximumSamples
-        )
+        let since = now.addingTimeInterval(-range.duration)
+        let lastBucket = max(range.maximumSamples - 1, 1)
+        let bucketSeconds = max(range.duration / Double(lastBucket), 1)
+        return try withDatabase { database in
+            // MIN(..., lastBucket) also caps floating-point edge buckets, so the
+            // result can never exceed maximumSamples points.
+            let sql = """
+            \(Self.selectColumns)
+            WHERE sampled_at IN (
+                SELECT MAX(sampled_at) FROM metric_samples
+                WHERE sampled_at >= ?
+                GROUP BY MIN(CAST((sampled_at - ?) / ? AS INTEGER), ?)
+            )
+            ORDER BY sampled_at ASC;
+            """
+            let statement = try prepare(sql, database: database)
+            defer { sqlite3_finalize(statement) }
+            try bind(since.timeIntervalSince1970, to: 1, statement: statement, database: database)
+            try bind(since.timeIntervalSince1970, to: 2, statement: statement, database: database)
+            try bind(bucketSeconds, to: 3, statement: statement, database: database)
+            try bind(lastBucket, to: 4, statement: statement, database: database)
+
+            var result: [MetricSample] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                result.append(Self.decodeSample(statement))
+            }
+            return result
+        }
     }
 
     @discardableResult
@@ -289,6 +327,11 @@ public actor MetricsStore {
             throw MetricsStoreError.cannotOpenDatabase("数据库尚未由 CleanNest 创建")
         }
 
+        // If the file disappears while the app is running, sqlite3_open_v2 will
+        // create a fresh empty one; in that case the schema must be rebuilt even
+        // though this actor already initialized once.
+        let databaseFileExisted = FileManager.default.fileExists(atPath: databaseURL.path)
+
         var database: OpaquePointer?
         let flags = access == .readWrite
             ? SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
@@ -304,9 +347,14 @@ public actor MetricsStore {
 
         sqlite3_busy_timeout(database, 2_000)
         if access == .readWrite {
-            try execute("PRAGMA journal_mode=WAL;", database: database)
+            // Connection-scoped pragmas still need to be applied every time.
             try execute("PRAGMA synchronous=NORMAL;", database: database)
             try execute("PRAGMA foreign_keys=ON;", database: database)
+
+            guard !schemaInitialized || !databaseFileExisted else {
+                return try body(database)
+            }
+            try execute("PRAGMA journal_mode=WAL;", database: database)
             try execute(
                 """
                 CREATE TABLE IF NOT EXISTS metric_samples (
@@ -333,6 +381,7 @@ public actor MetricsStore {
                 database: database
             )
             try execute("PRAGMA user_version=\(Self.schemaVersion);", database: database)
+            schemaInitialized = true
         }
         return try body(database)
     }

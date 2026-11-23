@@ -127,6 +127,33 @@ public struct CleanupScanCategoryEvidence: Codable, Equatable, Identifiable, Sen
     }
 }
 
+public struct CleanupScanIssue: Codable, Equatable, Identifiable, Sendable {
+    public static let maximumPerScanner = 200
+
+    public let id: String
+    public let name: String
+    public let url: URL
+    public let reason: CleanupScanSkipReason
+
+    public init(url: URL, reason: CleanupScanSkipReason) {
+        let standardized = url.standardizedFileURL
+        self.url = standardized
+        self.name = standardized.lastPathComponent.isEmpty ? standardized.path : standardized.lastPathComponent
+        self.reason = reason
+        self.id = reason.rawValue + "|" + standardized.path
+    }
+
+    public var guidance: String {
+        switch reason {
+        case .unreadable: return "检查 macOS 文件访问权限后重新扫描；不会直接生成清理候选。"
+        case .unsafeRoot, .symbolicLink: return "安全边界未通过，重新扫描也不会跟随或清理链接目标。"
+        case .packageBoundary: return "App 或资料库包保持完整；请使用所属 App 管理，不展开清理。"
+        case .cloudPlaceholder: return "先在云端服务中完成下载或释放本地副本，再重新扫描。"
+        case .depthLimit, .fileLimit, .hashLimit: return "本轮有界扫描未覆盖此处；可调整范围后重新扫描，不会自动扩大执行权限。"
+        }
+    }
+}
+
 public struct CleanupScanSession: Codable, Equatable, Sendable {
     public static let schemaVersion = 1
 
@@ -139,6 +166,7 @@ public struct CleanupScanSession: Codable, Equatable, Sendable {
     public let examinedFileCount: Int
     public let categories: [CleanupScanCategoryEvidence]
     public let skips: [CleanupScanSkipEvidence]
+    public let issues: [CleanupScanIssue]
 
     public init(
         schemaVersion: Int = Self.schemaVersion,
@@ -148,7 +176,8 @@ public struct CleanupScanSession: Codable, Equatable, Sendable {
         elapsedSeconds: Double,
         roots: [CleanupScanRootEvidence],
         insights: CleanupScanInsights,
-        candidates: [CleanupCandidate]
+        candidates: [CleanupCandidate],
+        issues: [CleanupScanIssue] = []
     ) {
         self.schemaVersion = schemaVersion
         self.requestID = requestID
@@ -162,6 +191,34 @@ public struct CleanupScanSession: Codable, Equatable, Sendable {
             return matches.isEmpty ? nil : CleanupScanCategoryEvidence(kind: kind, candidates: matches)
         }
         self.skips = Self.makeSkips(insights)
+        self.issues = issues
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case requestID
+        case startedAt
+        case completedAt
+        case elapsedSeconds
+        case roots
+        case examinedFileCount
+        case categories
+        case skips
+        case issues
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        requestID = try container.decode(String.self, forKey: .requestID)
+        startedAt = try container.decode(Date.self, forKey: .startedAt)
+        completedAt = try container.decode(Date.self, forKey: .completedAt)
+        elapsedSeconds = try container.decode(Double.self, forKey: .elapsedSeconds)
+        roots = try container.decode([CleanupScanRootEvidence].self, forKey: .roots)
+        examinedFileCount = try container.decode(Int.self, forKey: .examinedFileCount)
+        categories = try container.decode([CleanupScanCategoryEvidence].self, forKey: .categories)
+        skips = try container.decode([CleanupScanSkipEvidence].self, forKey: .skips)
+        issues = try container.decodeIfPresent([CleanupScanIssue].self, forKey: .issues) ?? []
     }
 
     public var checkedRootCount: Int { roots.filter { $0.status == .checked }.count }
@@ -206,6 +263,44 @@ public enum CleanupSelectionPolicy {
             return currentSelection.subtracting(candidateIDs).union(candidateIDs.subtracting(selectedInScope))
         }
     }
+}
+
+public struct CleanupCandidatePageWindow: Equatable, Sendable {
+    public static let defaultPageSize = 40
+
+    public let itemCount: Int
+    public let pageSize: Int
+    public let pageIndex: Int
+
+    public init(
+        itemCount: Int,
+        pageSize: Int = Self.defaultPageSize,
+        requestedPageIndex: Int = 0
+    ) {
+        self.itemCount = max(0, itemCount)
+        self.pageSize = max(1, pageSize)
+        let availablePages = self.itemCount == 0
+            ? 0
+            : ((self.itemCount - 1) / self.pageSize) + 1
+        self.pageIndex = availablePages == 0
+            ? 0
+            : min(max(0, requestedPageIndex), availablePages - 1)
+    }
+
+    public var pageCount: Int {
+        itemCount == 0 ? 0 : ((itemCount - 1) / pageSize) + 1
+    }
+
+    public var range: Range<Int> {
+        guard itemCount > 0 else { return 0..<0 }
+        let lowerBound = pageIndex * pageSize
+        return lowerBound..<(lowerBound + min(pageSize, itemCount - lowerBound))
+    }
+
+    public var displayedStartNumber: Int { range.isEmpty ? 0 : range.lowerBound + 1 }
+    public var displayedEndNumber: Int { range.upperBound }
+    public var hasPreviousPage: Bool { pageIndex > 0 }
+    public var hasNextPage: Bool { pageIndex + 1 < pageCount }
 }
 
 public struct CleanupBasketSummary: Equatable, Sendable {

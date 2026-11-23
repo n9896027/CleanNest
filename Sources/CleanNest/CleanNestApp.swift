@@ -66,7 +66,7 @@ struct CleanNestApp: App {
                         case .analyze: await store.analyze()
                         case .status: await store.refreshSystemStatus()
                         case .agentWorkspace: await store.refreshAgentWorkspace()
-                        default: await store.refreshEngine()
+                        default: break
                         }
                     }
                 }

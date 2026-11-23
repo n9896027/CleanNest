@@ -94,7 +94,7 @@ enum MemoryBudgetCapture {
             samples.append(sample("agent-settled"))
 
         default:
-            limitations.append("未知模式 \(mode)；没有执行内存场景。")
+            limitations.append(CNL10n.format("未知模式 %@；没有执行内存场景。", String(describing: mode)))
         }
 
         let passed: Bool

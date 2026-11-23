@@ -537,7 +537,7 @@ public struct DiskEvidenceIndexer: Sendable {
             consume(entry.url, values: values)
         }
 
-        let descriptions = semanticDescription(for: entry.url, policy: policy)
+        let descriptions = semanticDescription(for: entry.url, policy: policy, homeDirectory: homeDirectory)
         let distribution = types.map {
             DiskEvidenceTypeBucket(kind: $0.key, fileCount: $0.value.files, allocatedBytes: $0.value.bytes)
         }.sorted {
@@ -569,8 +569,24 @@ public struct DiskEvidenceIndexer: Sendable {
 
     private static func semanticDescription(
         for url: URL,
-        policy: DiskAIInputPolicy
+        policy: DiskAIInputPolicy,
+        homeDirectory: URL
     ) -> (purpose: String, owner: String?, provenance: String, regeneration: String) {
+        // Share the precise download-cache explanation with the inventory.
+        // Match the actual home-relative root, not a similar folder name in a
+        // project. This changes descriptions, never deletion authorization.
+        if policy.category == .packageManagerData {
+            let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+            if let location = SystemDataCatalog.locations.first(where: { location in
+                guard location.id == "npm" || location.id == "pip" else { return false }
+                let root = location.url(in: homeDirectory).resolvingSymlinksInPath().path
+                return path == root || path.hasPrefix(root + "/")
+            }) {
+                return (location.purpose, location.owner,
+                        "由 \(location.owner) 在下载、安装依赖时保存；不是你的项目源代码。",
+                        location.impact)
+            }
+        }
         let components = url.standardizedFileURL.pathComponents
         let owner = likelyOwner(from: components)
         switch policy.category {

@@ -36,10 +36,26 @@ final class LocalModelRuntimeDiscoveryTests: XCTestCase {
             LocalModelRuntimeDiscovery.classifyPlatform(text: "python -m mlx_lm.server --port 8080"),
             .mlxLM
         )
+        XCTAssertEqual(
+            LocalModelRuntimeDiscovery.classifyPlatform(text: "/Users/example/.mlx-serve/bin/mlx-serve --port 11234"),
+            .mlxServe
+        )
         XCTAssertEqual(LocalModelRuntimeDiscovery.classifyPlatform(text: "/opt/homebrew/bin/ollama serve"), .ollama)
         XCTAssertEqual(LocalModelRuntimeDiscovery.classifyPlatform(text: "LM Studio"), .lmStudio)
         XCTAssertEqual(LocalModelRuntimeDiscovery.classifyPlatform(text: "llama-server -m model.gguf"), .llamaCPP)
         XCTAssertNil(LocalModelRuntimeDiscovery.classifyPlatform(text: "python app.py"))
+    }
+
+    func testProcessParserUsesFullArgvPathWhenPSCommIsTruncated() throws {
+        let output = "54748 501 123 Fri Sep 11 13:33:33 2026 /Users/zone/.mlx /Users/zone/.mlx-serve/bin/mlx-serve --serve --port 11234"
+        let record = try XCTUnwrap(LocalModelRuntimeDiscovery.parseProcessList(output)[54_748])
+
+        XCTAssertEqual(record.snapshot.commandName, "/Users/zone/.mlx")
+        XCTAssertEqual(
+            record.snapshot.executablePath,
+            "/Users/zone/.mlx-serve/bin/mlx-serve"
+        )
+        XCTAssertEqual(record.platform, .mlxServe)
     }
 
     func testRuntimeRequiresAPIEvidenceBeforeHealthyState() {

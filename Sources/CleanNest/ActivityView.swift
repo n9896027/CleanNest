@@ -79,7 +79,7 @@ struct ActivityView: View {
             VStack(alignment: .leading, spacing: 18) {
                 PageHeader(
                     title: "活动记录",
-                    subtitle: "记录完成、跳过与失败；只有明确可恢复的操作才会显示恢复入口。"
+                    subtitle: "查找做过的操作，查看结果与恢复方式。"
                 ) {
                     HStack(spacing: 8) {
                         Button {
@@ -105,14 +105,6 @@ struct ActivityView: View {
                         title: exportFailed ? "活动记录未能导出" : "活动记录已导出",
                         detail: exportMessage,
                         kind: exportFailed ? .warning : .success
-                    )
-                }
-
-                if store.activityLifetimeTotals.productiveOperations > 0 || !store.activities.isEmpty {
-                    ActivitySummaryPanel(
-                        totals: store.activityLifetimeTotals,
-                        detailCount: store.activities.count,
-                        onReset: { confirmingTotalsReset = true }
                     )
                 }
 
@@ -160,9 +152,23 @@ struct ActivityView: View {
                     }
                 }
 
+                if store.activityLifetimeTotals.productiveOperations > 0 || !store.activities.isEmpty {
+                    CNDetailSection(
+                        title: "累计成果",
+                        summary: CNL10n.format("已处理 %@ · %@ 次有成果操作", String(describing: CleanNestFormatting.bytes(store.activityLifetimeTotals.processedBytes)), String(describing: store.activityLifetimeTotals.productiveOperations)),
+                        symbol: "chart.bar.xaxis"
+                    ) {
+                        ActivitySummaryPanel(
+                            totals: store.activityLifetimeTotals,
+                            detailCount: store.activities.count,
+                            onReset: { confirmingTotalsReset = true }
+                        )
+                    }
+                }
+
                 InlineBanner(
                     title: "操作记录保存在本机",
-                    detail: "CleanNest 的记录位于 Application Support；Mole 自身的文件操作日志仍保留在 ~/Library/Logs/mole。",
+                    detail: "CleanNest 的活动记录位于 Application Support；清空明细不会删除文件或清空废纸篓。",
                     kind: .info,
                     actionTitle: store.lastTechnicalDetail.isEmpty ? nil : "诊断详情"
                 ) {
@@ -178,7 +184,7 @@ struct ActivityView: View {
         ) {
             Button("清空记录", role: .destructive) {
                 store.clearActivities()
-                exportMessage = "活动明细已清空；累计成果仍保留，废纸篓、扫描结果与 Mole 日志未改变。"
+                exportMessage = "活动明细已清空；累计成果仍保留，文件、扫描结果与废纸篓未改变。"
                 exportFailed = false
             }
             Button("取消", role: .cancel) { }
@@ -208,30 +214,55 @@ struct ActivityView: View {
 
     private var filterBar: some View {
         SurfaceCard(prominence: .quiet, tint: CNTheme.cyan) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) { filterControls }
-                VStack(alignment: .leading, spacing: 10) { filterControls }
+            VStack(alignment: .leading, spacing: 10) {
+                TextField("搜索标题或说明", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityHint("搜索只改变当前显示，不会删除或修改记录")
+
+                CNDetailSection(
+                    title: "筛选记录",
+                    summary: activeFilterDescription,
+                    symbol: "line.3.horizontal.decrease.circle"
+                ) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) { filterControls }
+                        VStack(alignment: .leading, spacing: 10) { filterControls }
+                    }
+                }
+
+                Text(CNL10n.format("显示 %d / %d 条；筛选只改变当前显示。", filteredActivities.count, store.activities.count))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
-            Text("显示 \(filteredActivities.count) / \(store.activities.count) 条；筛选只改变当前显示。")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var activeFilterDescription: String {
+        let values = [categoryScope.label, outcomeScope.label, timeWindowLabel]
+            .filter { $0 != "全部类型" && $0 != "全部结果" && $0 != "全部时间" }
+        return values.isEmpty ? "全部记录" : values.joined(separator: " · ")
+    }
+
+    private var timeWindowLabel: String {
+        switch timeWindow {
+        case .all: return "全部时间"
+        case .day: return "最近 24 小时"
+        case .week: return "最近 7 天"
+        case .month: return "最近 30 天"
         }
     }
 
     @ViewBuilder
     private var filterControls: some View {
-        TextField("搜索标题或说明", text: $searchText)
-            .textFieldStyle(.roundedBorder)
-            .frame(minWidth: 220)
         Picker("类型", selection: $categoryScope) {
             ForEach(ActivityCategoryScope.allCases) { scope in
-                Text(scope.label).tag(scope)
+                Text(CNL10n.string(scope.label)).tag(scope)
             }
         }
         .frame(width: 150)
         Picker("结果", selection: $outcomeScope) {
             ForEach(ActivityOutcomeScope.allCases) { scope in
-                Text(scope.label).tag(scope)
+                Text(CNL10n.string(scope.label)).tag(scope)
             }
         }
         .frame(width: 140)
@@ -340,7 +371,7 @@ private struct ActivitySummaryPanel: View {
 
             HStack(alignment: .top, spacing: 10) {
                 Label(
-                    "累计成果与 \(detailCount) 条活动明细分开保存；移入废纸篓不等于已释放 APFS 空间。",
+                    CNL10n.format("累计成果与 %@ 条活动明细分开保存；移入废纸篓不等于已释放 APFS 空间。", String(describing: detailCount)),
                     systemImage: "info.circle"
                 )
                 .font(.caption)
@@ -430,7 +461,7 @@ private struct ActivityDetailView: View {
                 )
             }
 
-            Text(entry.detail)
+            Text(CNL10n.string(entry.detail))
                 .font(.body)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
@@ -522,23 +553,28 @@ private struct ActivityRow: View {
                         style: entry.outcome == .success ? .success : (entry.outcome == .partial ? .warning : .danger)
                     )
                 }
-                Text(entry.detail)
+                Text(CNL10n.string(entry.detail))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 12) {
                     Text(entry.date.formatted(date: .abbreviated, time: .shortened))
-                    if entry.affectedItems > 0 { Text("\(entry.affectedItems) 项") }
+                    if entry.affectedItems > 0 { Text(CNL10n.format("%d 项", entry.affectedItems)) }
                     if entry.bytes > 0 { Text(CleanNestFormatting.bytes(entry.bytes)) }
                 }
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.tertiary)
                 if let result = entry.cleanupResult {
-                    Text("候选 \(CleanNestFormatting.bytes(result.candidateBytes)) · 移入废纸篓 \(CleanNestFormatting.bytes(result.trashedBytes)) · APFS \(apfsDeltaLabel(result.apfsFreeBytesDelta))")
+                    Text(CNL10n.format("候选 %@ · 移入废纸篓 %@ · APFS %@", CleanNestFormatting.bytes(result.candidateBytes), CleanNestFormatting.bytes(result.trashedBytes), apfsDeltaLabel(result.apfsFreeBytesDelta)))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.tertiary)
                 }
             }
             Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .padding(.top, 4)
+                .accessibilityHidden(true)
         }
         .padding(.vertical, 12)
     }

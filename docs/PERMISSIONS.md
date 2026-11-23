@@ -11,7 +11,7 @@ macOS 中最接近一次性授权的是“系统设置 → 隐私与安全性 �
 1. 把最终使用的 `CleanNest.app` 放到稳定位置（建议 `/Applications`），不要一边运行一边覆盖它。
 2. 在 CleanNest“设置 → 安全与权限”打开完全磁盘访问设置。
 3. 在系统列表中添加并开启这个确切的 App；如列表中有旧副本，先核对路径。
-4. 返回 CleanNest。App 只做一次轻量访问测试，不会连续启动 Mole 或 `du` 触发弹窗。
+4. 返回 CleanNest。App 只做一次轻量访问测试，不会连续启动外部引擎或递归扫描触发弹窗。
 5. 状态显示“访问测试通过”后再分析受保护目录。
 
 macOS 没有公开 API 能直接读取完全磁盘访问开关。CleanNest 只根据一次实际访问是成功、明确被拒绝还是无法判断来显示状态，因此“设置页已打开”不等于“授权已成功”。
@@ -32,11 +32,13 @@ Agent 工作区默认检查当前用户的 `~/.codex`、`~/.claude` 和 Claude A
 
 ## 为什么重建后权限可能失效
 
-TCC 会结合 App 路径、Bundle ID 和代码签名身份识别应用。ad-hoc 签名常随每次构建改变代码哈希，系统可能把新构建视为另一个应用。
+TCC 会结合 App 路径、Bundle ID 和代码签名身份识别应用。ad-hoc 签名常随每次构建改变代码哈希，系统可能把新构建视为另一个应用。从旧自签名或 ad-hoc 副本升级到 Developer ID 版本时，签名身份发生变化，macOS 也可能要求重新授权；这不代表已有设置、活动、指标或恢复记录应被清除。
 
 - CI 和临时开发构建使用 ad-hoc 签名，只用于验证，不适合作为长期授权副本。
 - 本地长期使用应保持 App 路径和签名身份不变。
-- 正式公开分发应使用 Developer ID Application 签名并完成 Apple 公证。
+- 正式公开分发使用 Developer ID Application 签名并完成 Apple 公证；PKG 另使用 Developer ID Installer。
+- 升级后只授权当前的 `/Applications/CleanNest.app`；先退出并移除指向旧路径或旧构建的重复权限条目，再重新测试访问。
+- 不要为了保留旧权限而继续运行 `build/` 中的历史副本，也不要把权限重新授权等同于清除应用数据。
 
 `build.sh` 可通过 `CLEANNEST_CODESIGN_IDENTITY` 指定已有签名身份；不要把证书、私钥或公证凭据写入仓库。
 

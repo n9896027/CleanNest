@@ -14,44 +14,6 @@ final class CleanNestCoreTests: XCTestCase {
         temporaryDirectories.removeAll()
     }
 
-    func testEngineLocatorPrefersExecutableCustomPath() throws {
-        let directory = try makeTemporaryDirectory()
-        let executable = directory.appendingPathComponent("mole")
-        XCTAssertTrue(FileManager.default.createFile(atPath: executable.path, contents: Data()))
-        try FileManager.default.setAttributes(
-            [.posixPermissions: NSNumber(value: 0o755)],
-            ofItemAtPath: executable.path
-        )
-
-        XCTAssertEqual(EngineLocator.locate(customPath: executable.path), executable.standardizedFileURL)
-        XCTAssertEqual(EngineLocator.candidates(customPath: executable.path).first, executable.standardizedFileURL)
-    }
-
-    func testSystemSnapshotDecodesModernStatusAndBatteryFacts() throws {
-        let json = #"""
-        {
-          "host": "Test Mac",
-          "health_score": 91,
-          "cpu": {"usage": 12.5, "logical_cpu": 10},
-          "memory": {"used": 800, "total": 1000, "used_percent": 80, "pressure": "normal"},
-          "battery": {"level": 78, "status": "charging", "health": "normal", "capacity": 94, "cycle_count": 42},
-          "thermal": {"cpu": 51.5},
-          "disk": {"used_percent": 64, "free": 4096},
-          "procs": 321
-        }
-        """#
-
-        let snapshot = try MoleJSONDecoder.systemSnapshot(from: Data(json.utf8))
-
-        XCTAssertEqual(snapshot.host, "Test Mac")
-        XCTAssertEqual(snapshot.healthScore, 91)
-        XCTAssertEqual(snapshot.memoryUsedPercent, 80)
-        XCTAssertEqual(snapshot.batteryLevel, 78)
-        XCTAssertEqual(snapshot.batteryStatus, "正在充电 · 健康良好 · 最大容量 94% · 42 次循环")
-        XCTAssertEqual(snapshot.temperatureCelsius, 51.5)
-        XCTAssertEqual(snapshot.temperatureSource, "CPU 温度")
-    }
-
     func testPrivacyAssessmentIdentifiesOnlyIntersectingSensitiveAreas() {
         let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
         let protectedRoot = home.appendingPathComponent("Library/Containers/com.example.App", isDirectory: true)

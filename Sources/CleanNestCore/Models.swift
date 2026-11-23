@@ -1,15 +1,5 @@
 import Foundation
 
-public struct EngineInstallation: Equatable, Sendable {
-    public let executable: URL
-    public let version: String?
-
-    public init(executable: URL, version: String? = nil) {
-        self.executable = executable
-        self.version = version
-    }
-}
-
 public struct CommandResult: Equatable, Sendable {
     public let executable: URL
     public let arguments: [String]
@@ -361,6 +351,8 @@ public enum MemoryAnalyzer {
 public enum TrashFailureKind: String, Equatable, Sendable {
     case validation
     case targetChanged
+    case activeFile
+    case activityProbeUnavailable
     case authorizationCancelled
     case authorizationDenied
     case automationDenied

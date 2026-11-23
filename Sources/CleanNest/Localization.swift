@@ -34,6 +34,55 @@ enum CNL10n {
         return string(value)
     }
 
+    static func age(_ value: String) -> String {
+        for key in ["%@ 天前", "%@ 个月前", "%@ 年前"] {
+            let suffix = String(key.dropFirst(2))
+            if value.hasSuffix(suffix) {
+                let count = String(value.dropLast(suffix.count))
+                if Int(count) != nil { return format(key, count) }
+            }
+        }
+        return string(value)
+    }
+
+    static func maintenanceText(_ value: String) -> String {
+        let templates = [
+            "无法读取 %@ 的进程状态。",
+            "%@ 正在运行（PID %@）。",
+            "没有发现当前用户的 %@ 进程。",
+            "旧进程已退出，%@ 已以新 PID 恢复；如果画面仍卡住，请按恢复说明处理。"
+        ]
+        for key in templates {
+            guard let arguments = interpolationArguments(for: value, template: key) else { continue }
+            if arguments.count == 1 { return format(key, arguments[0]) }
+            if arguments.count == 2 { return format(key, arguments[0], arguments[1]) }
+        }
+        return string(value)
+    }
+
+    private static func interpolationArguments(for value: String, template: String) -> [String]? {
+        let segments = template.components(separatedBy: "%@")
+        guard segments.count > 1 else { return nil }
+        var remainder = Substring(value)
+        var arguments: [String] = []
+        for (index, segment) in segments.enumerated() {
+            if index == 0 {
+                guard remainder.hasPrefix(segment) else { return nil }
+                remainder = remainder.dropFirst(segment.count)
+            } else if index == segments.count - 1 {
+                guard remainder.hasSuffix(segment) else { return nil }
+                let end = remainder.index(remainder.endIndex, offsetBy: -segment.count)
+                arguments.append(String(remainder[..<end]))
+                remainder = remainder[end...]
+            } else {
+                guard let range = remainder.range(of: segment) else { return nil }
+                arguments.append(String(remainder[..<range.lowerBound]))
+                remainder = remainder[range.upperBound...]
+            }
+        }
+        return arguments
+    }
+
     static func batteryStatus(_ value: String) -> String {
         value.split(separator: "·").map { rawPart in
             let part = rawPart.trimmingCharacters(in: .whitespacesAndNewlines)

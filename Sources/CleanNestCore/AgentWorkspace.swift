@@ -275,6 +275,7 @@ public struct AgentWorkspaceArtifact: Identifiable, Codable, Equatable, Sendable
     public let diagnostic: String?
     public let actionCandidates: [AgentWorkspaceActionCandidate]
     public let actionCandidateLimitReached: Bool
+    public let configurationReferenceReport: ModelConfigurationReferenceReport?
 
     public var actionableBytes: Int64 {
         actionCandidates.saturatingSum(of: \AgentWorkspaceActionCandidate.identity.allocatedBytes)
@@ -301,7 +302,8 @@ public struct AgentWorkspaceArtifact: Identifiable, Codable, Equatable, Sendable
         isComplete: Bool,
         diagnostic: String?,
         actionCandidates: [AgentWorkspaceActionCandidate] = [],
-        actionCandidateLimitReached: Bool = false
+        actionCandidateLimitReached: Bool = false,
+        configurationReferenceReport: ModelConfigurationReferenceReport? = nil
     ) {
         self.id = id
         self.provider = provider
@@ -324,6 +326,7 @@ public struct AgentWorkspaceArtifact: Identifiable, Codable, Equatable, Sendable
         self.diagnostic = diagnostic
         self.actionCandidates = actionCandidates
         self.actionCandidateLimitReached = actionCandidateLimitReached
+        self.configurationReferenceReport = configurationReferenceReport
     }
 
     public func withoutActionCandidates() -> AgentWorkspaceArtifact {
@@ -348,7 +351,8 @@ public struct AgentWorkspaceArtifact: Identifiable, Codable, Equatable, Sendable
             isComplete: isComplete,
             diagnostic: diagnostic,
             actionCandidates: [],
-            actionCandidateLimitReached: false
+            actionCandidateLimitReached: false,
+            configurationReferenceReport: configurationReferenceReport
         )
     }
 }
@@ -954,23 +958,40 @@ public struct AgentWorkspaceScanner: Sendable {
             }
         }
 
+        let configurationInspectionKinds: Set<AgentArtifactKind> = [.runtime, .caches, .stateAndIndexes, .unknown]
+        let configurationInspector = ModelConfigurationReferenceInspector()
         let artifacts = AgentArtifactKind.allCases.compactMap { kind -> AgentWorkspaceArtifact? in
             guard let combined = metricsByKind[kind] else { return nil }
             let urls = groupedURLs[kind] ?? []
             let sourcePaths: [String] = kind == .installerLeftovers
                 ? installerLeftoverDirectories.sorted()
                 : urls.map { $0.standardizedFileURL.path }.sorted()
+            let configurationReferenceReport: ModelConfigurationReferenceReport? = {
+                guard configurationInspectionKinds.contains(kind), !urls.isEmpty else { return nil }
+                let reports = urls.map { configurationInspector.inspect(root: $0) }
+                return ModelConfigurationReferenceReport(
+                    rootURL: urls.count == 1 ? urls[0] : existingRoots[0].url,
+                    scannedConfigurationCount: reports.reduce(0) { $0 + $1.scannedConfigurationCount },
+                    references: reports.flatMap(\.references),
+                    issues: reports.flatMap(\.issues),
+                    isComplete: reports.allSatisfy(\.isComplete)
+                )
+            }()
+            let configurationRequiresReview = configurationReferenceReport?.requiresReview ?? false
             let protectedByActivity = !activityProbeSucceeded
                 || combined.activeFileCount > 0
                 || combined.recentlyModifiedFileCount > 0
-            let disposition = disposition(
+            var disposition = disposition(
                 kind: kind,
                 protectedByActivity: protectedByActivity,
                 isComplete: combined.isComplete,
                 isStaleGroup: kind == .virtualMachines && virtualMachineGroupIsStale
             )
+            if configurationRequiresReview, disposition == .regenerable {
+                disposition = .review
+            }
             let previewBytes: Int64
-            if !combined.isComplete || !activityProbeSucceeded || !provider.supportsBackupFirstRecovery {
+            if !combined.isComplete || !activityProbeSucceeded || !provider.supportsBackupFirstRecovery || configurationRequiresReview {
                 previewBytes = 0
             } else {
                 switch kind {
@@ -1013,12 +1034,16 @@ public struct AgentWorkspaceScanner: Sendable {
             if !combined.isComplete {
                 protectionReasons.append("扫描不完整，默认禁止进入回收预览")
             }
+            if configurationRequiresReview, let configurationReferenceReport {
+                protectionReasons.append(configurationReferenceReport.summary)
+            }
             if !provider.supportsBackupFirstRecovery {
                 protectionReasons.append("当前版本为只读适配：不会修改该 Agent 的文件或私有索引")
             }
             let actionCandidates = combined.isComplete
                 && activityProbeSucceeded
                 && provider.supportsBackupFirstRecovery
+                && !configurationRequiresReview
                 ? combined.actionCandidates
                 : []
             return AgentWorkspaceArtifact(
@@ -1039,12 +1064,13 @@ public struct AgentWorkspaceScanner: Sendable {
                 latestModificationDate: combined.latestModificationDate,
                 disposition: disposition,
                 protectionReasons: protectionReasons,
-                isComplete: combined.isComplete,
+                isComplete: combined.isComplete && (configurationReferenceReport?.isComplete ?? true),
                 diagnostic: combined.diagnostics.isEmpty
                     ? nil
                     : Array(Set(combined.diagnostics)).sorted().joined(separator: " "),
                 actionCandidates: actionCandidates,
-                actionCandidateLimitReached: combined.actionCandidateLimitReached
+                actionCandidateLimitReached: configurationRequiresReview ? false : combined.actionCandidateLimitReached,
+                configurationReferenceReport: configurationReferenceReport
             )
         }
         return AgentWorkspaceAgentSnapshot(
@@ -1378,19 +1404,19 @@ public struct AgentWorkspaceOpenFileProbe: Sendable {
                 return Result(
                     records: [],
                     succeeded: false,
-                    diagnostic: "无法确认当前打开的 Agent 文件。"
+                    diagnostic: "无法读取当前用户的打开文件表。"
                 )
             }
             return Result(
                 records: Self.parseLsofFieldOutput(command.standardOutput),
                 succeeded: true,
-                diagnostic: "已通过本机打开文件表确认活跃写入。"
+                diagnostic: "已读取当前用户的打开文件表。"
             )
         } catch {
             return Result(
                 records: [],
                 succeeded: false,
-                diagnostic: "无法确认当前打开的 Agent 文件：\(error.localizedDescription)"
+                diagnostic: "无法读取当前用户的打开文件表：\(error.localizedDescription)"
             )
         }
     }

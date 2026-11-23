@@ -2,7 +2,7 @@ import Foundation
 
 public enum CleanNestScannerService {
     public static let bundleIdentifier = "com.zone.cleannest.scanner"
-    public static let protocolVersion = 7
+    public static let protocolVersion = 9
 }
 
 /// The XPC boundary intentionally transports only JSON `Data`. This keeps the
@@ -12,6 +12,7 @@ public enum CleanNestScannerService {
     func protocolVersion(withReply reply: @escaping (Int) -> Void)
     func scanCleanup(_ requestData: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
     func scanDisk(_ requestData: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
+    func scanSystemData(_ requestData: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
     func scanAgentWorkspace(_ requestData: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
     func progress(for requestID: String, withReply reply: @escaping (Data?) -> Void)
     func cancel(requestID: String, withReply reply: @escaping () -> Void)
@@ -21,6 +22,7 @@ public enum ScannerOperationKind: String, Codable, Sendable {
     case cleanup
     case disk
     case agentWorkspace
+    case systemData
 }
 
 public enum ScannerProgressStage: String, Codable, Sendable {
@@ -30,6 +32,7 @@ public enum ScannerProgressStage: String, Codable, Sendable {
     case diskContents
     case diskEvidence
     case agentWorkspaceMetadata
+    case systemDataInventory
     case completed
 }
 

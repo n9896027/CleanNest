@@ -673,9 +673,11 @@ public enum DiskAISafetyPolicy {
                 minimumRisk: .medium
             )
         }
-        if hasPrefix(components, ["Library", "Developer", "Xcode", "DerivedData"])
-            || hasPrefix(components, [".npm", "_cacache"])
+        if hasPrefix(components, [".npm", "_cacache"])
             || hasPrefix(components, [".cache", "pip"]) {
+            return DiskAIInputPolicy(category: .packageManagerData, boundary: .reviewable, minimumRisk: .low)
+        }
+        if hasPrefix(components, ["Library", "Developer", "Xcode", "DerivedData"]) {
             return DiskAIInputPolicy(category: .developerArtifacts, boundary: .reviewable, minimumRisk: .low)
         }
         if hasPrefix(components, ["Library", "Fonts"])

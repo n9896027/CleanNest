@@ -8,6 +8,7 @@ struct SystemStatusView: View {
     @State private var expandedMemoryGroupIDs = Set<String>()
     @State private var pendingMemoryTermination: PendingMemoryTermination?
     @State private var realtimeSample: NativeMonitorSample? = nil
+    @State private var selectedSection = "实时监测"
 
     private let columns = [
         GridItem(.flexible(), spacing: 14),
@@ -19,35 +20,40 @@ struct SystemStatusView: View {
             VStack(alignment: .leading, spacing: 18) {
                 PageHeader(
                     title: "系统状态",
-                    subtitle: "\(store.menuBarConfiguration.refreshInterval.rawValue) 秒原生采样与长期历史彼此独立；不上传指标。"
+                    subtitle: "实时用量、占用进程与异常记录。"
                 ) {
                     Button {
-                        Task {
-                            await store.refreshNativeMonitorNow()
-                            if store.engine != nil {
-                                await store.refreshSystemStatus()
-                            }
-                        }
+                        Task { await store.refreshSystemStatus() }
                     } label: {
                         Label("刷新", systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(store.isWorking || !store.menuBarConfiguration.isEnabled)
+                    .disabled(store.isWorking)
                 }
 
-                nativeRealtimeCard
-                systemAlertTimelineCard
-
-                if store.engine == nil {
-                    EmptyPanel(
-                        symbol: "waveform.path.ecg",
-                        title: "原生实时监测已可用",
-                        detail: "上方 CPU、内存、网络、磁盘、GPU、温度、风扇与电池都不依赖 Mole。连接 Mole 后再补充健康评分与长期历史。",
-                        actionTitle: "打开引擎设置"
-                    ) {
-                        store.selection = .settings
+                Picker("系统状态分栏", selection: $selectedSection) {
+                    ForEach(["实时监测", "内存进程", "趋势与告警", "设备信息"], id: \.self) { title in
+                        Text(CNL10n.string(title)).tag(title)
                     }
+                }.pickerStyle(.segmented)
+
+                if selectedSection != "趋势与告警", store.systemAlertEvents.contains(where: \.isActive) {
+                    InlineBanner(title: "有持续异常", detail: "查看原因、峰值和持续时间。", kind: .warning,
+                                 actionTitle: "查看告警") { selectedSection = "趋势与告警" }
+                }
+
+                if selectedSection == "实时监测" {
+                    nativeRealtimeCard
+                } else if selectedSection == "趋势与告警" {
+                    systemAlertTimelineCard
+                    metricHistoryCard
                 } else if let snapshot = store.systemSnapshot {
+                  if selectedSection == "内存进程" {
+                    memoryProcessesCard(snapshot)
+                    CNDetailSection(title: "怎么看内存用量？", summary: "内存压力、交换空间和处理建议", symbol: "memorychip") {
+                        memoryAnalysisCard(snapshot)
+                    }
+                  } else {
                     HStack(alignment: .top, spacing: 14) {
                         healthCard(snapshot)
                         VStack(spacing: 14) {
@@ -89,9 +95,7 @@ struct SystemStatusView: View {
                         )
                     }
 
-                    metricHistoryCard
-                    memoryAnalysisCard(snapshot)
-                    memoryProcessesCard(snapshot)
+                  }
                 } else {
                     EmptyPanel(
                         symbol: "waveform.path.ecg",
@@ -103,14 +107,15 @@ struct SystemStatusView: View {
                     }
                 }
             }
+            .frame(maxWidth: CNTheme.contentMaxWidth, alignment: .leading)
             .padding(CNTheme.pagePadding)
         }
         .onReceive(store.nativeMonitorSamplePublisher) { realtimeSample = $0 }
         .alert(item: $pendingMemoryTermination) { pending in
             if pending.force {
                 return Alert(
-                    title: Text("强制结束“\(processDisplayName(pending.process))”？"),
-                    message: Text("该进程没有在正常请求后退出。强制结束不会给它保存状态的机会，未保存的内容可能丢失。\n\n\(pending.process.terminationImpact)"),
+                    title: Text(CNL10n.format("强制结束“%@”？", processDisplayName(pending.process))),
+                    message: Text(CNL10n.format("该进程没有在正常请求后退出。强制结束不会给它保存状态的机会，未保存的内容可能丢失。\n\n%@", pending.process.terminationImpact)),
                     primaryButton: .destructive(Text("强制结束")) {
                         Task { await store.terminateMemoryProcess(pending.process, force: true) }
                     },
@@ -119,8 +124,8 @@ struct SystemStatusView: View {
             }
 
             return Alert(
-                title: Text("退出“\(processDisplayName(pending.process))”？"),
-                message: Text("CleanNest 会先发送正常退出请求；是否保存状态由所属 App 决定。\n\n\(pending.process.terminationImpact)\n\n未保存的内容可能丢失。"),
+                title: Text(CNL10n.format("退出“%@”？", processDisplayName(pending.process))),
+                message: Text(CNL10n.format("CleanNest 会先发送正常退出请求；是否保存状态由所属 App 决定。\n\n%@\n\n未保存的内容可能丢失。", pending.process.terminationImpact)),
                 primaryButton: .default(Text("发送退出请求")) {
                     Task { await store.terminateMemoryProcess(pending.process, force: false) }
                 },
@@ -134,11 +139,11 @@ struct SystemStatusView: View {
             VStack(alignment: .leading, spacing: 13) {
                 HStack(alignment: .center, spacing: 10) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(store.nativeMonitorDiagnostic)
+                        Text(CNL10n.string(store.nativeMonitorDiagnostic))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         if let sampledAt = realtimeSample?.sampledAt {
-                            Text("最新样本 " + sampledAt.formatted(date: .omitted, time: .standard))
+                            Text(CNL10n.format("最新样本 %@", sampledAt.formatted(date: .omitted, time: .standard)))
                                 .font(.caption2.monospacedDigit())
                                 .foregroundStyle(.tertiary)
                         }
@@ -224,12 +229,12 @@ struct SystemStatusView: View {
                 font: .system(size: 17, weight: .semibold, design: .rounded)
             )
             .foregroundStyle(healthLevel.highlightColor ?? Color.primary)
-            Text(sample.sourceDescription(metric))
+            Text(CNL10n.string(sample.sourceDescription(metric)))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let assessment, assessment.level != .normal {
-                Text(assessment.reason)
+                Text(CNL10n.string(assessment.reason))
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(tint)
                     .fixedSize(horizontal: false, vertical: true)
@@ -402,7 +407,7 @@ struct SystemStatusView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("峰值：\(event.peakDescription) · 持续 \(alertDuration(event.duration(at: realtimeSample?.sampledAt ?? Date())))")
+                Text(CNL10n.format("峰值：%@ · 持续 %@", event.peakDescription, alertDuration(event.duration(at: realtimeSample?.sampledAt ?? Date()))))
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.tertiary)
             }
@@ -417,9 +422,9 @@ struct SystemStatusView: View {
 
     private func alertDuration(_ seconds: TimeInterval) -> String {
         let value = max(0, Int(seconds.rounded()))
-        if value >= 3_600 { return "\(value / 3_600) 小时 \((value % 3_600) / 60) 分" }
-        if value >= 60 { return "\(value / 60) 分 \(value % 60) 秒" }
-        return "\(value) 秒"
+        if value >= 3_600 { return CNL10n.format("%@ 小时 %@ 分", String(describing: value / 3_600), String(describing: (value % 3_600) / 60)) }
+        if value >= 60 { return CNL10n.format("%@ 分 %@ 秒", String(describing: value / 60), String(describing: value % 60)) }
+        return CNL10n.format("%@ 秒", String(describing: value))
     }
 
     private func memoryAnalysisCard(_ snapshot: SystemSnapshot) -> some View {
@@ -545,7 +550,7 @@ struct SystemStatusView: View {
                     }
 
                     if allGroups.count > 10 {
-                        Button(showsAllMemoryProcesses ? "只显示前 10 个 App" : "显示全部 \(allGroups.count) 个 App") {
+                        Button(showsAllMemoryProcesses ? "只显示前 10 个 App" : CNL10n.format("显示全部 %@ 个 App", String(describing: allGroups.count))) {
                             withAnimation(.easeInOut(duration: 0.18)) {
                                 showsAllMemoryProcesses.toggle()
                             }
@@ -588,8 +593,8 @@ struct SystemStatusView: View {
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
-                        Text("\(group.processes.count) 个进程"
-                             + (group.protectedProcessCount > 0 ? " · \(group.protectedProcessCount) 个受保护" : ""))
+                        Text(CNL10n.format("%d 个进程", group.processes.count)
+                             + (group.protectedProcessCount > 0 ? CNL10n.format(" · %@ 个受保护", String(describing: group.protectedProcessCount)) : ""))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -605,7 +610,7 @@ struct SystemStatusView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(group.displayName)，\(group.processes.count) 个进程，近似内存足迹 \(CleanNestFormatting.bytes(footprint))")
+            .accessibilityLabel(CNL10n.format("%@，%d 个进程，近似内存足迹 %@", group.displayName, group.processes.count, CleanNestFormatting.bytes(footprint)))
             .accessibilityHint(isExpanded ? "收起进程" : "展开进程并逐个查看退出风险")
 
             if isExpanded {
@@ -921,7 +926,7 @@ private struct BatteryDiagnosticCard: View {
 
     private var detail: String {
         if probe.availability == .unreadable, snapshotLevel != nil {
-            return "系统接口读取失败；当前数值来自 Mole。"
+            return "系统电源接口读取失败；当前数值来自内置原生监测器。"
         }
         return probe.detail
     }
@@ -964,13 +969,14 @@ private struct BatteryDiagnosticCard: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("电池，\(title)，\(detail)")
+        .accessibilityLabel(CNL10n.format("电池，%@，%@", title, detail))
     }
 }
 
 struct MaintenanceView: View {
     @EnvironmentObject private var store: AppStore
     @State private var pendingAction: MaintenanceAction?
+    @State private var selectedAction: MaintenanceAction = .quickLook
 
     private var latestMaintenanceRecord: MaintenanceRunRecord? {
         store.maintenanceHistory.first
@@ -981,7 +987,7 @@ struct MaintenanceView: View {
             VStack(alignment: .leading, spacing: 20) {
                 PageHeader(
                     title: "系统维护",
-                    subtitle: "只在出现具体异常时运行一项；执行前先看影响，执行后验证结果。"
+                    subtitle: "选择遇到的问题，先诊断，再决定是否修复。"
                 ) {
                     StatusPill(
                         text: CNL10n.format("%d 项本机任务", MaintenanceAction.allCases.count),
@@ -990,37 +996,45 @@ struct MaintenanceView: View {
                     )
                 }
 
-                scopePanel
-
                 VStack(alignment: .leading, spacing: 12) {
-                    ContentSectionHeader(
-                        "选择你遇到的问题",
-                        detail: "不需要全部运行，也没有一键优化",
-                        symbol: "stethoscope",
-                        tint: CNTheme.accent
-                    )
-
-                    SurfaceCard {
-                        VStack(spacing: 0) {
-                            ForEach(Array(MaintenanceAction.allCases.enumerated()), id: \.element.id) { index, action in
-                                maintenanceRow(action)
-                                if index < MaintenanceAction.allCases.count - 1 {
-                                    Divider().padding(.leading, 53)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 10)], spacing: 10) {
+                        ForEach(MaintenanceAction.allCases) { action in
+                            Button { selectedAction = action } label: {
+                                HStack(alignment: .top, spacing: 10) {
+                                    Image(systemName: action.symbolName).foregroundStyle(CNTheme.accent).frame(width: 22)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(CNL10n.string(action.symptom)).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+                                        Text(CNL10n.string(action.rawValue)).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 4)
+                                    if selectedAction == action { Image(systemName: "checkmark.circle.fill").foregroundStyle(CNTheme.accent) }
                                 }
-                            }
+                                .frame(maxWidth: .infinity, minHeight: 45, alignment: .leading)
+                                .padding(12)
+                                .background(selectedAction == action ? CNTheme.accent.opacity(0.09) : CNTheme.surface.opacity(0.5),
+                                            in: RoundedRectangle(cornerRadius: 12))
+                                .contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                            .accessibilityValue(selectedAction == action ? CNL10n.string("已选中") : "")
                         }
+                    }
+                    SurfaceCard {
+                        maintenanceRow(selectedAction)
                     }
                 }
 
                 if let latestMaintenanceRecord {
                     latestResult(latestMaintenanceRecord)
                 }
+                CNDetailSection(title: "维护会做什么？", summary: "不删除个人文件；每次只运行一项", symbol: "info.circle") {
+                    scopePanel
+                }
             }
             .padding(CNTheme.pagePadding)
         }
         .alert(item: $pendingAction) { action in
             Alert(
-                title: Text("执行“\(CNL10n.string(action.rawValue))”？"),
+                title: Text(CNL10n.format("执行“%@”？", CNL10n.string(action.rawValue))),
                 message: Text(confirmationMessage(action)),
                 primaryButton: .default(Text("确认运行")) {
                     Task { await store.runMaintenance(action) }
@@ -1148,15 +1162,15 @@ struct MaintenanceView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: evidenceSymbol(evidence.state))
-                Text(evidence.state.title)
+                Text(CNL10n.maintenanceText(evidence.state.title))
                     .fontWeight(.semibold)
                 Text(evidence.checkedAt, style: .relative)
                     .foregroundStyle(.tertiary)
             }
             .foregroundStyle(evidenceColor(evidence.state))
-            Text(evidence.headline)
+            Text(CNL10n.maintenanceText(evidence.headline))
                 .foregroundStyle(.primary)
-            Text(evidence.detail)
+            Text(CNL10n.maintenanceText(evidence.detail))
                 .foregroundStyle(.secondary)
         }
         .font(.caption)
@@ -1293,15 +1307,15 @@ struct MaintenanceView: View {
                             style: record.outcome.isSuccessful ? .success : .warning
                         )
                     }
-                    Text("执行前：\(record.before.headline)")
+                    Text(CNL10n.format("执行前：%@", CNL10n.maintenanceText(record.before.headline)))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("执行后：\(record.after.headline)")
+                    Text(CNL10n.format("执行后：%@", CNL10n.maintenanceText(record.after.headline)))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(record.summary)
+                    Text(CNL10n.maintenanceText(record.summary))
                         .font(.caption.weight(.medium))
                         .fixedSize(horizontal: false, vertical: true)
                     Text(record.finishedAt.formatted(date: .abbreviated, time: .shortened))
@@ -1320,7 +1334,7 @@ struct MaintenanceView: View {
     private func confirmationMessage(_ action: MaintenanceAction) -> String {
         let evidence = store.maintenanceEvidence[action]
         let diagnosis = evidence.map {
-            "只读检查：\($0.state.title)\n\($0.headline)\n\($0.detail)"
+            CNL10n.format("只读检查：%@\n%@\n%@", String(describing: $0.state.title), String(describing: $0.headline), String(describing: $0.detail))
         } ?? "只读检查：尚未完成。"
         let noAnomalyWarning = evidence?.state == .noAnomalyDetected
             ? "\n\n提醒：基础检查没有发现明确异常。反复重启不会让 Mac 更快。"

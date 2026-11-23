@@ -77,6 +77,10 @@ public struct ScannerWorker: Sendable {
         let roots = (standard.roots + personal.roots).filter {
             seenRoots.insert($0.id).inserted
         }
+        var seenIssues = Set<String>()
+        let issues = (standard.issues + personal.issues)
+            .filter { seenIssues.insert($0.id).inserted }
+            .prefix(CleanupScanIssue.maximumPerScanner * 2)
         let completedAt = Date()
         let session = CleanupScanSession(
             requestID: request.requestID,
@@ -85,7 +89,8 @@ public struct ScannerWorker: Sendable {
             elapsedSeconds: elapsedSeconds,
             roots: roots,
             insights: insights,
-            candidates: candidates
+            candidates: candidates,
+            issues: Array(issues)
         )
         let response = CleanupScannerResponse(
             requestID: request.requestID,
@@ -176,6 +181,23 @@ public struct ScannerWorker: Sendable {
             outcome: outcome,
             evidence: evidence
         )
+    }
+
+    public func scanSystemData(
+        _ request: SystemDataScannerRequest,
+        progress: (@Sendable (ScannerServiceProgress) -> Void)? = nil
+    ) async throws -> SystemDataScannerResponse {
+        let report = try await SystemDataScanner().scan(
+            homeDirectory: request.homeDirectory,
+            protectedAccessConfirmed: request.protectedAccessConfirmed
+        ) { completed, total, name in
+            progress?(ScannerServiceProgress(
+                requestID: request.requestID, operation: .systemData, stage: .systemDataInventory,
+                completed: completed, total: total, currentName: name
+            ))
+        }
+        try Task.checkCancellation()
+        return SystemDataScannerResponse(requestID: request.requestID, report: report)
     }
 
     public func scanAgentWorkspace(

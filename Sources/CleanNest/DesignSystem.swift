@@ -20,9 +20,9 @@ enum CNTheme {
     static let divider = Color(nsColor: .separatorColor).opacity(0.54)
     static let secondaryText = Color(nsColor: .secondaryLabelColor)
 
-    static let pagePadding: CGFloat = 30
-    static let cardPadding: CGFloat = 21
-    static let cardRadius: CGFloat = 22
+    static let pagePadding: CGFloat = 24
+    static let cardPadding: CGFloat = 16
+    static let cardRadius: CGFloat = 16
     static let controlRadius: CGFloat = 11
     static let contentMaxWidth: CGFloat = 1_280
 }
@@ -72,64 +72,13 @@ struct AppCanvas: View {
             Color(nsColor: .windowBackgroundColor)
                 .opacity(colorScheme == .dark ? 0.55 : 0.30)
 
-            GeometryReader { proxy in
-                ZStack {
-                    Ellipse()
-                        .fill(CNTheme.accent.opacity(colorScheme == .dark ? 0.22 : 0.15))
-                        .frame(width: proxy.size.width * 0.74, height: proxy.size.height * 0.58)
-                        .blur(radius: 92)
-                        .offset(x: proxy.size.width * 0.28, y: -proxy.size.height * 0.31)
-
-                    Ellipse()
-                        .fill(CNTheme.cyan.opacity(colorScheme == .dark ? 0.12 : 0.10))
-                        .frame(width: proxy.size.width * 0.48, height: proxy.size.height * 0.54)
-                        .blur(radius: 112)
-                        .offset(x: -proxy.size.width * 0.34, y: proxy.size.height * 0.34)
-
-                    Ellipse()
-                        .fill(CNTheme.violet.opacity(colorScheme == .dark ? 0.09 : 0.065))
-                        .frame(width: proxy.size.width * 0.36, height: proxy.size.height * 0.42)
-                        .blur(radius: 104)
-                        .offset(x: proxy.size.width * 0.42, y: proxy.size.height * 0.39)
-
-                    CNContourField()
-                        .opacity(colorScheme == .dark ? 0.34 : 0.20)
-                }
-            }
-
             LinearGradient(
-                colors: [Color.white.opacity(colorScheme == .dark ? 0.015 : 0.11), Color.clear],
+                colors: [CNTheme.cyan.opacity(reduceTransparency ? 0 : 0.045), Color.clear],
                 startPoint: .top,
                 endPoint: .center
             )
         }
         .ignoresSafeArea()
-    }
-}
-
-private struct CNContourField: View {
-    var body: some View {
-        Canvas { context, size in
-            let center = CGPoint(x: size.width * 0.72, y: size.height * 0.16)
-            for index in 0..<7 {
-                let expansion = CGFloat(index) * min(size.width, size.height) * 0.075
-                let rect = CGRect(
-                    x: center.x - size.width * 0.18 - expansion,
-                    y: center.y - size.height * 0.12 - expansion * 0.62,
-                    width: size.width * 0.36 + expansion * 2,
-                    height: size.height * 0.24 + expansion * 1.24
-                )
-                var path = Path()
-                path.addEllipse(in: rect)
-                context.stroke(
-                    path,
-                    with: .color(CNTheme.accent.opacity(0.07 - Double(index) * 0.006)),
-                    style: StrokeStyle(lineWidth: 0.7, dash: index.isMultiple(of: 2) ? [3, 8] : [])
-                )
-            }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }
 
@@ -208,7 +157,6 @@ struct CNIconTile: View {
                     lineWidth: 0.7
                 )
         )
-        .shadow(color: tint.opacity(0.10), radius: 7, y: 3)
     }
 }
 
@@ -225,20 +173,20 @@ private struct CNGlassSurfaceModifier: ViewModifier {
     let tint: Color
 
     private var radius: CGFloat {
-        prominence == .prominent ? 26 : CNTheme.cardRadius
+        prominence == .prominent ? 20 : CNTheme.cardRadius
     }
 
     private var shadowOpacity: Double {
         switch prominence {
-        case .prominent: return colorScheme == .dark ? 0.25 : 0.10
-        case .standard: return colorScheme == .dark ? 0.15 : 0.07
-        case .quiet: return 0.035
+        case .prominent: return 0.07
+        case .standard: return 0.025
+        case .quiet: return 0
         }
     }
 
     func body(content: Content) -> some View {
         content
-            .padding(prominence == .prominent ? 25 : CNTheme.cardPadding)
+            .padding(prominence == .prominent ? 20 : CNTheme.cardPadding)
             .background {
                 ZStack {
                     if reduceTransparency {
@@ -252,7 +200,7 @@ private struct CNGlassSurfaceModifier: ViewModifier {
                         .fill(
                             LinearGradient(
                                 colors: prominence == .prominent
-                                    ? [tint.opacity(0.20), tint.opacity(0.055), Color.clear]
+                                    ? [tint.opacity(0.09), tint.opacity(0.025), Color.clear]
                                     : [Color.white.opacity(colorScheme == .dark ? 0.045 : 0.22), tint.opacity(0.018), Color.clear],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
@@ -275,7 +223,7 @@ private struct CNGlassSurfaceModifier: ViewModifier {
                         lineWidth: 0.75
                     )
             }
-            .shadow(color: Color.black.opacity(shadowOpacity), radius: prominence == .prominent ? 28 : 18, y: prominence == .prominent ? 13 : 8)
+            .shadow(color: Color.black.opacity(shadowOpacity), radius: 8, y: 3)
     }
 }
 

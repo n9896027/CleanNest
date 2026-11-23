@@ -2,6 +2,48 @@ import Foundation
 import Darwin
 import CleanNestCore
 
+/// Requests crossing the XPC boundary must not nominate an arbitrary home
+/// directory. The service derives it from its own user context, so a mistaken
+/// or compromised client cannot redirect a scan to another user's tree or `/`.
+private extension CleanupScannerRequest {
+    func withTrustedHome(_ home: URL) -> CleanupScannerRequest {
+        CleanupScannerRequest(
+            requestID: requestID, homeDirectory: home,
+            includeApplicationCaches: includeApplicationCaches,
+            includeMediaAndDuplicates: includeMediaAndDuplicates,
+            developerMode: developerMode
+        )
+    }
+}
+
+private extension DiskScannerRequest {
+    func withTrustedHome(_ home: URL) -> DiskScannerRequest {
+        DiskScannerRequest(
+            requestID: requestID, root: root, homeDirectory: home,
+            cache: cache, mode: mode, previousEvidence: previousEvidence
+        )
+    }
+}
+
+private extension SystemDataScannerRequest {
+    func withTrustedHome(_ home: URL) -> SystemDataScannerRequest {
+        SystemDataScannerRequest(
+            requestID: requestID, homeDirectory: home,
+            protectedAccessConfirmed: protectedAccessConfirmed
+        )
+    }
+}
+
+private extension AgentWorkspaceScannerRequest {
+    func withTrustedHome(_ home: URL) -> AgentWorkspaceScannerRequest {
+        AgentWorkspaceScannerRequest(
+            requestID: requestID, homeDirectory: home,
+            previousObservation: previousObservation, ruleCatalog: ruleCatalog,
+            providers: providers, detailProvider: detailProvider
+        )
+    }
+}
+
 private enum ScannerServiceFailure {
     static let domain = "com.zone.cleannest.scanner"
 
@@ -21,6 +63,7 @@ private final class ScannerServiceSession: NSObject, CleanNestScannerXPCProtocol
     private var activeTask: Task<Void, Never>?
     private var progressData: [String: Data] = [:]
     private var invalidated = false
+    private let trustedHome = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
 
     func protocolVersion(withReply reply: @escaping (Int) -> Void) {
         reply(CleanNestScannerService.protocolVersion)
@@ -32,7 +75,8 @@ private final class ScannerServiceSession: NSObject, CleanNestScannerXPCProtocol
     ) {
         let request: CleanupScannerRequest
         do {
-            request = try ScannerServiceCodec.decode(CleanupScannerRequest.self, from: requestData)
+            let decoded = try ScannerServiceCodec.decode(CleanupScannerRequest.self, from: requestData)
+            request = decoded.withTrustedHome(trustedHome)
         } catch {
             reply(nil, ScannerServiceFailure.error(10, "清理扫描请求无法解析。"))
             return
@@ -68,7 +112,8 @@ private final class ScannerServiceSession: NSObject, CleanNestScannerXPCProtocol
     ) {
         let request: DiskScannerRequest
         do {
-            request = try ScannerServiceCodec.decode(DiskScannerRequest.self, from: requestData)
+            let decoded = try ScannerServiceCodec.decode(DiskScannerRequest.self, from: requestData)
+            request = decoded.withTrustedHome(trustedHome)
         } catch {
             reply(nil, ScannerServiceFailure.error(20, "磁盘扫描请求无法解析。"))
             return
@@ -98,13 +143,50 @@ private final class ScannerServiceSession: NSObject, CleanNestScannerXPCProtocol
         install(task, for: request.requestID)
     }
 
+    func scanSystemData(
+        _ requestData: Data,
+        withReply reply: @escaping (Data?, NSError?) -> Void
+    ) {
+        let request: SystemDataScannerRequest
+        do {
+            let decoded = try ScannerServiceCodec.decode(SystemDataScannerRequest.self, from: requestData)
+            request = decoded.withTrustedHome(trustedHome)
+        } catch {
+            reply(nil, ScannerServiceFailure.error(40, "系统数据扫描请求无法解析。"))
+            return
+        }
+        guard begin(requestID: request.requestID, operation: .systemData) else {
+            reply(nil, ScannerServiceFailure.error(41, "扫描服务正在处理另一个任务。"))
+            return
+        }
+        let task = Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await self.worker.scanSystemData(request) { [weak self] progress in
+                    self?.store(progress)
+                }
+                let data = try ScannerServiceCodec.encode(response)
+                self.finish(requestID: request.requestID)
+                reply(data, nil)
+            } catch is CancellationError {
+                self.finish(requestID: request.requestID)
+                reply(nil, ScannerServiceFailure.error(42, "系统数据扫描已取消。"))
+            } catch {
+                self.finish(requestID: request.requestID)
+                reply(nil, ScannerServiceFailure.error(43, "系统数据扫描失败：\(error.localizedDescription)"))
+            }
+        }
+        install(task, for: request.requestID)
+    }
+
     func scanAgentWorkspace(
         _ requestData: Data,
         withReply reply: @escaping (Data?, NSError?) -> Void
     ) {
         let request: AgentWorkspaceScannerRequest
         do {
-            request = try ScannerServiceCodec.decode(AgentWorkspaceScannerRequest.self, from: requestData)
+            let decoded = try ScannerServiceCodec.decode(AgentWorkspaceScannerRequest.self, from: requestData)
+            request = decoded.withTrustedHome(trustedHome)
         } catch {
             reply(nil, ScannerServiceFailure.error(30, "Agent 工作区扫描请求无法解析。"))
             return
@@ -211,6 +293,12 @@ private final class ScannerServiceDelegate: NSObject, NSXPCListenerDelegate {
         _ listener: NSXPCListener,
         shouldAcceptNewConnection connection: NSXPCConnection
     ) -> Bool {
+        guard let requirement = ScannerClientTrust.requirement() else {
+            // Fail closed: never install an unvalidated rule (NSXPC would throw)
+            // and never accept a client without a code-signing requirement.
+            return false
+        }
+        connection.setCodeSigningRequirement(requirement)
         let session = ScannerServiceSession()
         connection.exportedInterface = NSXPCInterface(with: CleanNestScannerXPCProtocol.self)
         connection.exportedObject = session

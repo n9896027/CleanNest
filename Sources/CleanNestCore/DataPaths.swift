@@ -55,6 +55,11 @@ public enum CleanNestDataPaths {
             .appendingPathComponent("cleanup-preview.json", isDirectory: false)
     }
 
+    public static func cleanupExecutionLedger(fileManager: FileManager = .default) -> URL {
+        applicationSupportDirectory(fileManager: fileManager)
+            .appendingPathComponent("cleanup-execution-ledger.json", isDirectory: false)
+    }
+
     public static func activityLog(fileManager: FileManager = .default) -> URL {
         applicationSupportDirectory(fileManager: fileManager)
             .appendingPathComponent("activity.json", isDirectory: false)

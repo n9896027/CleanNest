@@ -5,6 +5,7 @@ struct AgentDependencyLane: View {
     let provider: AgentWorkspaceProvider
     let graph: AgentDependencyGraphSnapshot
     let rule: AgentProviderRule?
+    @State private var isExpanded = false
 
     private var nodes: [AgentDependencyNode] {
         graph.nodes(for: provider).filter { $0.kind != .agent }
@@ -22,16 +23,44 @@ struct AgentDependencyLane: View {
         return graph.nodes.filter { destinationIDs.contains($0.id) }
     }
 
+    private var evidenceSummary: String {
+        if nodes.isEmpty {
+            return rule?.verification == .detectionOnly ? "尚待验证" : "未发现运行证据"
+        }
+        if !connectedModels.isEmpty { return "已连接本地模型" }
+        if nodes.contains(where: { $0.kind == .process && $0.state == .running }) {
+            return "运行中 · 未观察到模型连接"
+        }
+        return CNL10n.format("%@ 项本机证据", String(describing: nodes.count))
+    }
+
     var body: some View {
-        ViewThatFits(in: .horizontal) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 providerBlock
-                evidenceStrip
+                Spacer(minLength: 8)
+                Text(evidenceSummary)
+                    .font(.caption)
+                    .foregroundStyle(stateTint)
+                    .multilineTextAlignment(.trailing)
             }
-            VStack(alignment: .leading, spacing: 8) {
-                providerBlock
+
+            if nodes.isEmpty {
                 evidenceStrip
-                    .padding(.leading, 38)
+                    .padding(.top, 2)
+            } else {
+                Button(isExpanded ? "收起证据" : "查看证据") {
+                    withAnimation(.easeInOut(duration: 0.18)) { isExpanded.toggle() }
+                }
+                .font(.caption.weight(.medium))
+                .buttonStyle(.plain)
+                .foregroundStyle(CNTheme.accent)
+                .accessibilityValue(isExpanded ? "已展开" : "已折叠")
+            }
+
+            if !nodes.isEmpty, isExpanded {
+                evidenceStrip
+                    .padding(.top, 2)
             }
         }
         .padding(.horizontal, 12)

@@ -18,6 +18,22 @@ CleanNest brings Agent workspaces, local model services, system alerts, and stor
 
 </div>
 
+## 0.12.0: cleanup evidence, review, and recovery
+
+The unified version is **0.12.0 (Build 50)**. General cleanup now rechecks active files before execution, exposes path-specific review for blocked items, and records a persistent execution ledger with per-item recovery. APFS, sparse files, model-configuration references, and application containers use separate evidence rather than treating unknown or logical sizes as reclaimable space. An official PKG must still be built from the same clean, checked `main` commit; see [Releases](https://github.com/n9896027/CleanNest/releases) for actual downloads. Read the [0.12.0 roadmap](docs/ROADMAP-0.12.md) and [verification record](docs/VERIFICATION-0.12.0.md) for scope and limits.
+
+### 0.10.1: complete MLX Serve monitoring
+
+Use **⌘K to find a feature**, with Back/Forward navigation and explicit Storage, AI Tools, and System groups. Disk Browser and System Status now use task-based sections; optional explanations and diagnostics expand on demand. Uninstall switches to a list → detail flow in narrow windows. Risk warnings, confirmations, recovery, scans, and model controls remain available. No new third-party dependency is introduced.
+
+This patch adds process, port 11234, OpenAI-compatible API, and launchd-supervisor discovery for `mlx-serve` without changing existing control boundaries. See the [0.10.1 verification record](docs/VERIFICATION-0.10.1.md).
+
+### Retained from 0.9.0: explain system-data storage
+
+Open **Disk Browser → View storage inventory** to inspect 25 curated locations, with measured allocation, ownership, plain-language consequences, search, filters, coverage gaps, and changes between complete in-session scans. Models, backups, and virtual disks are not treated as disposable caches. The direct-UI localization audit covers these explanations in all three app languages.
+
+This independently implemented, read-only inventory is not Apple's private System Data classification or a promise of reclaimable space. It uses the scanner XPC service, caps each location at 100,000 entries, and skips protected paths without confirmed access. System snapshots, system-level runtimes, and custom storage locations are not included. See [0.9.0 verification and limits](docs/VERIFICATION-0.9.0.md). No 0.9.0 release or installer has been published.
+
 ![CleanNest overview organized around the next reviewable task, read-only status, and safe entry points](docs/images/readme/overview.png)
 
 <p align="center"><sub>Synthetic demo data · Real local app UI · No user files, real processes, or private model details</sub></p>
@@ -29,7 +45,7 @@ CleanNest is not a conventional cleaner with AI copy added on top. It is designe
 | Usage, change, active protection, anomalies | Platform, short ID, listeners, clients, launchd | CPU, memory, network, GPU, temperature, fans, battery | Preview, identity checks, Trash, recovery records |
 
 > [!IMPORTANT]
-> CleanNest is currently distributed as source code only. There is no official Developer ID-signed and Apple-notarized download yet. CI builds verify the project; they are not trusted public release binaries.
+> CleanNest can now be built locally as a Universal 2 PKG with Developer ID signing, Apple notarization, and stapled tickets. Check [Releases](https://github.com/n9896027/CleanNest/releases) for actual public downloads. CI ad-hoc artifacts remain verification-only and are not official installers.
 
 ## More than a disk cleaner
 
@@ -43,7 +59,7 @@ CleanNest is not a conventional cleaner with AI copy added on top. It is designe
     <td width="50%">
       <img src="docs/images/readme/local-model-runtime.png" alt="Local Model Runtime Center demo showing service, model short ID, client, and supervisor topology">
       <br><strong>Local Model Runtime Center</strong><br>
-      <sub>Discover oMLX, MLX-LM, Ollama, LM Studio, and llama.cpp/OpenAI-compatible services, then explain ports, model short IDs, established TCP clients, and automatic restart sources.</sub>
+      <sub>Discover oMLX, MLX-LM, MLX Serve, Ollama, LM Studio, and llama.cpp/OpenAI-compatible services, then explain ports, model short IDs, established TCP clients, and automatic restart sources.</sub>
     </td>
   </tr>
   <tr>
@@ -93,7 +109,7 @@ CleanNest is not a conventional cleaner with AI copy added on top. It is designe
 - **Auditable local learning** — file proposals are clustered by type, location level, risk, and age. Clusters support batch review, seven-day trials, pause, revoke, expiry cleanup, and measured impact on the current list; they never select or delete files.
 - **Model Workbench** — run a minimal streaming request that contains no scan metadata, then see loopback health latency, time to first output, total time, the exact API model ID, and memory-headroom guidance.
 - **Data controls** — export or clear the activity log independently; restoring safe defaults resets preferences without silently erasing activity, learning rules, disk indexes, metric history, or macOS permissions.
-- **Mole integration** — discover `mo` installed through Apple Silicon or Intel Homebrew, or install/update Mole from inside the app.
+- **Built-in native engine** — cleanup, disk, system data, Agent, and system status work without Homebrew or any additional cleanup engine.
 - **Update checks** — manually query the latest official GitHub Release from the app menu or About page; CleanNest only compares versions and opens a validated repository page, never silently downloading or installing.
 - **Native macOS experience** — SwiftUI/AppKit interface, light and dark appearance, permission recovery guidance, activity history, and a safe demo mode.
 - **Read-only MCP** — expose bounded, redacted local evidence to a trusted AI client over bundled stdio only; no HTTP listener, deletion, process control, or settings tools.
@@ -101,11 +117,12 @@ CleanNest is not a conventional cleaner with AI copy added on top. It is designe
 
 ## Download and run
 
+If [Releases](https://github.com/n9896027/CleanNest/releases) contains an official PKG, install it into `/Applications` without Xcode or Terminal. Check the version, SHA-256, and known limitations listed with the release. If no public PKG is available, build from source using the steps below.
+
 Requirements:
 
 - macOS 14 Sonoma or later
 - Xcode Command Line Tools, only when building from source
-- Mole CLI, optional; CleanNest can install it through Homebrew from the app
 - Apple Silicon and `mlx-lm`, only for optional local AI
 
 Build from source:
@@ -117,9 +134,9 @@ cd CleanNest
 open build/CleanNest.app
 ```
 
-After the one-time source build, regular scanning, analysis, cleanup, maintenance, and Mole installation are available in the graphical app.
+After the one-time source build, regular scanning, analysis, cleanup, and maintenance are available in the graphical app without installing an additional engine.
 
-There is still no official Developer ID-signed and Apple-notarized download. Maintainers can manually create an ad-hoc-signed Universal 2 CI verification artifact with an SBOM, checksums, and provenance, but the workflow does not publish a Release and the artifact is not a trusted end-user installer. Do not trust third-party downloads claiming otherwise.
+Official distribution uses Developer ID Application / Installer signing, Apple notarization, and stapled tickets. Maintainers can build a Universal 2 PKG with `scripts/build-installer.sh`. CI ad-hoc artifacts remain verification-only. After upgrading from an old self-signed copy, reauthorize the current `/Applications/CleanNest.app` if macOS reports stale privacy permissions. Do not trust third-party downloads claiming otherwise.
 
 ## Optional, replaceable on-device MLX model
 
@@ -142,7 +159,7 @@ In **Settings (`设置`) → Local AI Analysis (`本机 AI 分析`)**, CleanNest
 - Native cleanup accepts only validated descendant paths and rejects symbolic links.
 - Files go to the macOS Trash by default; CleanNest does not use an irreversible `rm -rf` cleanup path.
 - App removal revalidates the path, device, file identity, and Bundle ID. It uses an atomic Trash move when the current account truly has directory permission, and asks Finder to present native macOS administrator authentication only when required. Related files remain untouched unless the app bundle is confirmed in Trash.
-- High-risk interactive Mole commands are never auto-confirmed through simulated keyboard input.
+- High-risk interactive commands are never auto-confirmed through simulated keyboard input.
 - The scanner service has no deletion, process-control, or network capability. If it is unavailable, the app fails explicitly instead of silently falling back to an in-process scan.
 - Pull requests run core tests, a complete app-bundle build, architecture checks, dependency review, and CodeQL.
 - GitHub Actions use least-privilege permissions and immutable Action references; Dependabot checks dependency and Action updates.
@@ -160,7 +177,7 @@ Detailed maintainer documentation is currently written primarily in Simplified C
 | [Metric history](docs/METRICS.md) | 60-second sampling, SQLite WAL, retention, and field boundaries |
 | [Read-only MCP](docs/MCP.md) | Local stdio configuration, seven tools, and the read-only trust boundary |
 | [Threat model](docs/THREAT_MODEL.md) | Protected assets, attack surfaces, controls, and exclusions |
-| [Troubleshooting](docs/TROUBLESHOOTING.md) | Mole, permissions, AI, build, process, and battery-status issues |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | Built-in engine, permissions, AI, build, process, and battery-status issues |
 | [Architecture](docs/ARCHITECTURE.md) | Modules, data flow, and dangerous-operation boundaries |
 | [Agent Workspace](docs/AGENT_WORKSPACE.md) | Multi-Agent ledgers, runtime evidence, signed rules, backup-first actions, and recovery boundaries |
 | [Privacy](PRIVACY.md) | Local data, network access, retention, and removal |
@@ -182,8 +199,10 @@ Detailed maintainer documentation is currently written primarily in Simplified C
 | [0.8.2 verification report](docs/VERIFICATION-0.8.2.md) | Usability: plain-language disposition labels with technical terms on hover, and a sidebar trimmed to six everyday entries with a collapsible advanced group |
 | [0.8.3 verification report](docs/VERIFICATION-0.8.3.md) | The learning page becomes Cleanup Habits: bureaucratic terms removed, enable button and flow diagram rewritten in plain language |
 | [0.8.4 verification report](docs/VERIFICATION-0.8.4.md) | Overview restructure: single hero action card, compact secondary rows, visual status tiles; audit columns and defensive disclaimers removed |
+| [0.11.0 candidate verification](docs/VERIFICATION-0.11.0.md) | Historical automated evidence and manual UI, installation, upgrade, model-platform, and real 48-hour boundaries |
+| [0.12.0 verification record](docs/VERIFICATION-0.12.0.md) | Active-file checks, path review, execution ledger, recovery, APFS, sparse files, and release boundaries |
 | [0.7 migration and rollback](docs/MIGRATION-0.7.md) | Honest compatibility boundaries for settings, metrics, activity, indexes, learning rules, and Agent recovery records |
-| [Localization status](docs/LOCALIZATION-STATUS.md) | Catalog coverage, remaining Chinese fallbacks, and the strict release gate |
+| [Localization status](docs/LOCALIZATION-STATUS.md) | Three-language Catalog, format placeholders, strict source audit, and pending manual acceptance |
 | [0.7 series roadmap](docs/ROADMAP-0.7.md) | Product, architecture, acceptance gates, and explicit non-goals for 0.7.0–0.7.9 |
 | [0.6.5 section audit](docs/AUDIT-0.6.5.md) | Current behavior, gaps, performance, and accessibility evidence for every primary surface |
 | [0.6.0 verification report](docs/VERIFICATION-0.6.0.md) | XPC isolation, cancellation rollback, injected scanner failure, recovery, and cold-start memory evidence |
@@ -196,11 +215,11 @@ Detailed maintainer documentation is currently written primarily in Simplified C
 | [Changelog](CHANGELOG.md) | Released and unreleased changes |
 | [Contributing](CONTRIBUTING.md) | Development, testing, pull requests, and safety requirements |
 
-## CleanNest and Mole
+## Built-in native engine
 
-CleanNest is an independently developed graphical client. It is not the official Mole app and does not bundle the Mole binary. It invokes the user's separately installed CLI as an isolated local process and keeps attribution visible in Settings.
+Cleanup, disk, system data, Agent, and system status all use native components installed with CleanNest. The app does not detect, invoke, or install an external cleanup engine. Homebrew remains only a developer-cache scan target, not a runtime dependency.
 
-[Mole](https://github.com/tw93/Mole) is maintained by tw93 and contributors under GPL-3.0. CleanNest's own source code is available under the [MIT License](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for MLX and user-selected model details.
+CleanNest's source code is available under the [MIT License](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for optional local models and reference implementations.
 
 ## Development and verification
 
@@ -223,6 +242,6 @@ Preview the UI with synthetic data only:
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-The current source release is **0.7.9 (Build 37)**. It adds migration, rollback, stability and provenance gates, plus a multi-perspective disk ledger. The GitHub Release contains source only and no App bundle: the real 48-hour soak, complete trilingual UI, Developer ID signing, and Apple notarization remain open, so this is not a production macOS installer. CI builds and tests on Apple Silicon and Intel runners. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
+The current version is **0.12.0 (Build 50)**, focused on cleanup evidence, path-specific review, execution ledgers, recovery, and trusted distribution. An official PKG must be built from the same clean, checked `main` commit; actual public downloads remain subject to the Releases page. The real 48-hour soak, complete manual trilingual UI acceptance, Intel hardware, macOS 14, and clean-machine installation of 0.12.0 require separate evidence and cannot be inferred from CI compilation or notarization of an older build. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
 
-Core navigation and the main overview, disk, status, and settings surfaces now include English, Simplified Chinese, and Traditional Chinese resources. Some runtime diagnostics and path-dependent copy can still fall back to the source language; Japanese and Korean currently have localized project overviews rather than full UI resources.
+The English, Simplified Chinese, and Traditional Chinese String Catalogs, format placeholders, and strict direct-UI source audit now pass. This is not a substitute for manual acceptance: narrow windows, long copy, keyboard navigation, and VoiceOver still require separate evidence. Japanese and Korean currently provide project overviews, not complete app UI resources.

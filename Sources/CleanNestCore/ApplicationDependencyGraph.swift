@@ -42,7 +42,7 @@ public enum ApplicationDependencyOwnership: String, CaseIterable, Codable, Senda
 
     public var displayName: String {
         switch self {
-        case .applicationOwned: return "App 所有"
+        case .applicationOwned: return "App 私有"
         case .sharedGroup: return "共享组"
         case .systemManaged: return "系统管理"
         case .unverified: return "无法证明"
@@ -349,19 +349,22 @@ public struct ApplicationDependencyGraphBuilder: Sendable {
 
     public func build(
         for application: InstalledApplication,
-        includeProtectedAppData: Bool
+        includeProtectedAppData: Bool,
+        applicationIsRunning: Bool? = nil
     ) async -> ApplicationDependencyGraph {
         await Task.detached(priority: .userInitiated) {
             buildSynchronously(
                 for: application,
-                includeProtectedAppData: includeProtectedAppData
+                includeProtectedAppData: includeProtectedAppData,
+                applicationIsRunning: applicationIsRunning
             )
         }.value
     }
 
     private func buildSynchronously(
         for application: InstalledApplication,
-        includeProtectedAppData: Bool
+        includeProtectedAppData: Bool,
+        applicationIsRunning: Bool?
     ) -> ApplicationDependencyGraph {
         let signature = inspectSignature(at: application.url)
         let registration = inspectRegistration(for: application)
@@ -385,6 +388,41 @@ public struct ApplicationDependencyGraphBuilder: Sendable {
         nodes += launchdNodes(identifier: identifier, applicationURL: application.url)
         nodes += embeddedNodes(applicationURL: application.url)
         nodes += unverifiedNameMatches(application: application, excluding: Set(nodes.map { $0.url.path }))
+
+        let containerRoots = Set([
+            homeDirectory.appendingPathComponent("Library/Containers", isDirectory: true).standardizedFileURL,
+            homeDirectory.appendingPathComponent("Library/Group Containers", isDirectory: true).standardizedFileURL
+        ])
+        let containerInspector = ApplicationContainerReadOnlyInspector(homeDirectory: homeDirectory)
+        let signatureMatchesApplication = signature.status == .valid && signature.signingIdentifier == identifier
+        let containerReports = nodes.compactMap { node -> ApplicationContainerReadOnlyReport? in
+            guard node.kind == .managedContainer || node.kind == .sharedContainer,
+                  containerRoots.contains(node.url.deletingLastPathComponent().standardizedFileURL) else { return nil }
+            return containerInspector.inspect(
+                container: node.url,
+                expectedBundleIdentifier: identifier,
+                declaredApplicationGroups: signature.applicationGroups,
+                signatureMatchesApplication: signatureMatchesApplication,
+                applicationIsRunning: applicationIsRunning
+            )
+        }
+        if !containerReports.isEmpty {
+            let reportsByPath = Dictionary(uniqueKeysWithValues: containerReports.map { ($0.containerURL.path, $0) })
+            nodes = nodes.map { node in
+                guard let report = reportsByPath[node.url.path] else { return node }
+                return ApplicationDependencyNode(
+                    id: node.id,
+                    name: node.name,
+                    url: node.url,
+                    kind: node.kind,
+                    ownership: report.ownership,
+                    action: .readOnly,
+                    allocatedBytes: node.allocatedBytes,
+                    evidence: node.evidence + report.evidence,
+                    identity: node.identity
+                )
+            }
+        }
 
         let unique = Dictionary(grouping: nodes, by: \.id).compactMap { $0.value.first }
         let sorted = unique.sorted {

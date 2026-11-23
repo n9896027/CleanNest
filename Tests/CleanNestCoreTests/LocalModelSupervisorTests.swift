@@ -2,6 +2,15 @@ import XCTest
 @testable import CleanNestCore
 
 final class LocalModelSupervisorTests: XCTestCase {
+    func testSafeLaunchdLabelsUseAnExactASCIIAllowlist() {
+        for label in ["com.zone.mlx-serve-flash", "homebrew.mxcl.omlx", "Example_1@2"] {
+            XCTAssertTrue(LocalModelSupervisorControlPolicy.isSafeLabel(label), label)
+        }
+        for label in ["", "bad/label", "-label\n", "has space", "中文", "com.example;exit", String(repeating: "a", count: 256)] {
+            XCTAssertFalse(LocalModelSupervisorControlPolicy.isSafeLabel(label), label)
+        }
+    }
+
     func testLaunchctlParsersKeepExactLabelsAndDisabledState() {
         let jobs = LocalModelSupervisorDiscovery.parseLaunchctlList("""
         PID\tStatus\tLabel
@@ -24,6 +33,34 @@ final class LocalModelSupervisorTests: XCTestCase {
         }
         """)
         XCTAssertEqual(disabled, ["com.example.mlx"])
+        XCTAssertEqual(
+            LocalModelSupervisorDiscovery.parseServiceLabels("""
+            "homebrew.mxcl.omlx" => enabled
+            "com.example.mlx" => disabled
+            "bad/label" => enabled
+            """),
+            ["homebrew.mxcl.omlx", "com.example.mlx"]
+        )
+    }
+
+    func testLaunchctlDomainPrintParserReadsRunningJobs() {
+        let jobs = LocalModelSupervisorDiscovery.parseLaunchctlList("""
+        gui/501 = {
+            services = {
+                54748   -15 \tcom.zone.mlx-serve-flash
+                0        0    com.example.other
+            }
+        }
+        """)
+
+        XCTAssertTrue(jobs.contains(LocalModelLaunchdJob(
+            label: "com.zone.mlx-serve-flash",
+            processID: 54_748
+        )))
+        XCTAssertTrue(jobs.contains(LocalModelLaunchdJob(
+            label: "com.example.other",
+            processID: nil
+        )))
     }
 
     func testSupervisorPolicyRequiresExactCurrentUserLaunchAgent() {

@@ -41,30 +41,21 @@ struct OverviewView: View {
             VStack(alignment: .leading, spacing: 24) {
                 PageHeader(
                     title: "总览",
-                    subtitle: "先处理现在最值得做的事；状态数字和功能入口放在后面。"
+                    subtitle: "你的 Mac，今天怎么样？"
                 ) {
                     StatusPill(
-                        text: store.demoMode ? "演示数据" : (store.engine == nil ? "部分功能待设置" : "本地运行"),
-                        symbol: store.demoMode ? "sparkles" : (store.engine == nil ? "exclamationmark.triangle" : "lock.shield"),
-                        style: store.demoMode || store.engine == nil ? .warning : .success
+                        text: store.demoMode ? "演示数据" : "本地运行",
+                        symbol: store.demoMode ? "sparkles" : "lock.shield",
+                        style: store.demoMode ? .warning : .success
                     )
-                }
-
-                if store.engine == nil {
-                    InlineBanner(
-                        title: "连接开源清理引擎",
-                        detail: "系统健康评估与部分磁盘分析需要 Mole CLI；清理扫描、App 卸载和原生实时状态仍可使用。",
-                        kind: .warning,
-                        actionTitle: "去设置"
-                    ) {
-                        store.selection = .settings
-                    }
                 }
 
                 priorityTaskQueue
                 readOnlySnapshot
                 commonTasks
-                recentResults
+                CNDetailSection(title: "最近操作与累计成果", summary: "查看处理结果、统计与恢复入口", symbol: "clock.arrow.circlepath") {
+                    recentResults
+                }
             }
             .frame(maxWidth: CNTheme.contentMaxWidth, alignment: .leading)
             .padding(CNTheme.pagePadding)
@@ -214,20 +205,6 @@ struct OverviewView: View {
             ))
         }
 
-        if store.engine == nil {
-            tasks.append(PriorityTask(
-                id: "engine",
-                title: "连接本地清理引擎",
-                detail: "Mole 尚未就绪；原生清理、卸载和菜单栏仍可用。",
-                actionTitle: "打开常规设置",
-                action: .openSettings(.general),
-                symbol: "gearshape.2",
-                tint: CNTheme.warning,
-                pillText: "待设置",
-                pillStyle: .warning
-            ))
-        }
-
         var seen = Set<String>()
         return tasks.filter { seen.insert($0.id).inserted }.prefix(3).map { $0 }
     }
@@ -235,8 +212,7 @@ struct OverviewView: View {
     private var priorityTaskQueue: some View {
         VStack(alignment: .leading, spacing: 13) {
             ContentSectionHeader(
-                "现在最值得做",
-                detail: priorityTasks.count > 1 ? "共 \(priorityTasks.count) 项 · 最急的在最上面" : nil,
+                "接下来",
                 symbol: "list.bullet.rectangle.portrait",
                 tint: CNTheme.accent
             ) {
@@ -372,21 +348,24 @@ struct OverviewView: View {
             value: store.diskTotalBytes > 0 ? CleanNestFormatting.bytes(store.diskFreeBytes) : "等待读取",
             detail: diskUsedFraction.map { CNL10n.format("已使用 %@", CleanNestFormatting.percent($0 * 100)) } ?? "启动磁盘",
             symbol: "internaldrive",
-            tint: diskUsedFraction.map { $0 >= 0.90 ? CNTheme.warning : CNTheme.cyan } ?? CNTheme.cyan
+            tint: diskUsedFraction.map { $0 >= 0.90 ? CNTheme.warning : CNTheme.cyan } ?? CNTheme.cyan,
+            destination: .analyze
         )
         summaryMetric(
             title: "清理扫描",
             value: store.cleanupHasScanned ? CNL10n.format("%d 项待查看", store.cleanupCandidates.count) : "尚未扫描",
             detail: store.cleanupHasScanned ? CNL10n.format("候选内容合计 %@", CleanNestFormatting.bytes(store.cleanupPotentialBytes)) : "扫描不会删除文件",
             symbol: "checklist",
-            tint: CNTheme.accent
+            tint: CNTheme.accent,
+            destination: .cleanup
         )
         summaryMetric(
             title: "内存压力",
             value: memoryPressureLabel,
             detail: memoryUsageDetail,
             symbol: "memorychip",
-            tint: memoryPressureTint
+            tint: memoryPressureTint,
+            destination: .status
         )
     }
 
@@ -395,9 +374,11 @@ struct OverviewView: View {
         value: String,
         detail: String,
         symbol: String,
-        tint: Color
+        tint: Color,
+        destination: SidebarItem
     ) -> some View {
-        HStack(alignment: .top, spacing: 11) {
+        Button { store.selection = destination } label: {
+          HStack(alignment: .top, spacing: 11) {
             CNIconTile(symbol: symbol, tint: tint, size: 32)
             VStack(alignment: .leading, spacing: 4) {
                 Text(CNL10n.string(title))
@@ -420,8 +401,11 @@ struct OverviewView: View {
             RoundedRectangle(cornerRadius: 15, style: .continuous)
                 .stroke(tint.opacity(0.14), lineWidth: 0.65)
         )
+        }
+        .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(CNL10n.format("%@：%@。%@", title, value, detail))
+        .accessibilityHint("打开" + destination.displayName)
     }
 
     private var commonTasks: some View {
@@ -575,7 +559,7 @@ struct OverviewView: View {
                     CNIconTile(symbol: recent.outcome.symbol, tint: Color.outcome(recent.outcome), size: 31)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(CNL10n.string(recent.title)).font(.subheadline.weight(.medium))
-                        Text(recent.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        Text(CNL10n.string(recent.detail)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                         Text(recent.date, style: .relative).font(.caption2).foregroundStyle(.tertiary)
                     }
                     Spacer()

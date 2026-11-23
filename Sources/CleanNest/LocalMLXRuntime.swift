@@ -91,7 +91,7 @@ final class LocalModelOwnedRuntime {
         child.terminationHandler = { [weak self] finished in
             Task { @MainActor [weak self] in
                 guard let self, self.process === finished else { return }
-                self.appendLog("\n模型进程已退出（状态 \(finished.terminationStatus)）。")
+                self.appendLog(CNL10n.format("\n模型进程已退出（状态 %@）。", String(describing: finished.terminationStatus)))
                 self.clearProcessHandles()
                 self.onTermination?(finished.terminationStatus)
             }

@@ -25,9 +25,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.8.4</string>
+    <string>0.12.0</string>
 	<key>CFBundleVersion</key>
-	<string>42</string>
+    <string>50</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
@@ -46,7 +46,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>CleanNest is an independent client. Mole CLI is credited separately under GPL-3.0.</string>
+	<string>CleanNest is an independent native macOS application.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>

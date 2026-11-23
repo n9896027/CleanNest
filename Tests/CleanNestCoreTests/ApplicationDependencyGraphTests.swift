@@ -70,7 +70,11 @@ final class ApplicationDependencyGraphTests: XCTestCase {
         let graph = await ApplicationDependencyGraphBuilder(
             homeDirectory: home,
             systemLibraryDirectory: systemLibrary
-        ).build(for: installed, includeProtectedAppData: true)
+        ).build(
+            for: installed,
+            includeProtectedAppData: true,
+            applicationIsRunning: false
+        )
 
         XCTAssertTrue(graph.nodes.contains {
             $0.url == cache.standardizedFileURL
@@ -81,6 +85,8 @@ final class ApplicationDependencyGraphTests: XCTestCase {
             $0.url == container.standardizedFileURL
                 && $0.ownership == .systemManaged
                 && $0.action == .readOnly
+                && $0.evidence.contains("退出状态：已确认未运行")
+                && $0.evidence.contains("本报告只提供归属与状态证据，永不授权删除容器")
         })
         XCTAssertTrue(graph.nodes.contains {
             $0.url == loginItem.standardizedFileURL

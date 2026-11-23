@@ -8,13 +8,13 @@ extension MenuBarMetric {
     var displayName: String {
         switch self {
         case .cpu: return "CPU"
-        case .memory: return "内存"
-        case .temperature: return "温度"
-        case .network: return "网络"
-        case .disk: return "磁盘"
+        case .memory: return CNL10n.string("内存")
+        case .temperature: return CNL10n.string("温度")
+        case .network: return CNL10n.string("网络")
+        case .disk: return CNL10n.string("磁盘")
         case .gpu: return "GPU"
-        case .fan: return "风扇"
-        case .battery: return "电池"
+        case .fan: return CNL10n.string("风扇")
+        case .battery: return CNL10n.string("电池")
         }
     }
 
@@ -215,7 +215,8 @@ extension NativeMonitorSample {
             return NativeMetricReading(values: [value], accessibilityValue: value)
         case .memory:
             guard let percent = memoryUsedPercent else {
-                return NativeMetricReading(values: ["暂不可用"], accessibilityValue: "暂不可用")
+                let value = CNL10n.string("暂不可用")
+                return NativeMetricReading(values: [value], accessibilityValue: value)
             }
             let percentText = compactPercent(percent)
             if let used = memoryUsedBytes, let total = memoryTotalBytes {
@@ -223,7 +224,7 @@ extension NativeMonitorSample {
                 let totalText = CleanNestFormatting.bytes(total)
                 return NativeMetricReading(
                     values: [percentText, usedText + " / " + totalText],
-                    accessibilityValue: percentText + "，已用 " + usedText + "，总计 " + totalText
+                    accessibilityValue: CNL10n.format("%@，已用 %@，总计 %@", percentText, usedText, totalText)
                 )
             }
             return NativeMetricReading(values: [percentText], accessibilityValue: percentText)
@@ -233,40 +234,43 @@ extension NativeMonitorSample {
             if let temperatureCelsius {
                 let value = temperatureText(temperatureCelsius, unit: temperatureUnit)
                 values.append("CPU " + value)
-                accessibility.append("CPU 温度 " + value)
+                accessibility.append(CNL10n.format("CPU 温度 %@", value))
             }
             if let batteryTemperatureCelsius {
                 let value = temperatureText(batteryTemperatureCelsius, unit: temperatureUnit)
-                values.append("电池 " + value)
-                accessibility.append("电池温度 " + value)
+                values.append(CNL10n.format("电池 %@", value))
+                accessibility.append(CNL10n.format("电池温度 %@", value))
             }
             guard !values.isEmpty else {
-                return NativeMetricReading(values: ["暂不可用"], accessibilityValue: "暂不可用")
+                let value = CNL10n.string("暂不可用")
+                return NativeMetricReading(values: [value], accessibilityValue: value)
             }
             return NativeMetricReading(
                 values: values,
-                accessibilityValue: accessibility.joined(separator: "，")
+                accessibilityValue: accessibility.joined(separator: CNL10n.string("，"))
             )
         case .network:
             guard networkDownloadBytesPerSecond != nil || networkUploadBytesPerSecond != nil else {
-                return NativeMetricReading(values: ["暂不可用"], accessibilityValue: "暂不可用")
+                let value = CNL10n.string("暂不可用")
+                return NativeMetricReading(values: [value], accessibilityValue: value)
             }
             let download = readableRate(networkDownloadBytesPerSecond)
             let upload = readableRate(networkUploadBytesPerSecond)
             return NativeMetricReading(
                 values: ["↓ " + download, "↑ " + upload],
-                accessibilityValue: "下载 " + download + "，上传 " + upload
+                accessibilityValue: CNL10n.format("下载 %@，上传 %@", download, upload)
             )
         case .disk:
             guard let percent = diskUsedPercent else {
-                return NativeMetricReading(values: ["暂不可用"], accessibilityValue: "暂不可用")
+                let value = CNL10n.string("暂不可用")
+                return NativeMetricReading(values: [value], accessibilityValue: value)
             }
             let percentText = compactPercent(percent)
             if let free = diskFreeBytes {
                 let freeText = CleanNestFormatting.bytes(free)
                 return NativeMetricReading(
-                    values: [percentText, "可用 " + freeText],
-                    accessibilityValue: percentText + "，可用 " + freeText
+                    values: [percentText, CNL10n.format("可用 %@", freeText)],
+                    accessibilityValue: CNL10n.format("%@，可用 %@", percentText, freeText)
                 )
             }
             return NativeMetricReading(values: [percentText], accessibilityValue: percentText)
@@ -278,14 +282,12 @@ extension NativeMonitorSample {
             let values = [total] + (parts.isEmpty ? [] : [parts.joined(separator: " / ")])
             return NativeMetricReading(
                 values: values,
-                accessibilityValue: values.joined(separator: "，")
+                accessibilityValue: values.joined(separator: CNL10n.string("，"))
             )
         case .fan:
             if fanCount == 0 {
-                return NativeMetricReading(
-                    values: ["这台 Mac 没有风扇"],
-                    accessibilityValue: "这台 Mac 没有风扇"
-                )
+                let value = CNL10n.string("这台 Mac 没有风扇")
+                return NativeMetricReading(values: [value], accessibilityValue: value)
             }
             if !fanSpeedsRPM.isEmpty {
                 let values = fanSpeedsRPM.enumerated().map {
@@ -293,54 +295,54 @@ extension NativeMonitorSample {
                 }
                 return NativeMetricReading(
                     values: values,
-                    accessibilityValue: values.joined(separator: "，")
+                    accessibilityValue: values.joined(separator: CNL10n.string("，"))
                 )
             }
-            let value = fanRPM.map { String(Int($0.rounded())) + " RPM" } ?? "暂不可用"
+            let value = fanRPM.map { String(Int($0.rounded())) + " RPM" } ?? CNL10n.string("暂不可用")
             return NativeMetricReading(values: [value], accessibilityValue: value)
         case .battery:
             guard let level = batteryLevel else {
-                let value = batteryStatus ?? "暂不可用"
+                let value = CNL10n.batteryStatus(batteryStatus ?? "暂不可用")
                 return NativeMetricReading(values: [value], accessibilityValue: value)
             }
             let time = batteryTimeRemainingMinutes.map {
                 String(format: "%d:%02d", $0 / 60, $0 % 60)
             }
-            let values = [compactPercent(level), batteryStatus, time].compactMap { $0 }
+            let values = [compactPercent(level), batteryStatus.map { CNL10n.batteryStatus($0) }, time].compactMap { $0 }
             return NativeMetricReading(
                 values: values,
-                accessibilityValue: values.joined(separator: "，")
+                accessibilityValue: values.joined(separator: CNL10n.string("，"))
             )
         }
     }
 
     func sourceDescription(_ metric: MenuBarMetric) -> String {
-        let stale = Date().timeIntervalSince(sampledAt) > 6 ? " · 样本已过期" : ""
+        let stale = Date().timeIntervalSince(sampledAt) > 6 ? CNL10n.string(" · 样本已过期") : ""
         let source: String
         switch metric {
         case .cpu:
             let parts = [
-                cpuUserPercent.map { "用户 " + compactPercent($0) },
-                cpuSystemPercent.map { "系统 " + compactPercent($0) },
-                cpuIdlePercent.map { "空闲 " + compactPercent($0) }
+                cpuUserPercent.map { CNL10n.format("用户 %@", compactPercent($0)) },
+                cpuSystemPercent.map { CNL10n.format("系统 %@", compactPercent($0)) },
+                cpuIdlePercent.map { CNL10n.format("空闲 %@", compactPercent($0)) }
             ].compactMap { $0 }
-            source = parts.isEmpty ? "Mach 处理器计数" : parts.joined(separator: " · ")
+            source = parts.isEmpty ? CNL10n.string("Mach 处理器计数") : parts.joined(separator: " · ")
         case .memory:
             let pressure: String
             switch memoryPressureLevel {
-            case .normal: pressure = "压力正常"
-            case .warning: pressure = "压力警告"
-            case .critical: pressure = "压力严重"
-            case .unknown: pressure = "压力未知"
+            case .normal: pressure = CNL10n.string("压力正常")
+            case .warning: pressure = CNL10n.string("压力警告")
+            case .critical: pressure = CNL10n.string("压力严重")
+            case .unknown: pressure = CNL10n.string("压力未知")
             }
             source = "Mach VM · " + pressure
         case .temperature:
             var sources: [String] = []
             if temperatureCelsius != nil {
-                sources.append(temperatureSource ?? "AppleSMC CPU 温度")
+                sources.append(CNL10n.string(temperatureSource ?? "AppleSMC CPU 温度"))
             }
             if batteryTemperatureCelsius != nil {
-                sources.append(batteryTemperatureSource ?? "IOKit 电池温度")
+                sources.append(CNL10n.string(batteryTemperatureSource ?? "IOKit 电池温度"))
             }
             switch thermalState {
             case .fair: sources.append(CNL10n.string("macOS 热状态：需要留意"))
@@ -348,34 +350,36 @@ extension NativeMonitorSample {
             case .critical: sources.append(CNL10n.string("macOS 热状态：临界"))
             case .nominal, .unknown: break
             }
-            source = sources.isEmpty ? "未返回有效温度" : sources.joined(separator: " · ")
+            source = sources.isEmpty ? CNL10n.string("未返回有效温度") : sources.joined(separator: " · ")
         case .network:
             if let networkInterfaceName {
                 let interfaces = networkInterfaceName.components(separatedBy: " + ")
                 source = interfaces.count > 1
-                    ? String(interfaces.count) + " 个物理接口合计"
-                    : networkInterfaceName + " · 当前统计接口"
+                    ? CNL10n.format("%@ 个物理接口合计", String(describing: interfaces.count))
+                    : CNL10n.format("%@ · 当前统计接口", networkInterfaceName)
             } else {
-                source = "未找到选定的活动接口"
+                source = CNL10n.string("未找到选定的活动接口")
             }
         case .disk:
-            let read = diskReadBytesPerSecond.map { "读 " + readableRate($0) }
-            let write = diskWriteBytesPerSecond.map { "写 " + readableRate($0) }
+            let read = diskReadBytesPerSecond.map { CNL10n.format("读 %@", readableRate($0)) }
+            let write = diskWriteBytesPerSecond.map { CNL10n.format("写 %@", readableRate($0)) }
             let throughput = [read, write].compactMap { $0 }.joined(separator: " · ")
-            source = throughput.isEmpty ? "macOS 启动卷容量" : "启动卷 · " + throughput
+            source = throughput.isEmpty
+                ? CNL10n.string("macOS 启动卷容量")
+                : CNL10n.format("启动卷 · %@", throughput)
         case .gpu:
-            source = "IOAccelerator 性能计数"
+            source = CNL10n.string("IOAccelerator 性能计数")
         case .fan:
             if fanCount == 0 {
-                source = "AppleSMC 报告 0 个风扇"
+                source = CNL10n.string("AppleSMC 报告 0 个风扇")
             } else if let fanCount {
-                let load = fanLoadPercent.map { " · 约 " + compactPercent($0) + " 最大转速" } ?? ""
-                source = "AppleSMC · " + String(fanCount) + " 个风扇" + load
+                let load = fanLoadPercent.map { CNL10n.format(" · 约 %@ 最大转速", compactPercent($0)) } ?? ""
+                source = CNL10n.format("AppleSMC · %@ 个风扇", String(describing: fanCount)) + load
             } else {
-                source = "AppleSMC 未返回风扇信息"
+                source = CNL10n.string("AppleSMC 未返回风扇信息")
             }
         case .battery:
-            source = batteryStatus ?? "IOKit 未返回内置电池"
+            source = CNL10n.batteryStatus(batteryStatus ?? "IOKit 未返回内置电池")
         }
         return source + stale
     }
@@ -512,7 +516,7 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
             store?.setGlobalHotKeyDiagnostic("⌘⌥M 已由 macOS 注册，不需要辅助功能权限。")
         } else {
             store?.setGlobalHotKeyDiagnostic(
-                "⌘⌥M 注册失败（系统状态 \(hotKeyStatus)），可能已被其他 App 占用。"
+                CNL10n.format("⌘⌥M 注册失败（系统状态 %@），可能已被其他 App 占用。", String(describing: hotKeyStatus))
             )
         }
         guard configuration.isEnabled else {
@@ -772,16 +776,16 @@ final class MenuBarMonitorController: NSObject, NSPopoverDelegate {
             )
         } else if !collapsed.isEmpty {
             store.setMenuBarVisibilityDiagnostic(
-                "自动宽度预算约 \(Int(budget.rounded())) pt；已保留异常项和首选项，将 "
+                CNL10n.format("自动宽度预算约 %@ pt；已保留异常项和首选项，将 ", String(describing: Int(budget.rounded())))
                     + collapsed.map(\.displayName).joined(separator: "、")
                     + " 收进点开后的面板。数值没有被截断。"
             )
         } else if configuration.presentationMode == .compact {
             store.setMenuBarVisibilityDiagnostic(
-                "\(order.count) 项占用约 \(Int(usedWidth.rounded())) pt，均以完整双层数值显示。"
+                CNL10n.format("%@ 项占用约 %@ pt，均以完整双层数值显示。", String(describing: order.count), String(describing: Int(usedWidth.rounded())))
             )
         } else {
-            store.setMenuBarVisibilityDiagnostic("\(order.count) 项已以展开文字显示。")
+            store.setMenuBarVisibilityDiagnostic(CNL10n.format("%@ 项已以展开文字显示。", String(describing: order.count)))
         }
     }
 

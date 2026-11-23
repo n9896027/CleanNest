@@ -47,7 +47,11 @@ swift "${localization_arguments[@]}"
 
 swift test
 swift run CleanNestSelfTest
-./build.sh release
+if [[ "$require_distribution" == "1" ]]; then
+  scripts/build-installer.sh
+else
+  ./build.sh release
+fi
 
 app_path="$project_dir/build/CleanNest.app"
 codesign --verify --deep --strict --verbose=2 "$app_path"
@@ -77,38 +81,69 @@ fi
 if [[ "$require_strict_localization" != "1" ]]; then
   blockers+=("strict source localization gate was not required")
 fi
+
+pkg_source=""
+pkg_notarization="not-applicable"
 if [[ "$require_distribution" == "1" ]]; then
   [[ "$signing_class" == "developer-id" ]]
   [[ "$notarization" == "stapled" ]]
   spctl --assess --type execute --verbose=2 "$app_path"
+
+  for executable in \
+    "$app_path/Contents/MacOS/CleanNest" \
+    "$app_path/Contents/MacOS/CleanNestMCP" \
+    "$app_path/Contents/Library/LoginItems/CleanNestLoginItem.app/Contents/MacOS/CleanNestLoginItem" \
+    "$app_path/Contents/XPCServices/CleanNestScanner.xpc/Contents/MacOS/CleanNestScanner"; do
+    [[ "$(lipo -archs "$executable")" == "x86_64 arm64" ]]
+  done
+
+  pkg_source="$project_dir/build/installer/CleanNest-${version}-${build_number}.pkg"
+  [[ -f "$pkg_source" ]]
+  pkgutil --check-signature "$pkg_source"
+  xcrun stapler validate "$pkg_source"
+  pkg_notarization="stapled"
+  spctl --assess --type install --verbose=2 "$pkg_source"
   gate_status="distribution-candidate"
 fi
 
 commit="$(git rev-parse HEAD)"
 short_commit="${commit[1,12]}"
-output_dir="$project_dir/build/release-candidate/${version}-${short_commit}"
+output_dir="${CLEANNEST_RELEASE_OUTPUT_DIR:-$project_dir/build/release-candidate/${version}-${short_commit}}"
 mkdir -p "$output_dir"
 sbom_path="$output_dir/CleanNest-${version}.spdx.json"
 archive_path="$output_dir/CleanNest-${version}-${signing_class}-macos.zip"
 checksums_path="$output_dir/SHA256SUMS"
 provenance_path="$output_dir/PROVENANCE.json"
+pkg_path=""
 
 swift Tools/SBOMGenerator.swift "$app_path" "$sbom_path"
 ditto -c -k --keepParent "$app_path" "$archive_path"
+if [[ -n "$pkg_source" ]]; then
+  pkg_path="$output_dir/${pkg_source:t}"
+  cp -f "$pkg_source" "$pkg_path"
+fi
+artifacts_to_hash=("${archive_path:t}" "${sbom_path:t}")
+if [[ -n "$pkg_path" ]]; then
+  artifacts_to_hash+=("${pkg_path:t}")
+fi
 (
   cd "$output_dir"
-  shasum -a 256 "${archive_path:t}" "${sbom_path:t}" > "${checksums_path:t}"
+  shasum -a 256 "${artifacts_to_hash[@]}" > "${checksums_path:t}"
 )
 
 archive_sha="$(shasum -a 256 "$archive_path" | awk '{print $1}')"
 sbom_sha="$(shasum -a 256 "$sbom_path" | awk '{print $1}')"
+pkg_sha=""
+if [[ -n "$pkg_path" ]]; then
+  pkg_sha="$(shasum -a 256 "$pkg_path" | awk '{print $1}')"
+fi
 generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 architecture="$(lipo -archs "$app_path/Contents/MacOS/CleanNest")"
 swift_version="$(swift --version | head -n 1)"
 blockers_json="$(printf '%s\n' "${blockers[@]:-}" | jq -R -s 'split("\n") | map(select(length > 0))')"
 
 jq -n \
-  --arg schemaVersion "1" \
+  --arg schemaVersion "2" \
   --arg product "CleanNest" \
   --arg version "$version" \
   --arg build "$build_number" \
@@ -120,11 +155,14 @@ jq -n \
   --arg signingAuthority "$authority" \
   --arg signingClass "$signing_class" \
   --arg notarization "$notarization" \
+  --arg pkgNotarization "$pkg_notarization" \
   --arg gateStatus "$gate_status" \
   --arg archive "${archive_path:t}" \
   --arg archiveSHA256 "$archive_sha" \
   --arg sbom "${sbom_path:t}" \
   --arg sbomSHA256 "$sbom_sha" \
+  --arg pkg "${pkg_path:t}" \
+  --arg pkgSHA256 "$pkg_sha" \
   --argjson blockers "$blockers_json" \
   '{
     schemaVersion: ($schemaVersion | tonumber),
@@ -138,19 +176,23 @@ jq -n \
       signingAuthority: $signingAuthority,
       signingClass: $signingClass,
       notarization: $notarization,
+      pkgNotarization: $pkgNotarization,
       gateStatus: $gateStatus,
       blockers: $blockers
     },
-    artifacts: [
+    artifacts: ([
       {name: $archive, sha256: $archiveSHA256},
       {name: $sbom, sha256: $sbomSHA256}
-    ]
+    ] + (if $pkg == "" then [] else [{name: $pkg, sha256: $pkgSHA256}] end))
   }' > "$provenance_path"
 
 jq empty "$sbom_path" "$provenance_path"
 print "release_candidate=$output_dir"
 print "version=$version build=$build_number commit=$commit"
-print "gate_status=$gate_status signing=$signing_class notarization=$notarization"
+print "gate_status=$gate_status signing=$signing_class notarization=$notarization pkg_notarization=$pkg_notarization"
+if [[ -n "$pkg_path" ]]; then
+  print "pkg=$pkg_path"
+fi
 if (( ${#blockers[@]} > 0 )); then
   print "distribution_blockers=${(j:; :)blockers}"
 fi

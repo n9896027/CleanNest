@@ -73,11 +73,13 @@ public struct ApplicationScanner: Sendable {
 
     public func dependencyGraph(
         for application: InstalledApplication,
-        includeProtectedAppData: Bool = false
+        includeProtectedAppData: Bool = false,
+        applicationIsRunning: Bool? = nil
     ) async -> ApplicationDependencyGraph {
         await dependencyGraphBuilder.build(
             for: application,
-            includeProtectedAppData: includeProtectedAppData
+            includeProtectedAppData: includeProtectedAppData,
+            applicationIsRunning: applicationIsRunning
         )
     }
 }

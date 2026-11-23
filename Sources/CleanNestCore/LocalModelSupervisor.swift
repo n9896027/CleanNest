@@ -140,8 +140,10 @@ public struct LocalModelSupervisorInventory: Sendable {
 public enum LocalModelSupervisorControlPolicy {
     public static func isSafeLabel(_ label: String) -> Bool {
         guard !label.isEmpty, label.count <= 255 else { return false }
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-@")
-        return label.unicodeScalars.allSatisfy(allowed.contains)
+        return label.utf8.allSatisfy { byte in
+            (65...90).contains(byte) || (97...122).contains(byte)
+                || (48...57).contains(byte) || [46, 95, 45, 64].contains(byte)
+        }
     }
 
     public static func disableRefusalReason(
@@ -226,12 +228,17 @@ public enum LocalModelSupervisorDiscovery {
     public static func capture() -> LocalModelSupervisorInventory {
         let uid = UInt32(Darwin.getuid())
         let domain = "gui/\(uid)"
-        let listResult = run("/bin/launchctl", ["list"])
+        // A native GUI app can run inside an application bootstrap subset.
+        // An unscoped `launchctl list` then returns CleanNest's own services
+        // instead of the user's gui/<uid> domain. Always address the user
+        // domain explicitly so external LaunchAgents are discoverable too.
+        let listResult = run("/bin/launchctl", ["print", domain])
         let disabledResult = run("/bin/launchctl", ["print-disabled", domain])
         let jobs = parseLaunchctlList(listResult.output)
         // launchctl 输出是外部数据；标签重复时保留第一条，不崩溃。
         let jobsByLabel = Dictionary(jobs.map { ($0.label, $0) }, uniquingKeysWith: { first, _ in first })
         let disabledLabels = parseDisabledServices(disabledResult.output)
+        let knownLabels = parseServiceLabels(disabledResult.output)
         let home = FileManager.default.homeDirectoryForCurrentUser
         let roots: [(URL, LocalModelSupervisorKind, String)] = [
             (home.appendingPathComponent("Library/LaunchAgents", isDirectory: true), .userLaunchAgent, domain),
@@ -263,26 +270,40 @@ public enum LocalModelSupervisorDiscovery {
             }
         }
 
-        for job in jobs where !representedLabels.contains(job.label) {
+        var fallbackJobs = jobs
+        for label in knownLabels where !jobsByLabel.keys.contains(label) {
+            fallbackJobs.append(LocalModelLaunchdJob(label: label, processID: nil))
+        }
+        for job in fallbackJobs where !representedLabels.contains(job.label) {
             guard let platform = LocalModelRuntimeDiscovery.classifyPlatform(text: job.label) else {
                 continue
             }
-            supervisors.append(
-                LocalModelSupervisorSnapshot(
-                    label: job.label,
-                    domain: domain,
-                    kind: .launchdUnknown,
-                    sourcePath: nil,
-                    programName: nil,
-                    keepAlive: false,
-                    runAtLoad: false,
-                    isLoaded: true,
-                    isDisabled: disabledLabels.contains(job.label),
-                    processID: job.processID,
-                    isOwnedByCurrentUser: false,
-                    platform: platform
+            if let printed = decodeLaunchctlService(
+                label: job.label,
+                domain: domain,
+                job: job,
+                disabledLabels: disabledLabels,
+                currentUserID: uid
+            ) {
+                supervisors.append(printed)
+            } else {
+                supervisors.append(
+                    LocalModelSupervisorSnapshot(
+                        label: job.label,
+                        domain: domain,
+                        kind: .launchdUnknown,
+                        sourcePath: nil,
+                        programName: nil,
+                        keepAlive: false,
+                        runAtLoad: false,
+                        isLoaded: true,
+                        isDisabled: disabledLabels.contains(job.label),
+                        processID: job.processID,
+                        isOwnedByCurrentUser: false,
+                        platform: platform
+                    )
                 )
-            )
+            }
         }
 
         supervisors.sort {
@@ -298,21 +319,96 @@ public enum LocalModelSupervisorDiscovery {
 
     public static func parseLaunchctlList(_ output: String) -> [LocalModelLaunchdJob] {
         output.split(whereSeparator: \.isNewline).compactMap { rawLine in
-            let fields = rawLine.split(maxSplits: 2, omittingEmptySubsequences: true, whereSeparator: \.isWhitespace)
-            guard fields.count == 3 else { return nil }
+            // launchctl print aligns the label with a tab after the second
+            // field. Taking the last whitespace-delimited token keeps the
+            // label exact for both list and domain-print formats.
+            let fields = rawLine.split(omittingEmptySubsequences: true, whereSeparator: \.isWhitespace)
+            guard fields.count == 3,
+                  fields[0] == "-" || Int32(fields[0]) != nil else { return nil }
             let label = String(fields[2])
             guard LocalModelSupervisorControlPolicy.isSafeLabel(label), label != "Label" else { return nil }
-            let pid = fields[0] == "-" ? nil : Int32(fields[0])
+            let rawPID = Int32(fields[0])
+            let pid = rawPID.flatMap { $0 > 0 ? $0 : nil }
             return LocalModelLaunchdJob(label: label, processID: pid)
         }
+    }
+
+    private static func decodeLaunchctlService(
+        label: String,
+        domain: String,
+        job: LocalModelLaunchdJob,
+        disabledLabels: Set<String>,
+        currentUserID: UInt32
+    ) -> LocalModelSupervisorSnapshot? {
+        let result = run("/bin/launchctl", ["print", "\(domain)/\(label)"])
+        guard result.exitCode == 0 else { return nil }
+        let output = result.output
+        let sourcePath = value(after: "path = ", in: output)
+        let program = value(after: "program = ", in: output)
+        let type = value(after: "type = ", in: output)?.lowercased() ?? ""
+        let properties = value(after: "properties = ", in: output)?.lowercased() ?? ""
+        let processID = value(after: "pid = ", in: output).flatMap(Int32.init) ?? job.processID
+        let classification = [label, program].compactMap { $0 }.joined(separator: " ")
+        guard let platform = LocalModelRuntimeDiscovery.classifyPlatform(text: classification) else {
+            return nil
+        }
+        let kind: LocalModelSupervisorKind
+        if type.contains("launchagent") {
+            kind = .userLaunchAgent
+        } else if type.contains("launchdaemon") {
+            kind = .systemLaunchDaemon
+        } else {
+            kind = .launchdUnknown
+        }
+        let attributes = sourcePath.flatMap { try? FileManager.default.attributesOfItem(atPath: $0) }
+        let ownerID = (attributes?[.ownerAccountID] as? NSNumber)?.uint32Value
+        let deviceID = (attributes?[.systemNumber] as? NSNumber)?.uint64Value
+        let fileID = (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value
+        return LocalModelSupervisorSnapshot(
+            label: label,
+            domain: domain,
+            kind: kind,
+            sourcePath: sourcePath,
+            sourceDeviceID: deviceID,
+            sourceFileID: fileID,
+            programName: program.map { URL(fileURLWithPath: $0).lastPathComponent },
+            keepAlive: properties.contains("keepalive"),
+            runAtLoad: properties.contains("runatload"),
+            isLoaded: true,
+            isDisabled: disabledLabels.contains(label),
+            processID: processID,
+            isOwnedByCurrentUser: kind == .userLaunchAgent && ownerID == currentUserID,
+            platform: platform
+        )
+    }
+
+    private static func value(after marker: String, in output: String) -> String? {
+        guard let range = output.range(of: marker),
+              let lineEnd = output[range.upperBound...].firstIndex(of: "\n") else {
+            return nil
+        }
+        let value = output[range.upperBound..<lineEnd]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 
     public static func parseDisabledServices(_ output: String) -> Set<String> {
         var labels = Set<String>()
         for line in output.split(whereSeparator: \.isNewline) where line.contains("=> disabled") {
-            guard let firstQuote = line.firstIndex(of: "\""),
-                  let secondQuote = line[line.index(after: firstQuote)...].firstIndex(of: "\"") else { continue }
-            let label = String(line[line.index(after: firstQuote)..<secondQuote])
+            let quotedFields = line.split(separator: "\"", maxSplits: 2, omittingEmptySubsequences: false)
+            guard quotedFields.count >= 2 else { continue }
+            let label = String(quotedFields[1]).trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n"))
+            if LocalModelSupervisorControlPolicy.isSafeLabel(label) { labels.insert(label) }
+        }
+        return labels
+    }
+
+    public static func parseServiceLabels(_ output: String) -> Set<String> {
+        var labels = Set<String>()
+        for line in output.split(whereSeparator: \.isNewline) where line.contains("=>") {
+            let quotedFields = line.split(separator: "\"", maxSplits: 2, omittingEmptySubsequences: false)
+            guard quotedFields.count >= 2 else { continue }
+            let label = String(quotedFields[1]).trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n"))
             if LocalModelSupervisorControlPolicy.isSafeLabel(label) { labels.insert(label) }
         }
         return labels

@@ -64,6 +64,39 @@ final class CleanupSessionTests: XCTestCase {
         )
     }
 
+    func testCandidatePageWindowNeverExposesAnUnboundedLargeGroup() {
+        let first = CleanupCandidatePageWindow(itemCount: 408)
+        XCTAssertEqual(first.pageCount, 11)
+        XCTAssertEqual(first.pageIndex, 0)
+        XCTAssertEqual(first.range, 0..<40)
+        XCTAssertEqual(first.displayedStartNumber, 1)
+        XCTAssertEqual(first.displayedEndNumber, 40)
+        XCTAssertFalse(first.hasPreviousPage)
+        XCTAssertTrue(first.hasNextPage)
+
+        let middle = CleanupCandidatePageWindow(itemCount: 408, requestedPageIndex: 5)
+        XCTAssertEqual(middle.range, 200..<240)
+        XCTAssertTrue(middle.hasPreviousPage)
+        XCTAssertTrue(middle.hasNextPage)
+
+        let last = CleanupCandidatePageWindow(itemCount: 408, requestedPageIndex: 999)
+        XCTAssertEqual(last.pageIndex, 10)
+        XCTAssertEqual(last.range, 400..<408)
+        XCTAssertEqual(last.displayedStartNumber, 401)
+        XCTAssertEqual(last.displayedEndNumber, 408)
+        XCTAssertTrue(last.hasPreviousPage)
+        XCTAssertFalse(last.hasNextPage)
+
+        let empty = CleanupCandidatePageWindow(itemCount: 0, requestedPageIndex: 9)
+        XCTAssertEqual(empty.pageCount, 0)
+        XCTAssertEqual(empty.pageIndex, 0)
+        XCTAssertEqual(empty.range, 0..<0)
+        XCTAssertFalse(empty.hasPreviousPage)
+        XCTAssertFalse(empty.hasNextPage)
+        let extreme = CleanupCandidatePageWindow(itemCount: .max, pageSize: .max - 1, requestedPageIndex: 1)
+        XCTAssertEqual(extreme.range, (Int.max - 1)..<Int.max)
+    }
+
     func testBasketSeparatesSelectionRecoveryAndRevalidationEvidence() {
         let retainedIdentity = CleanupFileIdentity(
             deviceID: 1,

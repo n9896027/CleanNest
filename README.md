@@ -29,7 +29,23 @@ CleanNest 不是把传统清理器套上 AI 文案。它面向同时使用 Codex
 | 占用、变化、活跃保护、异常线索 | 平台、短 ID、监听、客户端、launchd 守护 | CPU、内存、网络、GPU、温度、风扇、电池 | 预览、身份复核、废纸篓与恢复记录 |
 
 > [!IMPORTANT]
-> 当前项目以源码开放，尚未提供 Developer ID 签名并经 Apple 公证的官方安装包。仓库里的 CI 构建用于验证，不代表可公开分发的可信二进制。
+> 本机已具备 Developer ID 签名、Apple 公证、票据装订的 Universal 2 PKG 构建能力。是否已有公开下载以 [Releases](https://github.com/n9896027/CleanNest/releases) 为准；CI 的 ad-hoc 产物仍只用于验证，不能冒充正式安装包。
+
+## 0.12.0：清理证据、复核与恢复
+
+当前版本统一为 **0.12.0（Build 50）**。通用清理新增执行前活跃文件复核、被拦截项逐路径复核、持久化执行账本与单项恢复；APFS、稀疏文件、模型配置引用和应用容器分别展示证据，不把未知或逻辑大小当成可释放空间。正式 PKG 仍须从通过检查的干净 `main` 提交构建，实际公开下载以 [Releases](https://github.com/n9896027/CleanNest/releases) 为准。详见 [0.12.0 路线图](docs/ROADMAP-0.12.md)与[验证记录](docs/VERIFICATION-0.12.0.md)。
+
+### 0.10.1：补齐 MLX Serve 监控
+
+用 **⌘K 查找功能**，或在侧栏按“空间 / 智能工具 / 系统”进入。磁盘浏览和系统状态改为按任务切换；清理、Agent、模型、活动和设置把辅助说明收进可展开详情。卸载页在窄窗口中使用列表 → 详情的路径。风险与失败提示仍直接显示，原有扫描、预览、确认、恢复和启停能力全部保留。
+
+0.10.1 补齐 `mlx-serve` 的进程、11234 端口、OpenAI 兼容 API 与 launchd 守护发现；原有本机模型服务监控和控制边界保持不变。参见 [0.10.1 验证记录](docs/VERIFICATION-0.10.1.md)。
+
+### 延续 0.9.0：系统数据占用清单
+
+在 **磁盘浏览 → 查看占用清单** 中，按需测量 25 个常见位置，看懂“谁留下的、是什么、处理后会怎样”。支持搜索、用途筛选、扫描缺口、两次完整测量的变化，以及进入现有复核 / 管理页面。模型、备份和虚拟机不会因为体积大就被标为垃圾。
+
+这是本机独立实现的只读清单，不是 macOS 私有“系统数据”分类的精确复刻，也不承诺扫描合计就是可释放量。每处最多 10 万项，未授权路径会跳过；系统快照、系统级运行时和自定义目录尚不包含。参见 [0.9.0 验证与边界](docs/VERIFICATION-0.9.0.md)。当前未发布 0.9.0 安装包。
 
 ## 不只是清理器
 
@@ -43,7 +59,7 @@ CleanNest 不是把传统清理器套上 AI 文案。它面向同时使用 Codex
     <td width="50%">
       <img src="docs/images/readme/local-model-runtime.png" alt="本地模型运行中心演示界面：服务、模型短 ID、客户端与守护拓扑">
       <br><strong>本地模型运行中心</strong><br>
-      <sub>识别 oMLX、MLX-LM、Ollama、LM Studio 与 llama.cpp/OpenAI-compatible 服务，解释端口、模型短 ID、TCP 客户端和自动拉起来源。</sub>
+      <sub>识别 oMLX、MLX-LM、MLX Serve、Ollama、LM Studio 与 llama.cpp/OpenAI-compatible 服务，解释端口、模型短 ID、TCP 客户端和自动拉起来源。</sub>
     </td>
   </tr>
   <tr>
@@ -84,7 +100,7 @@ CleanNest 不是把传统清理器套上 AI 文案。它面向同时使用 Codex
 - **开发工具原生账本**：使用 Git `worktree prune --dry-run`、Docker `system df`、Hugging Face `cache prune --dry-run`、npm 缓存配置和 pip `cache info`。只有 Git 与 Hugging Face 在重新 dry-run 后开放确认执行；没有官方预演的 Docker、npm 与 pip 广域清理保持禁用。
 - **增量磁盘浏览**：持续显示部分结果；15 分钟内只复用元数据签名未变化的项目，并明确展示缓存命中、实扫数量和深度刷新入口。
 - **清理决策中心**：Treemap 与面包屑之外，还逐项解释用途、变大原因、处理影响、可恢复性、证据强度和安全下一步；你可以手动标记待复核、保留或稍后处理，且不能覆盖安全边界。
-- **菜单栏实时监测**：不依赖 Mole，可以 1/2/5/10 秒在本机读取 CPU、内存、网络、磁盘、GPU、温度、风扇和电池；默认以 State 式双层短标签紧凑显示，也可切换展开文字/曲线、调整顺序或单独隐藏。异常时以橙/红色和 `!` / `!!` 同步标记，并结合 macOS 热状态与真实压力信号，避免把普通高负载误报为故障。
+- **菜单栏实时监测**：完全由内置原生引擎采样，可以 1/2/5/10 秒在本机读取 CPU、内存、网络、磁盘、GPU、温度、风扇和电池；默认以 State 式双层短标签紧凑显示，也可切换展开文字/曲线、调整顺序或单独隐藏。异常时以橙/红色和 `!` / `!!` 同步标记，并结合 macOS 热状态与真实压力信号，避免把普通高负载误报为故障。
 - **本地模型运行中心**：把平台、服务、模型短 ID、TCP 实连客户端和 launchd 守护组成证据拓扑，并解释端口冲突、模型替换和自动拉起。CleanNest 自启、当前用户进程、用户 LaunchAgent 和系统/其他用户服务采用四级不同控制边界；可控操作执行前仍重验身份，守护配置保留且可恢复。
 - **系统状态**：显示原生实时仪表、电池与健康状态；每 60 秒在本机保存长期趋势，并补充内存压力和进程说明。
 - **进程管理**：在身份复核、系统进程保护和二次确认后请求正常退出进程，不自动强制结束。
@@ -93,7 +109,7 @@ CleanNest 不是把传统清理器套上 AI 文案。它面向同时使用 Codex
 - **可审核本机学习**：文件提案按类型、位置级别、风险和时间聚成类别规则；支持批量审核、7 天试用、暂停、撤销和到期清理，并显示对当前列表的实际排序影响，永不自动勾选或删除。
 - **模型工作台**：对当前回环服务执行不含文件元数据的最小流式测速，显示健康延迟、首字响应、总耗时、实际模型短名和内存余量提示。
 - **数据控制**：活动记录可导出为 JSON 或单独清空；“恢复安全默认设置”只重置偏好，不混同清除活动、学习、索引、指标或系统授权。
-- **Mole 集成**：自动发现 Apple Silicon 或 Intel Homebrew 安装的 `mo`，也可直接在 App 内安装或更新。
+- **内置原生引擎**：清理、磁盘、系统数据、Agent 和系统状态均无需 Homebrew 或额外清理引擎。
 - **检查更新**：从 App 菜单或“关于”页主动查询 GitHub 最新正式 Release；只比较版本并打开经过仓库校验的发布页，不会静默下载或安装。
 - **原生体验**：支持明暗色、自恢复权限引导、活动记录与演示模式。
 - **只读 MCP**：通过 App 内置的 stdio 进程把有界、脱敏证据交给本机 AI 客户端；没有 HTTP、删除或进程控制工具。
@@ -102,13 +118,12 @@ CleanNest 不是把传统清理器套上 AI 文案。它面向同时使用 Codex
 ## 下载与运行
 
 > [!NOTE]
-> 当前仓库尚未提供经过 Apple 公证的预编译安装包。日常使用 CleanNest 不需要终端，但现阶段从源码生成 App 仍需运行一次构建命令。后续可下载版本会发布在 [Releases](https://github.com/n9896027/CleanNest/releases)。
+> 如果 [Releases](https://github.com/n9896027/CleanNest/releases) 提供正式 PKG，下载后安装到 `/Applications` 即可，不需要 Xcode 或终端。请同时核对发布页列出的版本、SHA-256 和已知限制；没有公开 PKG 时仍可按下方步骤从源码构建。
 
 系统要求：
 
 - macOS 14 Sonoma 或更高版本
 - Xcode Command Line Tools（仅源码构建需要）
-- Mole CLI（可选，CleanNest 可在 App 内免费安装）
 - Apple Silicon Mac 与 `mlx-lm`（仅本机 AI 功能需要）
 
 从源码构建：
@@ -120,9 +135,9 @@ cd CleanNest
 open build/CleanNest.app
 ```
 
-构建完成后，后续扫描、分析、清理、维护以及 Mole 安装都可以在 App 内完成。
+构建完成后，后续扫描、分析、清理和维护都可以在 App 内完成，无需安装额外引擎。
 
-当前仍无 Developer ID 签名与 Apple 公证的官方安装包。维护者可以手动生成带 SBOM、校验和及来源证明的 Universal 2 CI 验证产物，但它使用 ad-hoc 签名、不会自动发布到 Releases，不属于普通用户可信安装包。请勿从第三方下载声称由本项目正式发布的 CleanNest App。
+正式分发使用 Developer ID Application / Installer、Apple 公证和票据装订；维护者可用 `scripts/build-installer.sh` 构建 Universal 2 PKG。CI 的 ad-hoc Universal 2 产物仍只用于验证，不属于普通用户安装包。从旧自签名副本升级后，如果 macOS 提示权限失效，请按权限说明重新授权当前 `/Applications/CleanNest.app`，不要给旧副本重复授权。请勿从第三方下载声称由本项目正式发布的 CleanNest App。
 
 ## 可替换的本机 MLX 模型（可选）
 
@@ -145,7 +160,7 @@ CleanNest 可以连接本机 `mlx_lm.server`，为清理候选和磁盘目录补
 - 原生清理只接受经过白名单校验的后代路径，并拒绝符号链接。
 - 文件默认移入 macOS 废纸篓，不使用不可恢复的 `rm -rf`。
 - 卸载 App 时先复核路径、设备号、文件号与 Bundle ID；当前账户有真实目录权限时原子移入废纸篓，权限不足时再由 Finder 显示 macOS 管理员认证。App 本体未确认成功时不会处理相关文件。
-- Mole 的高风险交互命令不会通过模拟键盘自动确认。
+- 任何高风险交互命令都不会通过模拟键盘自动确认。
 - 扫描服务没有删除、进程控制或网络能力；服务不可用时显式失败，不回退到主 App 进程悄悄扫描。
 - 每个拉取请求运行核心自检、完整 App Bundle 构建和 CodeQL 静态分析。
 - GitHub Actions 使用最小权限，依赖与 Action 更新由 Dependabot 检查。
@@ -161,7 +176,7 @@ CleanNest 可以连接本机 `mlx_lm.server`，为清理候选和磁盘目录补
 | [历史指标](docs/METRICS.md) | 60 秒采样、SQLite WAL、保留期限和字段边界 |
 | [只读 MCP](docs/MCP.md) | 本机 stdio 配置、7 个工具与只读安全边界 |
 | [威胁模型](docs/THREAT_MODEL.md) | 保护目标、攻击面、控制与不保证事项 |
-| [故障排查](docs/TROUBLESHOOTING.md) | Mole、权限、AI、构建和电池状态常见问题 |
+| [故障排查](docs/TROUBLESHOOTING.md) | 内置引擎、权限、AI、构建和电池状态常见问题 |
 | [架构](docs/ARCHITECTURE.md) | 模块、数据流与高风险操作边界 |
 | [Agent 工作区](docs/AGENT_WORKSPACE.md) | 多 Agent 只读账本、运行依赖证据、签名规则、备份优先处置与恢复边界 |
 | [隐私](PRIVACY.md) | 本机保存的数据、网络访问及清除方式 |
@@ -183,8 +198,10 @@ CleanNest 可以连接本机 `mlx_lm.server`，为清理候选和磁盘目录补
 | [0.8.2 验证报告](docs/VERIFICATION-0.8.2.md) | 易用性：处置状态大白话双层化、侧栏收敛为 6 个常驻入口与可折叠高级工具组 |
 | [0.8.3 验证报告](docs/VERIFICATION-0.8.3.md) | 本机学习页更名清理习惯：全页去官僚术语，启用按钮与流程图说人话 |
 | [0.8.4 验证报告](docs/VERIFICATION-0.8.4.md) | 总览页重构：单一主行动卡 + 紧凑次要行 + 纯图形状态块，删除审计四列与防御性说明 |
+| [0.11.0 候选验收记录](docs/VERIFICATION-0.11.0.md) | 历史候选自动证据、人工界面、安装升级、模型平台与真实 48 小时边界 |
+| [0.12.0 验证记录](docs/VERIFICATION-0.12.0.md) | 活跃检查、逐路径复核、执行账本、恢复、APFS、稀疏文件与发布边界 |
 | [0.7 数据迁移与回退](docs/MIGRATION-0.7.md) | 设置、指标、活动、索引、学习规则和 Agent 恢复记录的真实兼容边界 |
-| [本地化覆盖状态](docs/LOCALIZATION-STATUS.md) | 三语言 Catalog 覆盖、仍会回落中文的源码缺口和严格发布门 |
+| [本地化覆盖状态](docs/LOCALIZATION-STATUS.md) | 三语言 Catalog、占位符、严格源码门与尚待完成的人工验收 |
 | [0.7 系列路线图](docs/ROADMAP-0.7.md) | 0.7.0–0.7.9 的产品、架构、验收门和明确不承诺事项 |
 | [0.6.5 全栏目审计](docs/AUDIT-0.6.5.md) | 每个页面的现状、缺口、性能与无障碍证据 |
 | [0.6.2 验证报告](docs/VERIFICATION-0.6.2.md) | Agent 占用账本、活跃保护、XPC 内存、失败关闭与真机扫描证据 |
@@ -199,11 +216,11 @@ CleanNest 可以连接本机 `mlx_lm.server`，为清理候选和磁盘目录补
 | [更新记录](CHANGELOG.md) | 版本变化与未发布工作 |
 | [参与贡献](CONTRIBUTING.md) | 开发、测试、PR 与安全约束 |
 
-## CleanNest 与 Mole
+## 内置原生引擎
 
-CleanNest 是独立开发的图形客户端，不是 Mole 官方 App，也不捆绑 Mole 二进制。它通过独立本地进程调用用户自行安装的 CLI，并在设置页保留来源署名。
+CleanNest 的清理、磁盘、系统数据、Agent 和系统状态全部由随 App 安装的原生组件完成，不检测、调用或安装外部清理引擎。Homebrew 只作为开发缓存扫描对象，不是运行依赖。
 
-[Mole](https://github.com/tw93/Mole) 由 tw93 与贡献者维护，采用 GPL-3.0。CleanNest 自身源码采用 [MIT License](LICENSE)。
+CleanNest 自身源码采用 [MIT License](LICENSE)。可选本机模型和参考实现见[第三方项目说明](THIRD_PARTY_NOTICES.md)。
 
 ## 开发与验证
 
@@ -226,6 +243,6 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-当前源码正式版为 **0.7.9（Build 37）**；它已加入迁移、回退、稳定性、来源证明门与磁盘多视角账本。GitHub Release 只提供源码，不附带 App：真实 48 小时、完整三语言 UI、Developer ID 和 Apple 公证仍未通过，因此这不是普通用户可直接信任安装的 macOS 安装包。CI 会在 Apple Silicon 与 Intel runner 上编译并运行测试。欢迎通过 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可复现的问题或功能建议；安全问题请使用私密漏洞报告渠道。
+当前版本为 **0.12.0（Build 50）**，重点是清理证据、逐路径复核、执行账本、恢复和可信分发。正式 PKG 必须从通过检查的干净 `main` 提交构建，是否有公开下载仍以 Releases 为准。真实 48 小时、完整三语言人工 UI、Intel 真机、macOS 14 和 0.12.0 干净 Mac 实装必须分别留下证据，不能由 CI 编译或旧版本公证代替。欢迎通过 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可复现的问题或功能建议；安全问题请使用私密漏洞报告渠道。
 
-App 的核心导航、总览、磁盘、系统状态与设置关键界面已提供 English、简体中文和繁體中文资源；涉及运行时路径或深度诊断的动态文案可能仍回退为源语言。日本語和한국어 README 用于说明项目范围，完整 UI 本地化仍会继续扩充。
+English、简体中文和繁體中文的 String Catalog、格式占位符及直接 UI 严格源码审计已通过；这不等同于人工界面验收，窄窗口、长文案、键盘和 VoiceOver 仍需逐项实测。日本語和한국어 README 仅用于说明项目范围，不声明完整 App UI。

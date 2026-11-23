@@ -57,6 +57,7 @@ public struct ActivityEntry: Identifiable, Codable, Hashable, Sendable {
     public let bytes: Int64
     public let category: Category?
     public let cleanupResult: CleanupActivityResult?
+    public let executionID: String?
 
     public init(
         id: UUID = UUID(),
@@ -67,7 +68,8 @@ public struct ActivityEntry: Identifiable, Codable, Hashable, Sendable {
         affectedItems: Int = 0,
         bytes: Int64 = 0,
         category: Category? = nil,
-        cleanupResult: CleanupActivityResult? = nil
+        cleanupResult: CleanupActivityResult? = nil,
+        executionID: String? = nil
     ) {
         self.id = id
         self.date = date
@@ -78,6 +80,7 @@ public struct ActivityEntry: Identifiable, Codable, Hashable, Sendable {
         self.bytes = bytes
         self.category = category
         self.cleanupResult = cleanupResult
+        self.executionID = executionID
     }
 
     public var effectiveCategory: Category {

@@ -16,7 +16,6 @@ public enum CleanNestSurface: String, CaseIterable, Codable, Sendable {
 
 public enum CleanNestWorkload: String, CaseIterable, Codable, Hashable, Sendable {
     case nativeMenuBarMonitor
-    case engineProbe
     case metricsStorage
     case metricHistory
     case processInspection
@@ -49,7 +48,7 @@ public enum AppLifecyclePolicy {
         menuBarMonitoringEnabled: Bool,
         localModelMenuBarEnabled: Bool
     ) -> Set<CleanNestWorkload> {
-        var workloads: Set<CleanNestWorkload> = [.engineProbe, .metricsStorage]
+        var workloads: Set<CleanNestWorkload> = [.metricsStorage]
         if menuBarMonitoringEnabled { workloads.insert(.nativeMenuBarMonitor) }
         if localModelMenuBarEnabled { workloads.insert(.localModelRuntimeDiscovery) }
         return workloads

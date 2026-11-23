@@ -1,14 +1,13 @@
 import Foundation
-import CleanNestCore
 
-enum ScannerServiceClientError: LocalizedError {
+public enum ScannerServiceClientError: LocalizedError, Equatable {
     case unavailable
     case interrupted
     case protocolMismatch(expected: Int, received: Int)
     case invalidResponse
     case remote(String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .unavailable:
             return "独立扫描服务未响应；CleanNest 没有回退到主进程扫描，上一次完整结果已保留。"
@@ -59,21 +58,54 @@ private final class ScannerValueContinuationGate<Value>: @unchecked Sendable {
     }
 }
 
-private final class ScannerConnectionBox: @unchecked Sendable {
-    let value: NSXPCConnection
+/// Minimal NSXPCConnection surface used by the client. The production factory
+/// still creates a real embedded-service connection; tests can substitute a
+/// deterministic connection without touching user files or launchd services.
+protocol ScannerServiceConnection: AnyObject {
+    var interruptionHandler: (() -> Void)? { get set }
+    var invalidationHandler: (() -> Void)? { get set }
 
-    init(_ value: NSXPCConnection) {
+    func resume()
+    func invalidate()
+    func remoteObjectProxyWithErrorHandler(_ handler: @escaping (Error) -> Void) -> Any
+}
+
+extension NSXPCConnection: ScannerServiceConnection {}
+
+private final class ScannerConnectionBox: @unchecked Sendable {
+    let value: ScannerServiceConnection
+
+    init(_ value: ScannerServiceConnection) {
         self.value = value
     }
 }
 
-final class ScannerServiceClient: @unchecked Sendable {
-    typealias ProgressHandler = @Sendable (ScannerServiceProgress) async -> Void
+public final class ScannerServiceClient: @unchecked Sendable {
+    public typealias ProgressHandler = @Sendable (ScannerServiceProgress) async -> Void
 
     private let lock = NSLock()
-    private var connection: NSXPCConnection?
+    private let connectionFactory: () -> ScannerServiceConnection
+    private let handshakeTimeout: TimeInterval
+    private var connection: ScannerServiceConnection?
 
-    func scanCleanup(
+    public init() {
+        handshakeTimeout = 10
+        connectionFactory = {
+            let connection = NSXPCConnection(serviceName: CleanNestScannerService.bundleIdentifier)
+            connection.remoteObjectInterface = NSXPCInterface(with: CleanNestScannerXPCProtocol.self)
+            return connection
+        }
+    }
+
+    init(
+        connectionFactory: @escaping () -> ScannerServiceConnection,
+        handshakeTimeout: TimeInterval = 10
+    ) {
+        self.connectionFactory = connectionFactory
+        self.handshakeTimeout = handshakeTimeout
+    }
+
+    public func scanCleanup(
         _ request: CleanupScannerRequest,
         progress: ProgressHandler? = nil
     ) async throws -> CleanupScannerResponse {
@@ -83,7 +115,7 @@ final class ScannerServiceClient: @unchecked Sendable {
         }
     }
 
-    func scanDisk(
+    public func scanDisk(
         _ request: DiskScannerRequest,
         progress: ProgressHandler? = nil
     ) async throws -> DiskScannerResponse {
@@ -93,7 +125,17 @@ final class ScannerServiceClient: @unchecked Sendable {
         }
     }
 
-    func scanAgentWorkspace(
+    public func scanSystemData(
+        _ request: SystemDataScannerRequest,
+        progress: ProgressHandler? = nil
+    ) async throws -> SystemDataScannerResponse {
+        let requestData = try ScannerServiceCodec.encode(request)
+        return try await run(requestID: request.requestID, progress: progress) { proxy, reply in
+            proxy.scanSystemData(requestData, withReply: reply)
+        }
+    }
+
+    public func scanAgentWorkspace(
         _ request: AgentWorkspaceScannerRequest,
         progress: ProgressHandler? = nil
     ) async throws -> AgentWorkspaceScannerResponse {
@@ -141,7 +183,7 @@ final class ScannerServiceClient: @unchecked Sendable {
 
     private func perform<Response: Decodable & Sendable>(
         _ responseType: Response.Type,
-        connection: NSXPCConnection,
+        connection: ScannerServiceConnection,
         invoke: @escaping (CleanNestScannerXPCProtocol, @escaping (Data?, NSError?) -> Void) -> Void
     ) async throws -> Response {
         try await withCheckedThrowingContinuation { continuation in
@@ -159,7 +201,15 @@ final class ScannerServiceClient: @unchecked Sendable {
                 return
             }
 
+            // Bound only the service handshake. Long deep scans remain user-cancellable
+            // and are never cut off by an arbitrary whole-scan deadline.
+            let handshakeTask = Task {
+                try? await Task.sleep(nanoseconds: UInt64(max(0.001, handshakeTimeout) * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                gate.finish(.failure(ScannerServiceClientError.unavailable))
+            }
             proxy.protocolVersion { version in
+                handshakeTask.cancel()
                 guard version == CleanNestScannerService.protocolVersion else {
                     gate.finish(
                         .failure(
@@ -174,7 +224,7 @@ final class ScannerServiceClient: @unchecked Sendable {
                 invoke(proxy) { data, error in
                     if let error {
                         if error.domain == "com.zone.cleannest.scanner",
-                           error.code == 12 || error.code == 22 || error.code == 32 {
+                           [12, 22, 32, 42].contains(error.code) {
                             gate.finish(.failure(CancellationError()))
                         } else {
                             gate.finish(.failure(ScannerServiceClientError.remote(error.localizedDescription)))
@@ -192,9 +242,8 @@ final class ScannerServiceClient: @unchecked Sendable {
         }
     }
 
-    private func makeConnection() -> NSXPCConnection {
-        let newConnection = NSXPCConnection(serviceName: CleanNestScannerService.bundleIdentifier)
-        newConnection.remoteObjectInterface = NSXPCInterface(with: CleanNestScannerXPCProtocol.self)
+    private func makeConnection() -> ScannerServiceConnection {
+        let newConnection = connectionFactory()
         lock.lock()
         connection?.invalidate()
         connection = newConnection
@@ -203,7 +252,7 @@ final class ScannerServiceClient: @unchecked Sendable {
         return newConnection
     }
 
-    private func fetchProgress(_ requestID: String, connection: NSXPCConnection) async -> Data? {
+    private func fetchProgress(_ requestID: String, connection: ScannerServiceConnection) async -> Data? {
         await withCheckedContinuation { continuation in
             let gate = ScannerValueContinuationGate<Data?>(continuation)
             guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
@@ -218,7 +267,7 @@ final class ScannerServiceClient: @unchecked Sendable {
         }
     }
 
-    private func cancel(_ requestID: String, connection: NSXPCConnection) {
+    private func cancel(_ requestID: String, connection: ScannerServiceConnection) {
         guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in })
             as? CleanNestScannerXPCProtocol else {
             connection.invalidate()
@@ -232,7 +281,7 @@ final class ScannerServiceClient: @unchecked Sendable {
         }
     }
 
-    private func invalidate(_ candidate: NSXPCConnection) {
+    private func invalidate(_ candidate: ScannerServiceConnection) {
         lock.lock()
         if connection === candidate { connection = nil }
         lock.unlock()

@@ -17,7 +17,7 @@ if [[ ! -x "$executable" ]]; then
   print -u2 "UI regression: CleanNest executable not found: $executable"
   exit 66
 fi
-if pgrep -f "$executable" >/dev/null 2>&1; then
+if pgrep -f "^${executable}" >/dev/null 2>&1; then
   print -u2 "UI regression: quit the running build before snapshot capture"
   exit 1
 fi

@@ -1,8 +1,11 @@
 import AppKit
 import SwiftUI
+import CleanNestCore
 
 struct RootView: View {
     @EnvironmentObject private var store: AppStore
+    @State private var showingFeatureSearch = false
+    @State private var navigation = PageNavigationHistory(initial: SidebarItem.overview.rawValue)
 
     var body: some View {
         NavigationSplitView {
@@ -36,6 +39,30 @@ struct RootView: View {
         .tint(CNTheme.accent)
         .navigationSplitViewStyle(.balanced)
         .background(CNWindowChromeConfigurator())
+        .toolbar {
+            ToolbarItemGroup(placement: .navigation) {
+                Button {
+                    if let page = navigation.back() { store.selection = SidebarItem(rawValue: page) }
+                } label: { Label("返回", systemImage: "chevron.left") }
+                .disabled(!navigation.canGoBack).help("返回上一栏目")
+                .keyboardShortcut("[", modifiers: .command)
+                Button {
+                    if let page = navigation.forward() { store.selection = SidebarItem(rawValue: page) }
+                } label: { Label("前进", systemImage: "chevron.right") }
+                .disabled(!navigation.canGoForward).help("前进到下一栏目")
+                .keyboardShortcut("]", modifiers: .command)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button { showingFeatureSearch = true } label: {
+                    Label("查找功能", systemImage: "magnifyingglass")
+                }
+                .keyboardShortcut("k", modifiers: .command)
+                .help("查找功能（⌘K）")
+            }
+        }
+        .onAppear { navigation.visit((store.selection ?? .overview).rawValue) }
+        .onChange(of: store.selection) { _, value in navigation.visit((value ?? .overview).rawValue) }
+        .sheet(isPresented: $showingFeatureSearch) { FeatureSearchView().environmentObject(store) }
         .sheet(isPresented: $store.showingTechnicalDetail) {
             TechnicalDetailSheet(detail: store.lastTechnicalDetail)
         }
@@ -52,17 +79,17 @@ struct RootView: View {
 private struct SidebarView: View {
     @EnvironmentObject private var store: AppStore
     @State private var hoveredItem: SidebarItem?
-    @AppStorage("sidebar.workshopExpanded") private var workshopExpanded = false
 
     var body: some View {
         VStack(spacing: 0) {
             brand
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 17) {
+                VStack(alignment: .leading, spacing: 12) {
                     sidebarRow(.overview)
                     sidebarSection("空间", items: SidebarItem.spaceItems)
-                    workshopSection
+                    sidebarSection("智能工具", items: [.agentWorkspace, .models, .evolution])
+                    sidebarSection("系统", items: [.status, .maintenance])
 
                     VStack(spacing: 5) {
                         sidebarRow(.activity)
@@ -99,7 +126,7 @@ private struct SidebarView: View {
 
     private var brand: some View {
         HStack(spacing: 11) {
-            CNNestMark(size: 40)
+            CNNestMark(size: 34)
             VStack(alignment: .leading, spacing: 2) {
                 Text("CleanNest")
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
@@ -110,8 +137,8 @@ private struct SidebarView: View {
             Spacer()
         }
         .padding(.horizontal, 15)
-        .padding(.top, 16)
-        .padding(.bottom, 13)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
     }
 
     private func sidebarSection(_ title: String, items: [SidebarItem]) -> some View {
@@ -123,43 +150,6 @@ private struct SidebarView: View {
                 .padding(.leading, 11)
             VStack(spacing: 5) {
                 ForEach(items) { sidebarRow($0) }
-            }
-        }
-    }
-
-    /// 低频工具默认折叠成一组：日常只有"总览/清理/卸载/磁盘"四个入口，
-    /// 选中组内页面时自动展开，展开状态记忆在本地。
-    private var workshopSection: some View {
-        let containsSelection = SidebarItem.workshopItems.contains(store.selection ?? .overview)
-        let expanded = workshopExpanded || containsSelection
-        return VStack(alignment: .leading, spacing: 6) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) { workshopExpanded.toggle() }
-            } label: {
-                HStack {
-                    Text(CNL10n.string("高级工具").uppercased())
-                        .font(.system(size: 10, weight: .semibold))
-                        .tracking(0.8)
-                        .foregroundStyle(.tertiary)
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
-                }
-                .padding(.leading, 11)
-                .padding(.trailing, 8)
-                .padding(.vertical, 4)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(CNL10n.string("高级工具"))
-            .accessibilityValue(expanded ? CNL10n.string("已展开") : CNL10n.string("已折叠"))
-            if expanded {
-                VStack(spacing: 5) {
-                    ForEach(SidebarItem.workshopItems) { sidebarRow($0) }
-                }
-                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
@@ -184,7 +174,7 @@ private struct SidebarView: View {
                 Spacer()
             }
             .padding(.horizontal, 8)
-            .frame(height: 39)
+            .frame(height: 34)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -245,12 +235,12 @@ private struct SidebarView: View {
 
                 HStack(spacing: 8) {
                     Circle()
-                        .fill(store.engine == nil ? CNTheme.warning : CNTheme.success)
+                        .fill(CNTheme.success)
                         .frame(width: 7, height: 7)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(store.engine == nil ? "引擎未连接" : "本地引擎就绪")
+                        Text(store.builtInEngineStatusText)
                             .font(.caption.weight(.medium))
-                        Text(store.engine?.version ?? "点击设置")
+                        Text(store.builtInEngineDetailText)
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
@@ -285,7 +275,7 @@ private struct SidebarView: View {
             .frame(height: 0.7)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(AppMetadata.displayVersion)，\(store.engine == nil ? "引擎未连接" : "本地引擎就绪")，\(store.engine?.version ?? "点击设置")")
+        .accessibilityLabel(CNL10n.format("%@，%@，%@", String(describing: AppMetadata.displayVersion), String(describing: store.builtInEngineStatusText), String(describing: store.builtInEngineDetailText)))
     }
 }
 

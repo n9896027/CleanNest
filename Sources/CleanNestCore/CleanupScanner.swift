@@ -4,15 +4,18 @@ public struct CleanupRuleScanResult: Sendable {
     public let candidates: [CleanupCandidate]
     public let insights: CleanupScanInsights
     public let roots: [CleanupScanRootEvidence]
+    public let issues: [CleanupScanIssue]
 
     public init(
         candidates: [CleanupCandidate],
         insights: CleanupScanInsights,
-        roots: [CleanupScanRootEvidence]
+        roots: [CleanupScanRootEvidence],
+        issues: [CleanupScanIssue] = []
     ) {
         self.candidates = candidates
         self.insights = insights
         self.roots = roots
+        self.issues = issues
     }
 }
 
@@ -130,6 +133,11 @@ public struct CleanupScanner: Sendable {
             var skippedUnreadableItems = 0
             var skippedUnsafeRoots = 0
             var reachedFileLimit = false
+            var issues: [CleanupScanIssue] = []
+            func recordIssue(_ url: URL, _ reason: CleanupScanSkipReason) {
+                guard issues.count < CleanupScanIssue.maximumPerScanner else { return }
+                issues.append(CleanupScanIssue(url: url, reason: reason))
+            }
 
             ruleLoop: for (rule, evidence) in zip(rules, roots) {
                 guard !Task.isCancelled else { break ruleLoop }
@@ -138,15 +146,20 @@ public struct CleanupScanner: Sendable {
                     break
                 case .unsafe:
                     skippedUnsafeRoots += 1
+                    recordIssue(rule.root, .unsafeRoot)
                     continue
                 case .unreadable:
                     skippedUnreadableItems += 1
+                    recordIssue(rule.root, .unreadable)
                     continue
                 case .missing:
                     continue
                 }
                 let children = FileTree.directChildren(of: rule.root)
-                if children.count > rule.maximumChildren { reachedFileLimit = true }
+                if children.count > rule.maximumChildren {
+                    reachedFileLimit = true
+                    recordIssue(rule.root, .fileLimit)
+                }
                 for child in children.prefix(rule.maximumChildren) {
                     guard !Task.isCancelled else { break ruleLoop }
                     examinedItemCount += 1
@@ -157,14 +170,17 @@ public struct CleanupScanner: Sendable {
                         .isDirectoryKey
                     ]) else {
                         skippedUnreadableItems += 1
+                        recordIssue(child, .unreadable)
                         continue
                     }
                     if values.isSymbolicLink == true {
                         skippedSymbolicLinks += 1
+                        recordIssue(child, .symbolicLink)
                         continue
                     }
                     if values.isPackage == true {
                         skippedPackages += 1
+                        recordIssue(child, .packageBoundary)
                         continue
                     }
                     if let extensions = rule.allowedExtensions,
@@ -173,16 +189,22 @@ public struct CleanupScanner: Sendable {
                     }
                     let modified = values.contentModificationDate
                     // 修改时间缺失时失败关闭：无法确认年龄的文件不进入候选。
-                    guard let modified,
-                          now.timeIntervalSince(modified) >= Double(rule.minimumAgeDays) * day else {
-                        continue
-                    }
+                    guard let modified else { continue }
                     let isNpmContentCache = child.path.hasSuffix("/.npm/_cacache/content-v2")
                     let metrics = FileTree.metrics(
                         of: child,
                         includeLatestModificationDate: isNpmContentCache
                     )
                     guard metrics.allocatedBytes > 0 else { continue }
+                    // Age gate and displayed date must use the same clock:
+                    // npm's content-v2 directory mtime can be months old while
+                    // its files were written yesterday. Use the newest child.
+                    let effectiveModified = isNpmContentCache
+                        ? (metrics.latestModificationDate ?? modified)
+                        : modified
+                    guard now.timeIntervalSince(effectiveModified) >= Double(rule.minimumAgeDays) * day else {
+                        continue
+                    }
                     let name = isNpmContentCache
                         ? Self.npmCacheDisplayName
                         : child.deletingPathExtension().lastPathComponent
@@ -192,9 +214,7 @@ public struct CleanupScanner: Sendable {
                             url: child,
                             kind: rule.kind,
                             allocatedBytes: metrics.allocatedBytes,
-                            modifiedAt: isNpmContentCache
-                                ? (metrics.latestModificationDate ?? modified)
-                                : modified,
+                            modifiedAt: effectiveModified,
                             isRecommended: rule.recommended,
                             detail: rule.detail
                         )
@@ -221,7 +241,8 @@ public struct CleanupScanner: Sendable {
                     skippedUnsafeRootCount: skippedUnsafeRoots,
                     reachedFileLimit: reachedFileLimit
                 ),
-                roots: roots
+                roots: roots,
+                issues: issues
             )
         }
         return await withTaskCancellationHandler {

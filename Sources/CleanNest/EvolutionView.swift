@@ -20,15 +20,15 @@ struct EvolutionView: View {
             VStack(alignment: .leading, spacing: 22) {
                 PageHeader(
                     title: "清理习惯",
-                    subtitle: "把你的明确判断变成下次更清楚的排序；不会擅自替你删除文件。"
+                    subtitle: "记住你想保留什么，下次少做重复判断。"
                 ) {
                     StatusPill(text: "仅存本机", symbol: "lock.shield", style: .success)
                 }
 
                 if hasMemory {
                     learnedWorkspace
+                    ruleReview
                     memoryDetails
-                    resetControl
                 } else {
                     firstLearningWorkspace
                 }
@@ -51,21 +51,15 @@ struct EvolutionView: View {
 
     private var firstLearningWorkspace: some View {
         VStack(alignment: .leading, spacing: 24) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 24) {
-                    firstLearningNarrative
-                    Spacer(minLength: 18)
-                    LearningOrbitGraphic()
-                }
-                VStack(alignment: .leading, spacing: 22) {
-                    LearningOrbitGraphic()
-                        .frame(maxWidth: .infinity)
-                    firstLearningNarrative
-                }
-            }
+            firstLearningNarrative
 
-            Divider().opacity(0.7)
-            learningFlow
+            CNDetailSection(
+                title: "它会怎样影响下一次扫描",
+                summary: "只调整排序，需要你明确启用",
+                symbol: "arrow.up.arrow.down"
+            ) {
+                learningFlow
+            }
 
             HStack(spacing: 7) {
                 Image(systemName: "lock.shield")
@@ -110,25 +104,12 @@ struct EvolutionView: View {
 
     private var learnedWorkspace: some View {
         VStack(alignment: .leading, spacing: 22) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 28) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("习惯只有你启用后才生效")
-                            .font(.system(size: 25, weight: .semibold, design: .rounded))
-                        Text("它会根据你的选择攒出习惯建议，启用、暂停、撤销都由你说了算；习惯只改变清理列表的先后顺序。")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 18)
-                    LearningOrbitGraphic(compact: true)
-                }
-                VStack(alignment: .leading, spacing: 18) {
-                    Text("习惯只有你启用后才生效")
-                        .font(.system(size: 25, weight: .semibold, design: .rounded))
-                    Text("它会根据你的选择攒出习惯建议，启用、暂停、撤销都由你说了算；习惯只改变清理列表的先后顺序。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("先处理待确认的习惯")
+                    .font(.system(size: 25, weight: .semibold, design: .rounded))
+                Text("你可以启用、先试 7 天、暂停或撤销。所有习惯只改变下次清理列表的排序，不会替你勾选或删除文件。")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
 
             statStrip
@@ -170,7 +151,9 @@ struct EvolutionView: View {
             Text(value)
                 .font(.system(size: 18, weight: .semibold, design: .rounded))
                 .monospacedMetric()
-            Text(CNL10n.string(detail)).font(.caption2).foregroundStyle(.tertiary)
+            Text(CNL10n.string(detail))
+                .font(.caption2)
+                .foregroundStyle(Color.secondary.opacity(0.78))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -218,19 +201,40 @@ struct EvolutionView: View {
     }
 
     private var memoryDetails: some View {
-        VStack(spacing: 16) {
-            ruleReview
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 16) {
-                    cleanupMemory.frame(maxWidth: .infinity)
-                    modelMemory.frame(maxWidth: .infinity)
-                }
-                VStack(spacing: 16) {
-                    cleanupMemory
-                    modelMemory
-                }
+        VStack(alignment: .leading, spacing: 12) {
+            CNDetailSection(
+                title: "正在生效的习惯",
+                summary: CNL10n.format("%@ 条启用 · %@ 条试用", String(describing: store.evolutionMemory.enabledRuleCount), String(describing: store.evolutionMemory.trialRuleCount)),
+                symbol: "checkmark.circle"
+            ) {
+                cleanupMemory
             }
-            recentLearning
+
+            CNDetailSection(
+                title: "模型表现",
+                summary: store.evolutionMemory.modelFeedbackCount == 0
+                    ? "还没有评价"
+                    : CNL10n.format("%@ 条本机评价", String(describing: store.evolutionMemory.modelFeedbackCount)),
+                symbol: "brain.head.profile"
+            ) {
+                modelMemory
+            }
+
+            CNDetailSection(
+                title: "最近变更记录",
+                summary: store.evolutionMemory.events.isEmpty ? "还没有记录" : CNL10n.format("最近 %@ 条", String(describing: min(10, store.evolutionMemory.events.count))),
+                symbol: "clock.arrow.circlepath"
+            ) {
+                recentLearning
+            }
+
+            CNDetailSection(
+                title: "管理学习记录",
+                summary: "清空不会影响文件、扫描结果或本机模型",
+                symbol: "slider.horizontal.3"
+            ) {
+                resetControl
+            }
         }
     }
 
@@ -255,7 +259,7 @@ struct EvolutionView: View {
 
                 if store.evolutionMemory.expiredRuleCount() > 0 {
                     InlineBanner(
-                        title: "有 \(store.evolutionMemory.expiredRuleCount()) 条习惯的试用期到了",
+                        title: CNL10n.format("有 %@ 条习惯的试用期到了", String(describing: store.evolutionMemory.expiredRuleCount())),
                         detail: "它们已自动暂停，不再影响排序；可以一次清理这些过期记录。",
                         kind: .warning,
                         actionTitle: "清掉到期习惯"
@@ -280,7 +284,7 @@ struct EvolutionView: View {
                         }
                     }
                     if visibleClusters.count < clusters.count {
-                        Button("再显示 \(min(100, clusters.count - visibleClusters.count)) 组") {
+                        Button(CNL10n.format("再显示 %d 组", min(100, clusters.count - visibleClusters.count))) {
                             visibleRuleLimit += 100
                         }
                         .buttonStyle(.borderless)
@@ -303,7 +307,7 @@ struct EvolutionView: View {
                 } else if impact.matchedCount == 0 {
                     Text("当前扫描结果里没有命中已启用习惯的项目，顺序不变。")
                 } else {
-                    Text("命中 \(impact.matchedCount) 项，其中 \(impact.movedCount) 项位置发生变化：\(impact.preferCleanupCount) 项前移复核，\(impact.preferKeepCount) 项后移保留。")
+                    Text(CNL10n.format("命中 %d 项，其中 %d 项位置发生变化：%d 项前移复核，%d 项后移保留。", impact.matchedCount, impact.movedCount, impact.preferCleanupCount, impact.preferKeepCount))
                 }
                 Text("习惯从不替你勾选：已选数量始终是 0 项被自动改变。")
                     .foregroundStyle(CNTheme.mint)
@@ -316,7 +320,7 @@ struct EvolutionView: View {
         .padding(12)
         .background(CNTheme.cyan.opacity(0.055), in: RoundedRectangle(cornerRadius: 13))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("习惯排序影响，命中 \(impact.matchedCount) 项，移动 \(impact.movedCount) 项，没有自动改变选择")
+        .accessibilityLabel(CNL10n.format("习惯排序影响，命中 %d 项，移动 %d 项，没有自动改变选择", impact.matchedCount, impact.movedCount))
     }
 
     private func ruleClusterRow(_ cluster: CleanupRuleCluster) -> some View {
@@ -333,7 +337,7 @@ struct EvolutionView: View {
         }
         .padding(.vertical, 11)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(cluster.kind.rawValue)，\(cluster.locationLevel.displayName)，\(cluster.riskLevel.displayName)，\(cluster.ageBand.displayName)，共 \(cluster.proposalCount) 条习惯")
+        .accessibilityLabel(CNL10n.format("%@，%@，%@，%@，共 %d 条习惯", cluster.kind.rawValue, cluster.locationLevel.displayName, cluster.riskLevel.displayName, cluster.ageBand.displayName, cluster.proposalCount))
     }
 
     private func ruleClusterDescription(_ cluster: CleanupRuleCluster) -> some View {
@@ -345,7 +349,7 @@ struct EvolutionView: View {
             )
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 7) {
-                    Text("\(cluster.kind.rawValue) · \(cluster.locationLevel.displayName)")
+                    Text(CNL10n.format("%@ · %@", cluster.kind.rawValue, cluster.locationLevel.displayName))
                         .font(.subheadline.weight(.semibold))
                     StatusPill(
                         text: cluster.riskLevel.displayName,
@@ -358,7 +362,7 @@ struct EvolutionView: View {
                         style: cluster.suggestedPreference == .preferKeep ? .warning : .success
                     )
                 }
-                Text("\(cluster.ageBand.displayName) · \(cluster.proposalCount) 个文件 · 你选择过 \(cluster.evidenceCount) 次")
+                Text(CNL10n.format("%@ · %d 个文件 · 你选择过 %d 次", cluster.ageBand.displayName, cluster.proposalCount, cluster.evidenceCount))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -366,7 +370,7 @@ struct EvolutionView: View {
                     .font(.caption2)
                     .foregroundStyle(cluster.expiredCount > 0 ? CNTheme.warning : Color.secondary.opacity(0.72))
                 if !cluster.exampleNames.isEmpty {
-                    Text("示例：\(cluster.exampleNames.joined(separator: "、"))")
+                    Text(CNL10n.format("示例：%@", cluster.exampleNames.joined(separator: "、")))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
@@ -393,11 +397,11 @@ struct EvolutionView: View {
 
     private func ruleClusterStateText(_ cluster: CleanupRuleCluster) -> String {
         var parts: [String] = []
-        if cluster.pendingCount > 0 { parts.append("待确认 \(cluster.pendingCount)") }
-        if cluster.enabledCount > 0 { parts.append("已启用 \(cluster.enabledCount)") }
-        if cluster.trialCount > 0 { parts.append("试用中 \(cluster.trialCount)") }
-        if cluster.pausedCount > 0 { parts.append("已暂停 \(cluster.pausedCount)") }
-        if cluster.expiredCount > 0 { parts.append("已到期 \(cluster.expiredCount)") }
+        if cluster.pendingCount > 0 { parts.append(CNL10n.format("待确认 %@", String(describing: cluster.pendingCount))) }
+        if cluster.enabledCount > 0 { parts.append(CNL10n.format("已启用 %@", String(describing: cluster.enabledCount))) }
+        if cluster.trialCount > 0 { parts.append(CNL10n.format("试用中 %@", String(describing: cluster.trialCount))) }
+        if cluster.pausedCount > 0 { parts.append(CNL10n.format("已暂停 %@", String(describing: cluster.pausedCount))) }
+        if cluster.expiredCount > 0 { parts.append(CNL10n.format("已到期 %@", String(describing: cluster.expiredCount))) }
         return parts.joined(separator: " · ")
     }
 
@@ -446,7 +450,7 @@ struct EvolutionView: View {
                             Image(systemName: "cpu").foregroundStyle(CNTheme.accent).frame(width: 26)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(signal.displayName).font(.subheadline.weight(.medium)).lineLimit(1)
-                                Text("有帮助 \(signal.helpfulCount) · 不准确 \(signal.unhelpfulCount)")
+                                Text(CNL10n.format("有帮助 %d · 不准确 %d", signal.helpfulCount, signal.unhelpfulCount))
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
@@ -465,7 +469,7 @@ struct EvolutionView: View {
                     }
                 }
                 if visibleSignals.count < signals.count {
-                    Button("再显示 \(min(50, signals.count - visibleSignals.count)) 个模型") {
+                    Button(CNL10n.format("再显示 %d 个模型", min(50, signals.count - visibleSignals.count))) {
                         visibleModelLimit += 50
                     }
                     .buttonStyle(.borderless)
@@ -484,8 +488,8 @@ struct EvolutionView: View {
                             .foregroundStyle(eventTint(event.kind))
                             .frame(width: 26)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(event.title).font(.subheadline.weight(.medium))
-                            Text(event.detail).font(.caption).foregroundStyle(.secondary)
+                            Text(CNL10n.string(event.title)).font(.subheadline.weight(.medium))
+                            Text(CNL10n.string(event.detail)).font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Text(event.date, style: .relative).font(.caption2).foregroundStyle(.tertiary)

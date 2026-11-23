@@ -840,121 +840,75 @@ func runV05BoundaryTests() throws {
 }
 
 do {
-    let candidates = EngineLocator.candidates(customPath: "/tmp/custom-mo")
-    try check(candidates.first?.path == "/tmp/custom-mo", "自定义引擎路径没有最高优先级")
-
-    let statusJSON = """
-    {
-      "host": "MacBook-Pro",
-      "procs": 1280,
-      "health_score": 92,
-      "cpu": {"usage": 45.2, "logical_cpu": 8},
-      "memory": {
-        "total": 24000000000,
-        "used": 14000000000,
-        "available": 10000000000,
-        "cached": 4200000000,
-        "used_percent": 58.4,
-        "swap_used": 640000000,
-        "swap_total": 4000000000,
-        "pressure": "normal"
-      },
-      "disks": [{"used_percent": 67.2, "free": 156000000000}],
-      "batteries": [{
-        "percent": 80,
-        "status": "AC",
-        "health": "Good",
-        "cycle_count": 61,
-        "capacity": 100
-      }],
-      "battery": {"level": 12, "status": "discharging"},
-      "thermal": {"cpu_temp": 0, "gpu_temp": 0, "battery_temp": 30.4},
-      "uptime": "3d 12h"
-    }
-    """
-    let snapshot = try MoleJSONDecoder.systemSnapshot(from: Data(statusJSON.utf8))
-    try check(snapshot.host == "MacBook-Pro", "状态 JSON 主机名解析失败")
-    try check(snapshot.healthScore == 92, "状态 JSON 健康分解析失败")
-    try check(snapshot.cpuUsage == 45.2, "状态 JSON CPU 解析失败")
-    try check(snapshot.memoryUsedPercent == 58.4, "状态 JSON 内存解析失败")
-    try check(snapshot.memoryAvailableBytes == 10_000_000_000, "状态 JSON 可用内存解析失败")
-    try check(snapshot.memoryCachedBytes == 4_200_000_000, "状态 JSON 缓存内存解析失败")
-    try check(snapshot.memorySwapUsedBytes == 640_000_000, "状态 JSON 交换空间解析失败")
-    try check(snapshot.memorySwapTotalBytes == 4_000_000_000, "状态 JSON 交换空间总量解析失败")
-    try check(snapshot.memoryPressureLevel == .normal, "状态 JSON 内存压力解析失败")
-    try check(snapshot.processCount == 1_280, "状态 JSON 进程数解析失败")
-    try check(snapshot.diskFreeBytes == 156_000_000_000, "状态 JSON 磁盘解析失败")
-    try check(snapshot.batteryLevel == 80, "状态 JSON batteries 数组电量解析失败")
-    try check(
-        snapshot.batteryStatus == "已连接电源 · 健康良好 · 最大容量 100% · 61 次循环",
-        "状态 JSON 电池状态中文解释失败"
+    let sampledAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let nativeSample = NativeMonitorSample(
+        sampledAt: sampledAt,
+        cpuUsage: 45.2,
+        memoryUsedPercent: 58.4,
+        memoryUsedBytes: 14_000_000_000,
+        memoryTotalBytes: 24_000_000_000,
+        memoryPressureLevel: .unknown,
+        diskUsedPercent: 67.2,
+        diskFreeBytes: 156_000_000_000,
+        networkDownloadBytesPerSecond: nil,
+        networkUploadBytesPerSecond: nil,
+        networkInterfaceName: nil,
+        gpuUsage: nil,
+        gpuRendererUsage: nil,
+        gpuTilerUsage: nil,
+        temperatureCelsius: 72.5,
+        temperatureSource: "CPU 温度",
+        batteryTemperatureCelsius: 30.4,
+        batteryTemperatureSource: "电池温度",
+        fanRPM: nil,
+        fanCount: nil,
+        batteryLevel: nil,
+        batteryStatus: nil
     )
-    try check(snapshot.temperatureCelsius == 30.4, "状态 JSON 电池温度解析失败")
-    try check(snapshot.temperatureSource == "电池温度", "状态 JSON 温度来源解析失败")
-
-    let legacyBatteryJSON = """
-    {
-      "batteries": [],
-      "battery": {"level": 42, "status": "charging", "temperature": 31.5}
-    }
-    """
-    let legacyBattery = try MoleJSONDecoder.systemSnapshot(from: Data(legacyBatteryJSON.utf8))
-    try check(legacyBattery.batteryLevel == 42, "空 batteries 数组没有回退旧 battery 字段")
-    try check(legacyBattery.batteryStatus == "正在充电", "旧 battery 状态没有中文化")
-    try check(legacyBattery.temperatureCelsius == 31.5, "旧 battery 温度解析失败")
-    try check(legacyBattery.temperatureSource == "电池温度", "旧 battery 温度来源解析失败")
-
-    let legacyPowerJSON = """
-    {
-      "power": {"percent": 73, "state": "not charging", "health": "Check Battery"},
-      "temperature": {"celsius": 44.5}
-    }
-    """
-    let legacyPower = try MoleJSONDecoder.systemSnapshot(from: Data(legacyPowerJSON.utf8))
-    try check(legacyPower.batteryLevel == 73, "旧 power 电量解析失败")
-    try check(
-        legacyPower.batteryStatus == "已连接电源，暂未充电 · 建议检修",
-        "旧 power 状态或健康度中文化失败"
+    let battery = BatteryProbeResult(
+        availability: .present,
+        level: 80,
+        status: "已连接电源",
+        detail: "原生电源接口样本"
     )
-    try check(legacyPower.temperatureCelsius == 44.5, "旧 temperature.celsius 解析失败")
-    try check(legacyPower.temperatureSource == "设备温度", "旧 temperature 来源解析失败")
+    let memory = SystemMemoryProbeSnapshot(
+        compressedBytes: 2_300_000_000,
+        pressureLevel: .normal
+    )
+    let snapshot = NativeSystemSnapshotBuilder.makeSnapshot(
+        monitor: nativeSample,
+        memoryProbe: memory,
+        batteryProbe: battery,
+        processCount: 1_280,
+        host: "MacBook-Pro",
+        logicalCPUCount: 8,
+        uptimeSeconds: 3 * 86_400 + 12 * 3_600
+    )
+    try check(snapshot.host == "MacBook-Pro", "原生状态主机名映射失败")
+    try check(snapshot.healthScore == nil, "没有依据时不应生成健康分")
+    try check(snapshot.cpuUsage == 45.2, "原生状态 CPU 映射失败")
+    try check(snapshot.logicalCPUCount == 8, "原生状态逻辑核心数映射失败")
+    try check(snapshot.memoryUsedPercent == 58.4, "原生状态内存映射失败")
+    try check(snapshot.memoryAvailableBytes == 10_000_000_000, "原生状态可用内存计算失败")
+    try check(snapshot.memoryCompressedBytes == 2_300_000_000, "原生压缩内存映射失败")
+    try check(snapshot.memoryCachedBytes == nil, "无原生证据时不应生成缓存内存")
+    try check(snapshot.memorySwapUsedBytes == nil, "无原生证据时不应生成交换空间")
+    try check(snapshot.memoryPressureLevel == .normal, "原生内存压力映射失败")
+    try check(snapshot.processCount == 1_280, "原生进程数映射失败")
+    try check(snapshot.diskFreeBytes == 156_000_000_000, "原生磁盘映射失败")
+    try check(snapshot.batteryLevel == 80, "原生电源回退映射失败")
+    try check(snapshot.batteryStatus == "已连接电源", "原生电源状态回退失败")
+    try check(snapshot.temperatureCelsius == 72.5, "设备温度没有优先使用")
+    try check(snapshot.temperatureSource == "CPU 温度", "设备温度来源映射失败")
+    try check(snapshot.uptime == "3 天 12 小时", "原生运行时间格式化失败")
+    try check(snapshot.sampledAt == sampledAt, "原生采样时间映射失败")
+    try check(NativeSystemSnapshotBuilder.formatUptime(59) == "0 分钟", "短时间运行格式错误")
+    try check(NativeSystemSnapshotBuilder.formatUptime(-1) == nil, "负运行时间不应显示")
+    try check(NativeSystemSnapshotBuilder.formatUptime(.infinity) == nil, "无效运行时间不应显示")
 
-    let invalidTemperatureJSON = """
-    {"thermal": {"cpu_temp": 0, "gpu_temp": -2, "battery_temp": 150}}
-    """
-    let invalidTemperature = try MoleJSONDecoder.systemSnapshot(from: Data(invalidTemperatureJSON.utf8))
-    try check(invalidTemperature.temperatureCelsius == nil, "无效温度不应显示")
-    try check(invalidTemperature.temperatureSource == nil, "无效温度不应声明来源")
-
-    let cpuTemperatureJSON = """
-    {"thermal": {"cpu_temp": 72.5, "gpu_temp": 61, "battery_temp": 30.2}}
-    """
-    let cpuTemperature = try MoleJSONDecoder.systemSnapshot(from: Data(cpuTemperatureJSON.utf8))
-    try check(cpuTemperature.temperatureCelsius == 72.5, "有效 CPU 温度没有优先使用")
-    try check(cpuTemperature.temperatureSource == "CPU 温度", "CPU 温度来源解析失败")
     let memoryAnalysis = MemoryAnalyzer.analyze(snapshot: snapshot, processes: [])
-    try check(memoryAnalysis.level == .normal, "内存分析没有采用压力等级")
+    try check(memoryAnalysis.level == .normal, "内存分析没有采用原生压力等级")
     try check(memoryAnalysis.detail.contains("无需为了降低"), "正常内存中文解释不清晰")
-    try check(memoryAnalysis.notes.contains { $0.contains("交换空间") }, "内存分析没有解释交换空间")
-
-    let diskJSON = """
-    {
-      "path": "/tmp/demo",
-      "entries": [
-        {"name":"Small", "path":"/tmp/demo/small", "size":10, "is_dir":true},
-        {"name":"Large", "path":"/tmp/demo/large", "size":90, "is_dir":true}
-      ],
-      "large_files": [],
-      "total_size": 100,
-      "total_files": 2
-    }
-    """
-    let report = try MoleJSONDecoder.diskReport(
-        from: Data(diskJSON.utf8),
-        fallbackRoot: URL(fileURLWithPath: "/tmp")
-    )
-    try check(report.entries.map(\.name) == ["Large", "Small"], "磁盘项目没有按大小排序")
-    try check(report.totalBytes == 100, "磁盘总量解析失败")
 
     let localAIEndpoint = try LocalAIEndpoint(rawValue: "http://127.0.0.1:8080/v1")
     try check(localAIEndpoint.port == 8080, "本机 AI 回环地址解析失败")

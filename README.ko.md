@@ -29,7 +29,7 @@ CleanNest는 기존 정리 도구에 AI 문구만 덧붙인 제품이 아닙니�
 | 사용량, 변화, 활성 보호, 이상 징후 | 플랫폼, 짧은 ID, 리스너, 클라이언트, launchd | CPU, 메모리, 네트워크, GPU, 온도, 팬, 배터리 | 미리보기, 신원 재검증, 휴지통, 복구 기록 |
 
 > [!IMPORTANT]
-> CleanNest는 현재 소스 코드로만 배포됩니다. Developer ID로 서명되고 Apple 공증을 받은 공식 다운로드는 아직 없습니다. CI 빌드는 프로젝트 검증용이며, 신뢰할 수 있는 공개 배포 바이너리가 아닙니다.
+> CleanNest는 이제 Developer ID 서명, Apple 공증 및 티켓 스테이플링을 갖춘 Universal 2 PKG를 로컬에서 빌드할 수 있습니다. 실제 공개 다운로드는 [Releases](https://github.com/n9896027/CleanNest/releases)에서 확인하세요. CI ad-hoc 산출물은 검증 전용이며 공식 설치 파일이 아닙니다.
 
 ## 단순한 디스크 정리 도구가 아닙니다
 
@@ -43,7 +43,7 @@ CleanNest는 기존 정리 도구에 AI 문구만 덧붙인 제품이 아닙니�
     <td width="50%">
       <img src="docs/images/readme/local-model-runtime.png" alt="서비스, 모델 짧은 ID, 클라이언트와 관리 작업을 보여 주는 로컬 모델 런타임 센터 데모">
       <br><strong>로컬 모델 런타임 센터</strong><br>
-      <sub>oMLX, MLX-LM, Ollama, LM Studio, llama.cpp/OpenAI-compatible 서비스를 찾고 포트, 모델 짧은 ID, TCP 클라이언트와 자동 재시작 원인을 설명합니다.</sub>
+      <sub>oMLX, MLX-LM, MLX Serve, Ollama, LM Studio, llama.cpp/OpenAI-compatible 서비스를 찾고 포트, 모델 짧은 ID, TCP 클라이언트와 자동 재시작 원인을 설명합니다.</sub>
     </td>
   </tr>
   <tr>
@@ -92,7 +92,7 @@ CleanNest는 기존 정리 도구에 AI 문구만 덧붙인 제품이 아닙니�
 - **감사 가능한 로컬 학습**: 명시적 선택이나 성공한 정리는 먼저 검토 대기 규칙 제안이 됩니다. 사용자가 활성화한 뒤에도 일시 정지, 재활성화, 철회할 수 있습니다.
 - **모델 워크벤치**: 파일 메타데이터가 없는 최소 요청으로 상태 지연, 첫 출력, 전체 시간, 실제 API 모델 짧은 이름과 메모리 여유를 확인합니다.
 - **데이터 제어**: 활동 기록은 JSON으로 내보내거나 별도로 지울 수 있습니다. 안전 기본값 복원은 학습, 인덱스, 지표 기록이나 macOS 권한을 임의로 삭제하지 않습니다.
-- **Mole 연동**: Apple Silicon 또는 Intel Homebrew로 설치된 `mo`를 찾고, 앱 안에서 Mole을 설치하거나 업데이트할 수 있습니다.
+- **내장 네이티브 엔진**: 정리, 디스크, 시스템 데이터, Agent 및 시스템 상태 기능에 Homebrew나 추가 정리 엔진이 필요하지 않습니다.
 - **업데이트 확인**: 앱 메뉴나 정보 화면에서 GitHub의 최신 정식 Release를 수동으로 확인합니다. 버전 비교와 검증된 저장소 페이지 열기만 수행하며 자동 다운로드나 설치는 하지 않습니다.
 - **네이티브 macOS 경험**: SwiftUI/AppKit 인터페이스, 라이트/다크 모드, 권한 복구 안내, 활동 기록, 안전한 데모 모드를 제공합니다.
 - **읽기 전용 MCP**: 앱에 포함된 stdio 프로세스로 범위가 제한되고 비식별화된 로컬 근거를 제공합니다. HTTP, 삭제, 프로세스 제어, 설정 변경 도구는 없습니다.
@@ -104,7 +104,6 @@ CleanNest는 기존 정리 도구에 AI 문구만 덧붙인 제품이 아닙니�
 
 - macOS 14 Sonoma 이상
 - Xcode Command Line Tools(소스 빌드 시에만 필요)
-- Mole CLI(선택 사항, 앱 내부의 Homebrew 절차로 설치 가능)
 - Apple Silicon 및 `mlx-lm`(선택형 로컬 AI에만 필요)
 
 소스에서 빌드:
@@ -116,9 +115,9 @@ cd CleanNest
 open build/CleanNest.app
 ```
 
-소스에서 한 번 빌드한 뒤에는 일반 스캔, 분석, 정리, 유지 관리와 Mole 설치를 그래픽 앱 안에서 수행할 수 있습니다.
+소스에서 한 번 빌드한 뒤에는 추가 엔진 없이 일반 스캔, 분석, 정리와 유지 관리를 그래픽 앱 안에서 수행할 수 있습니다.
 
-Developer ID 서명과 Apple 공증을 마친 공식 설치 파일은 아직 없습니다. 관리자는 SBOM, 체크섬, 출처 증명이 포함된 Universal 2 CI 검증 산출물을 수동 생성할 수 있지만 ad-hoc 서명이며 Release를 자동 게시하지 않으므로 신뢰된 일반 사용자용 설치 파일이 아닙니다.
+공식 PKG는 Developer ID Application / Installer 서명, Apple 공증 및 티켓 스테이플링을 사용하며, 관리자는 `scripts/build-installer.sh`로 Universal 2 PKG를 빌드할 수 있습니다. 공개 다운로드는 Releases에서 확인하고 버전, SHA-256 및 알려진 제한 사항을 대조하세요. CI ad-hoc 산출물은 검증 전용입니다. 이전 자체 서명 복사본에서 업그레이드한 후 권한이 무효화되면 현재 `/Applications/CleanNest.app`을 다시 승인하세요.
 
 ## 교체 가능한 온디바이스 MLX 모델(선택 사항)
 
@@ -140,7 +139,7 @@ CleanNest는 로컬 `mlx_lm.server`에 연결해 정리 후보와 디스크 디�
 - 네이티브 정리는 검증된 하위 경로만 허용하고 심볼릭 링크를 거부합니다.
 - 파일은 기본적으로 macOS 휴지통으로 이동하며 되돌릴 수 없는 `rm -rf` 정리 경로를 사용하지 않습니다.
 - 시스템 수준 앱 제거에 관리자 권한이 필요하면 현재 버전은 그 제한을 명확히 표시하며 권한을 우회하지 않습니다.
-- 위험도가 높은 Mole 대화형 명령을 키보드 입력 시뮬레이션으로 자동 승인하지 않습니다.
+- 위험도가 높은 대화형 명령을 키보드 입력 시뮬레이션으로 자동 승인하지 않습니다.
 - 각 Pull Request에서 핵심 테스트, 전체 App Bundle 빌드, 아키텍처 확인, 종속성 검토, CodeQL을 실행합니다.
 - GitHub Actions는 최소 권한과 변경 불가능한 Action 참조를 사용하며 Dependabot이 종속성과 Action 업데이트를 확인합니다.
 
@@ -154,18 +153,18 @@ CleanNest는 로컬 `mlx_lm.server`에 연결해 정리 후보와 디스크 디�
 | --- | --- |
 | [권한](docs/PERMISSIONS.md) | 전체 디스크 접근 권한, 폴더 승인, 코드 신원과 macOS 권한의 관계 |
 | [로컬 AI](docs/LOCAL_AI.md) | MLX 모델 선택·전환, 전송 메타데이터, 안전 경계 |
-| [문제 해결](docs/TROUBLESHOOTING.md) | Mole, 권한, AI, 빌드, 프로세스, 배터리 상태 문제 |
+| [문제 해결](docs/TROUBLESHOOTING.md) | 내장 엔진, 권한, AI, 빌드, 프로세스, 배터리 상태 문제 |
 | [아키텍처](docs/ARCHITECTURE.md) | 모듈, 데이터 흐름, 고위험 작업 경계 |
 | [개인정보 보호](PRIVACY.md) | 로컬 데이터, 네트워크 접근, 보관, 삭제 |
 | [로드맵](ROADMAP.md) | 완료된 작업, 단기 우선순위, 명시적 비목표 |
 | [변경 내역](CHANGELOG.md) | 릴리스 및 미릴리스 변경 사항 |
 | [기여](CONTRIBUTING.md) | 개발, 테스트, Pull Request, 안전 요구 사항 |
 
-## CleanNest와 Mole
+## 내장 네이티브 엔진
 
-CleanNest는 독립적으로 개발된 그래픽 클라이언트입니다. Mole 공식 앱이 아니며 Mole 바이너리를 포함하지 않습니다. 사용자가 별도로 설치한 CLI를 격리된 로컬 프로세스로 호출하고 설정 화면에 출처를 표시합니다.
+정리, 디스크, 시스템 데이터, Agent 및 시스템 상태는 모두 CleanNest와 함께 설치되는 네이티브 구성 요소로 동작합니다. 외부 정리 엔진을 탐지하거나 호출하거나 설치하지 않습니다. Homebrew는 개발 캐시 스캔 대상일 뿐 실행 종속성이 아닙니다.
 
-[Mole](https://github.com/tw93/Mole)은 tw93 및 기여자들이 GPL-3.0으로 유지 관리합니다. CleanNest 자체 소스 코드는 [MIT License](LICENSE)로 제공됩니다. MLX와 사용자가 선택한 모델 정보는 [제3자 고지](THIRD_PARTY_NOTICES.md)를 확인하세요.
+CleanNest 자체 소스 코드는 [MIT License](LICENSE)로 제공됩니다. MLX와 사용자가 선택한 모델 정보는 [제3자 고지](THIRD_PARTY_NOTICES.md)를 확인하세요.
 
 ## 개발 및 검증
 
@@ -181,6 +180,6 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-현재 소스 정식 릴리스는 **0.7.9(Build 37)** 입니다. 마이그레이션, 롤백, 안정성, 출처 증명 게이트와 디스크 다중 보기 원장을 추가했습니다. GitHub Release는 소스만 제공하고 App 번들은 포함하지 않습니다. 실제 48시간 상주 테스트, 완전한 3개 언어 UI, Developer ID, Apple 공증은 아직 통과하지 않았으므로 일반 사용자가 신뢰하고 설치할 수 있는 macOS 설치 패키지는 아닙니다. CI는 Apple Silicon 및 Intel runner에서 빌드와 테스트를 수행합니다. 재현 가능한 버그와 기능 제안은 [Issues](https://github.com/n9896027/CleanNest/issues)에 남기고, 보안 취약점은 비공개로 신고해 주세요.
+현재 버전은 **0.12.0(Build 50)**이며, 실행 전 활성 파일 확인, 경로별 검토, 실행 원장, 항목별 복구 및 신뢰할 수 있는 배포에 중점을 둡니다. 공식 PKG는 검사를 통과한 클린 `main` 커밋에서 빌드해야 하며 실제 공개 다운로드는 Releases에서 확인하세요. 실제 48시간 테스트, 완전한 3개 언어 수동 UI 검수, Intel 실기 및 0.12.0 클린 Mac 설치에는 각각의 증거가 필요하며 CI 빌드나 이전 버전 공증으로 대체할 수 없습니다. 재현 가능한 버그와 기능 제안은 [Issues](https://github.com/n9896027/CleanNest/issues)에 남기고, 보안 취약점은 비공개로 신고해 주세요.
 
 앱 UI와 상세 유지 관리자 문서는 현재 주로 중국어 간체로 제공됩니다. 이 한국어 README는 프로젝트 범위를 정확히 설명하기 위한 것이며, 전체 UI 한국어 현지화가 완료되었다는 의미는 아닙니다.
