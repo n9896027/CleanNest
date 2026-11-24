@@ -75,6 +75,20 @@ Meta Muse 尚未取得可核验的官方 Mac 安装样本。本版没有写入�
 
 安装包使用 `pkgbuild --component` 生成组件包，再由 `productbuild --sign` 生成 Developer ID Installer 签名的 Distribution PKG。规则 ZIP 中只能包含一个 `CleanNestAgentRules.bundle`，必须与 App 使用同一 Developer ID Application 叶证书，保留有效签名、路径和大小边界。
 
+## 首轮签名产物与隔离解包实测
+
+首轮打包门使用源码提交 `9cad8eca591bcdc2cfc0c1e6dadac72615356f43`，只用于发现分发问题，不作为最终发布来源。2026-11-24 实际结果：
+
+- App 使用 `Developer ID Application: renkai zhang (NC33STD88A)`，公证提交 `d1178daf-c1ec-4f9b-bbc6-755cfbec99d0` 返回 `Accepted`；`stapler validate` 与 `spctl --assess --type execute` 均通过。
+- Distribution PKG 使用 `Developer ID Installer: renkai zhang (NC33STD88A)`，带可信时间戳；公证提交 `aaed670d-b998-4edc-9075-48117f8e3d43` 返回 `Accepted`；`stapler validate`、`pkgutil --check-signature` 与 `spctl --assess --type install` 均通过，来源为 `Notarized Developer ID`。
+- 用 `pkgutil --expand-full` 展开到工作区隔离目录，没有安装或覆盖 `/Applications/CleanNest.app`。组件 `PackageInfo` 的安装位置为 `/Applications`，标识为 `com.zone.cleannest.pkg`，版本为 0.12.3；包内只有一个 `CleanNest.app`。
+- 构建目录和 PKG 实际 payload 中的 CleanNest、CleanNestMCP、CleanNestLoginItem、CleanNestScanner 四个可执行文件均为 `x86_64 arm64`，各 Info.plist 均为 0.12.3／53，执行权限和严格代码签名验证通过。
+- 规则 ZIP 只有一个顶层 `CleanNestAgentRules.bundle`，没有绝对路径、父目录跳转或符号链接。使用与客户端一致的 `/usr/bin/ditto -x -k` 解包后，严格代码签名验证通过；`codesign -d --extract-certificates=…` 导出的规则包与 App 叶证书逐字节相同。
+- 规则 schema 为当前支持的 **1**，revision 为 `builtin-2026.11.24.1`。桌面产品仅有已核验的 Grok Bot；Bundle ID 为 `com.anysphere.sand`，Team ID 为 `DCNK4UB866`。`Application Support/Grok Bot` 为 `retained`，仅精确 Bundle ID 的缓存和日志为 `regenerable`，没有 Meta Muse 桌面身份规则。
+- 首轮 PKG 为 **21,646,557 字节**，SHA-256 为 `a6a2e8e927aed36c070d1edd009c7caabfab2f58e182e3bf1908766fc29cca6a`；首轮规则 ZIP 为 **13,515 字节**，SHA-256 为 `ee6b5c87123c57fd4be2bbeb8c3ac32db3d3fceb501204e629e93635afb42667`。这两个摘要仅属于首轮打包门，**不是最终下载摘要**。
+
+原始命令输出保存在本机构建目录的 `installer-0.12.3-initial.log`、`inspect-signed-artifacts-initial.log` 和 `signed-artifact-inspection-initial.json`。验证脚本初次用普通 ZIP 库展开 AppleDouble 元数据，产生额外 `._` 文件而导致签名失败；改用生产客户端同样的 `ditto` 后通过，未删除签名文件或放宽检查。最终发布资产必须从包含本记录的干净提交重新构建，并以其 `PROVENANCE.json`、`SHA256SUMS` 和远端下载复核为准。
+
 ## 未实测或条件限制
 
 以下项目不能由 XCTest、源码编译、旧版验收或 Apple 公证替代：
