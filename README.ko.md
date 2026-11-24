@@ -6,7 +6,7 @@
 
 Agent 작업 공간, 로컬 모델 서비스, 시스템 경고와 저장 공간 근거를 하나의 온디바이스 제어 화면에 모읍니다. 먼저 보고, 이해한 뒤, 마지막 결정은 사용자가 내립니다. 파일은 기본적으로 휴지통으로 이동하며 AI는 삭제를 승인할 수 없습니다.
 
-[简体中文](README.md) · [English](README.en.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · **한국어**
+[简体中文](README.md) · [English](README.en.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [Español](README.es.md) · **한국어**
 
 [![CI](https://github.com/n9896027/CleanNest/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/n9896027/CleanNest/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/n9896027/CleanNest/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/n9896027/CleanNest/actions/workflows/codeql.yml)
@@ -33,7 +33,7 @@ CleanNest는 기존 정리 도구에 AI 문구만 덧붙인 제품이 아닙니�
 
 ## 0.12.1: 정리 후보와 설명을 더 쉽게
 
-현재 개발 후보는 **0.12.1(Build 51)**입니다. 정리 후보를 첫 화면에 바로 표시하고, 스캔으로 보호된 경로는 후보 아래에 이유별 진단으로 그룹화했습니다. 수백 개의 증거 경로가 처리 가능한 목록을 가리지 않습니다. 읽을 수 없는 경로에만 권한 복구와 재스캔을 제공하며, 심볼릭 링크, 패키지 경계, 스캔 한도는 실제 이유를 설명합니다.
+현재 개발 버전은 **0.12.3(Build 53)**입니다. 최신 설치 파일은 [공식 Release](https://github.com/n9896027/CleanNest/releases/latest)에서 제공하며, 새 기능과 검증 범위는 [English 0.12.3 안내](README.en.md)를 참조하세요. 아래는 0.12.1에서 도입된 정리 화면 개선 사항입니다. 정리 후보를 첫 화면에 바로 표시하고, 스캔으로 보호된 경로는 후보 아래에 이유별 진단으로 그룹화했습니다. 수백 개의 증거 경로가 처리 가능한 목록을 가리지 않습니다. 읽을 수 없는 경로에만 권한 복구와 재스캔을 제공하며, 심볼릭 링크, 패키지 경계, 스캔 한도는 실제 이유를 설명합니다.
 
 ‘오래된 로그’는 ‘애플리케이션 로그’로 표시하고, 무엇인지, 후보가 된 이유, 처리 영향과 복구 방법을 항목별로 설명합니다. 일괄 선택 전에 확인하며 기본적으로는 아무 항목도 선택하지 않습니다. 활성 파일 재검증, 경로별 안전 경계, 실행 원장, 복구와 APFS 대사 등 0.12.0의 보호 기능은 모두 유지합니다.
 
@@ -188,6 +188,6 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-현재 버전은 **0.12.0(Build 50)**이며, 실행 전 활성 파일 확인, 경로별 검토, 실행 원장, 항목별 복구 및 신뢰할 수 있는 배포에 중점을 둡니다. 공식 PKG는 검사를 통과한 클린 `main` 커밋에서 빌드해야 하며 실제 공개 다운로드는 Releases에서 확인하세요. 실제 48시간 테스트, 완전한 3개 언어 수동 UI 검수, Intel 실기 및 0.12.0 클린 Mac 설치에는 각각의 증거가 필요하며 CI 빌드나 이전 버전 공증으로 대체할 수 없습니다. 재현 가능한 버그와 기능 제안은 [Issues](https://github.com/n9896027/CleanNest/issues)에 남기고, 보안 취약점은 비공개로 신고해 주세요.
+현재 버전은 **0.12.3(Build 53)**이며, 실행 전 활성 파일 확인, 경로별 검토, 실행 원장, 항목별 복구 및 신뢰할 수 있는 배포에 중점을 둡니다. 공식 PKG는 검사를 통과한 클린 `main` 커밋에서 빌드해야 하며 실제 공개 다운로드는 Releases에서 확인하세요. 실제 48시간 테스트, 완전한 3개 언어 수동 UI 검수, Intel 실기 및 0.12.3 클린 Mac 설치에는 각각의 증거가 필요하며 CI 빌드나 이전 버전 공증으로 대체할 수 없습니다. 재현 가능한 버그와 기능 제안은 [Issues](https://github.com/n9896027/CleanNest/issues)에 남기고, 보안 취약점은 비공개로 신고해 주세요.
 
 앱 UI와 상세 유지 관리자 문서는 현재 주로 중국어 간체로 제공됩니다. 이 한국어 README는 프로젝트 범위를 정확히 설명하기 위한 것이며, 전체 UI 한국어 현지화가 완료되었다는 의미는 아닙니다.

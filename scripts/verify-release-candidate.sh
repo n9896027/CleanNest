@@ -111,13 +111,20 @@ short_commit="${commit[1,12]}"
 output_dir="${CLEANNEST_RELEASE_OUTPUT_DIR:-$project_dir/build/release-candidate/${version}-${short_commit}}"
 mkdir -p "$output_dir"
 sbom_path="$output_dir/CleanNest-${version}.spdx.json"
-archive_path="$output_dir/CleanNest-${version}-${signing_class}-macos.zip"
+archive_path="$output_dir/CleanNest-${version}-${build_number}.zip"
 checksums_path="$output_dir/SHA256SUMS"
 provenance_path="$output_dir/PROVENANCE.json"
 pkg_path=""
 
 swift Tools/SBOMGenerator.swift "$app_path" "$sbom_path"
 ditto -c -k --keepParent "$app_path" "$archive_path"
+rules_path=""
+if [[ "$require_distribution" == "1" ]]; then
+  rules_source="$project_dir/build/installer/CleanNestAgentRules.zip"
+  [[ -f "$rules_source" ]]
+  rules_path="$output_dir/CleanNestAgentRules.zip"
+  cp -f "$rules_source" "$rules_path"
+fi
 if [[ -n "$pkg_source" ]]; then
   pkg_path="$output_dir/${pkg_source:t}"
   cp -f "$pkg_source" "$pkg_path"
@@ -125,6 +132,9 @@ fi
 artifacts_to_hash=("${archive_path:t}" "${sbom_path:t}")
 if [[ -n "$pkg_path" ]]; then
   artifacts_to_hash+=("${pkg_path:t}")
+fi
+if [[ -n "$rules_path" ]]; then
+  artifacts_to_hash+=("${rules_path:t}")
 fi
 (
   cd "$output_dir"
@@ -136,6 +146,10 @@ sbom_sha="$(shasum -a 256 "$sbom_path" | awk '{print $1}')"
 pkg_sha=""
 if [[ -n "$pkg_path" ]]; then
   pkg_sha="$(shasum -a 256 "$pkg_path" | awk '{print $1}')"
+fi
+rules_sha=""
+if [[ -n "$rules_path" ]]; then
+  rules_sha="$(shasum -a 256 "$rules_path" | awk '{print $1}')"
 fi
 generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 architecture="$(lipo -archs "$app_path/Contents/MacOS/CleanNest")"
@@ -163,6 +177,8 @@ jq -n \
   --arg sbomSHA256 "$sbom_sha" \
   --arg pkg "${pkg_path:t}" \
   --arg pkgSHA256 "$pkg_sha" \
+  --arg rules "${rules_path:t}" \
+  --arg rulesSHA256 "$rules_sha" \
   --argjson blockers "$blockers_json" \
   '{
     schemaVersion: ($schemaVersion | tonumber),
@@ -183,7 +199,8 @@ jq -n \
     artifacts: ([
       {name: $archive, sha256: $archiveSHA256},
       {name: $sbom, sha256: $sbomSHA256}
-    ] + (if $pkg == "" then [] else [{name: $pkg, sha256: $pkgSHA256}] end))
+    ] + (if $pkg == "" then [] else [{name: $pkg, sha256: $pkgSHA256}] end)
+      + (if $rules == "" then [] else [{name: $rules, sha256: $rulesSHA256}] end))
   }' > "$provenance_path"
 
 jq empty "$sbom_path" "$provenance_path"

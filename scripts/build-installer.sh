@@ -63,7 +63,7 @@ security find-identity -v -p codesigning 2>/dev/null | grep -Fq "\"$APP_IDENTITY
 security find-certificate -a -c "Developer ID Installer" -Z 2>/dev/null | grep -Fq "SHA-1 hash" \
     || fail "Keychain 中没有 Developer ID Installer 证书（pkgbuild 签名需要，且必须含私钥）"
 for tool in notarytool stapler; do xcrun --find "$tool" >/dev/null 2>&1 || fail "缺少 xcrun $tool"; done
-for tool in pkgbuild pkgutil spctl hdiutil ditto; do command -v "$tool" >/dev/null 2>&1 || fail "缺少 $tool"; done
+for tool in pkgbuild productbuild pkgutil spctl hdiutil ditto; do command -v "$tool" >/dev/null 2>&1 || fail "缺少 $tool"; done
 xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 \
     || fail "notarytool 凭证 profile「$NOTARY_PROFILE」不可用，请先运行 xcrun notarytool store-credentials"
 
@@ -108,24 +108,41 @@ xcrun stapler validate "$APP_PATH"
 # after Apple's ticket has been stapled to the final bundle.
 spctl --assess --type execute --verbose=2 "$APP_PATH"
 
-step "3/6 生成组件安装包（安装到 /Applications）"
+step "3/6 生成 Distribution 安装包（安装到 /Applications）"
+COMPONENT_PKG="$OUT_DIR/CleanNest-$VERSION-$BUILD_NUMBER-component.pkg"
+rm -f -- "$COMPONENT_PKG"
 pkgbuild \
     --component "$APP_PATH" \
     --install-location "/Applications" \
     --identifier "$PKG_IDENTIFIER" \
     --version "$VERSION" \
+    "$COMPONENT_PKG"
+productbuild \
+    --package "$COMPONENT_PKG" \
+    --identifier "$PKG_IDENTIFIER" \
+    --version "$VERSION" \
     --sign "$INSTALLER_IDENTITY" \
     "$PKG_PATH"
 pkgutil --check-signature "$PKG_PATH"
+pkgutil --payload-files "$PKG_PATH" >/dev/null
+rm -f -- "$COMPONENT_PKG"
 
 step "4/6 公证并装订安装包"
 xcrun notarytool submit "$PKG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
 xcrun stapler staple "$PKG_PATH"
 xcrun stapler validate "$PKG_PATH"
 
-step "5/6 Gatekeeper 与校验值"
+step "5/6 Gatekeeper、同签名者规则包与校验值"
 spctl --assess --type install --verbose=2 "$PKG_PATH"
-( cd "$OUT_DIR" && shasum -a 256 "$(basename "$PKG_PATH")" > "SHA256SUMS" )
+RULE_BUNDLE="$OUT_DIR/CleanNestAgentRules.bundle"
+RULE_ZIP="$OUT_DIR/CleanNestAgentRules.zip"
+rm -rf -- "$RULE_BUNDLE"
+rm -f -- "$RULE_ZIP"
+swift run -c release CleanNestRuleBundleTool "$RULE_BUNDLE" --sign "$APP_IDENTITY"
+codesign --verify --deep --strict --verbose=2 "$RULE_BUNDLE"
+ditto -c -k --keepParent "$RULE_BUNDLE" "$RULE_ZIP"
+rm -rf -- "$RULE_BUNDLE"
+( cd "$OUT_DIR" && shasum -a 256 "$(basename "$PKG_PATH")" "CleanNestAgentRules.zip" > "SHA256SUMS" )
 
 if [[ "$MAKE_DMG" == "1" ]]; then
     step "6/6 生成并公证 DMG 载体"

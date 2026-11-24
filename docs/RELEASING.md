@@ -81,7 +81,9 @@ CLEANNEST_NOTARY_PROFILE="CleanNestNotary" \
 scripts/build-installer.sh
 ```
 
-设置 `CLEANNEST_MAKE_DMG=1` 会额外生成签名并公证的 DMG 载体。脚本依次完成：Developer ID 构建与签名 → App 公证装订 → `pkgbuild --component`（安装到 `/Applications`）→ 安装包公证装订 → Gatekeeper 评估与 SHA-256，并输出 `build/installer/`。
+设置 `CLEANNEST_MAKE_DMG=1` 会额外生成签名并公证的 DMG 载体。脚本依次完成：Developer ID Universal 2 构建与签名 → App 公证装订 → `pkgbuild --component`（安装到 `/Applications`）→ `productbuild --sign` 生成 Developer ID Installer 签名的 Distribution PKG → 安装包公证装订 → Gatekeeper 评估 → 使用同一 Developer ID Application 生成 `CleanNestAgentRules.zip` → SHA-256，并输出 `build/installer/`。
+
+发布候选脚本使用 `CleanNest-<版本>-<构建号>.pkg`、同名 `.zip`、`CleanNestAgentRules.zip`、SBOM、`SHA256SUMS` 与 `PROVENANCE.json`。客户端使用系统 `pkgutil` 和 `spctl`，无开发工具依赖；`notarytool` 与 `stapler` 仅是发布机职责。发布时必须实际解包核对规则包签名叶证书、目录结构、摘要与内置规则修订。
 
 注意 Apple Developer Program 会员资格不等于本机可用凭据：Keychain 中必须同时安装 `Developer ID Application` 和 `Developer ID Installer` 证书（含私钥），并事先用 `xcrun notarytool store-credentials` 建好凭证 profile；还需完整 Xcode（`xcode-select` 指向 Xcode.app，CommandLineTools 无法编译 SwiftUI App target）。脚本会在任何前置条件缺失时立即中止，且不接受本地自签名身份。打包前必须完全退出 CleanNest，否则 `build.sh` 会拒绝替换运行中的 bundle。
 

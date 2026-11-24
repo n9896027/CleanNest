@@ -370,6 +370,12 @@ final class AppStore: ObservableObject {
         get { agentWorkspaceState.ruleCatalogDiagnostic }
         set { agentWorkspaceState.ruleCatalogDiagnostic = newValue }
     }
+    var agentDesktopInstallations: [AgentDesktopInstallation] {
+        agentWorkspaceState.desktopInstallations
+    }
+    var agentDesktopInventoryIsRefreshing: Bool {
+        agentWorkspaceState.desktopInventoryIsRefreshing
+    }
     private(set) var agentDependencyGraph: AgentDependencyGraphSnapshot {
         get { agentWorkspaceState.dependencyGraph }
         set { agentWorkspaceState.dependencyGraph = newValue }
@@ -409,12 +415,17 @@ final class AppStore: ObservableObject {
     @Published private(set) var appUpdateDownloadState: AppUpdateDownloadState = .idle
     @Published var automaticallyChecksForUpdates = true
     @Published private(set) var lastAppUpdateCheckAt: Date?
+    @Published private(set) var lastSuccessfulAppUpdateCheckAt: Date?
+    @Published private(set) var nextAppUpdateAttemptAt: Date?
+    @Published private(set) var appUpdateNotice: String?
 
     let demoMode: Bool
 
     private let commandRunner = CommandRunner()
     private lazy var appUpdateInstallerValidator = AppUpdateInstallerValidator(commandRunner: commandRunner)
     private let applicationScanner = ApplicationScanner()
+    private let agentDesktopProductInventory = AgentDesktopProductInventory()
+    private var agentDesktopInventoryID = UUID()
     private let scannerServiceClient = ScannerServiceClient()
     private let agentWorkspaceScannerServiceClient = ScannerServiceClient()
     private let agentWorkspaceRecoveryService = AgentWorkspaceRecoveryService()
@@ -460,6 +471,9 @@ final class AppStore: ObservableObject {
     private var appUpdateDownloadTask: Task<Void, Never>?
     private var automaticAppUpdateCheckTask: Task<Void, Never>?
     private var hasScheduledInitialAppUpdateCheck = false
+    private var verifiedAppUpdatePackage: VerifiedAppUpdatePackage?
+    private var lastSuccessfulAppUpdateState: AppUpdateState?
+    private var appUpdateInstallerOpenIsInFlight = false
     private var localModelDiscoveryID = UUID()
     private var localModelRuntimeMonitorTask: Task<Void, Never>?
     private var agentWorkspaceMonitorTask: Task<Void, Never>?
@@ -503,7 +517,14 @@ final class AppStore: ObservableObject {
             automaticallyChecksForUpdates = settings.bool(forKey: "automaticallyChecksForUpdates")
         }
         lastAppUpdateCheckAt = settings.object(forKey: "lastAppUpdateCheckAt") as? Date
+        lastSuccessfulAppUpdateCheckAt = settings.object(forKey: "lastSuccessfulAppUpdateCheckAt") as? Date
+        nextAppUpdateAttemptAt = settings.object(forKey: "nextAppUpdateAttemptAt") as? Date
         if demoMode { automaticallyChecksForUpdates = false }
+        if !demoMode {
+            Task { [weak self] in
+                await self?.restoreVerifiedAppUpdatePackage()
+            }
+        }
         if !demoMode,
            var timeline = try? SystemAlertTimelinePersistence.load(
                from: CleanNestDataPaths.systemAlertTimeline()
@@ -904,6 +925,7 @@ final class AppStore: ObservableObject {
     }
 
     func refreshAgentWorkspace() async {
+        await refreshAgentDesktopProducts()
         guard !demoMode, !agentWorkspacePhase.isScanning else { return }
         let scanID = UUID()
         agentWorkspaceScanID = scanID
@@ -962,6 +984,35 @@ final class AppStore: ObservableObject {
             agentWorkspacePhase = .failed(message)
             agentWorkspaceDiagnostic = message
         }
+    }
+
+    func refreshAgentDesktopProducts() async {
+        guard !demoMode, !agentDesktopInventoryIsRefreshing else { return }
+        let requestID = UUID()
+        agentDesktopInventoryID = requestID
+        agentWorkspaceState.desktopInventoryIsRefreshing = true
+        defer { agentWorkspaceState.desktopInventoryIsRefreshing = false }
+        let catalog = agentRuleCatalog
+        let installations = await agentDesktopProductInventory.scan(catalog: catalog)
+        guard agentDesktopInventoryID == requestID, agentRuleCatalog.revision == catalog.revision else { return }
+        agentWorkspaceState.desktopInstallations = installations
+    }
+
+    func openAgentProductUninstall(_ installation: AgentDesktopInstallation) async {
+        guard !isWorking else { return }
+        await refreshAgentDesktopProducts()
+        guard let refreshed = agentDesktopInstallations.first(where: { $0.copyID == installation.copyID }) else {
+            phase = .failed("这个 Agent 的安装位置或签名已经变化，未打开卸载流程。")
+            return
+        }
+        let application = refreshed.application
+        if !applications.contains(where: { $0.id == application.id }) {
+            applications.append(application)
+            applications.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
+        applicationsHaveScanned = true
+        selection = .applications
+        await chooseApplication(application)
     }
 
     func openAgentWorkspaceDetail(_ provider: AgentWorkspaceProvider) async {
@@ -1078,6 +1129,30 @@ final class AppStore: ObservableObject {
         )
         agentDependencyGraph = graph
         agentDependencyGraphIsRefreshing = false
+    }
+
+    func checkForAgentRuleUpdates() async {
+        guard !demoMode, !agentWorkspaceState.ruleCatalogUpdateIsRunning else { return }
+        agentWorkspaceState.ruleCatalogUpdateIsRunning = true
+        defer { agentWorkspaceState.ruleCatalogUpdateIsRunning = false }
+        do {
+            let client = AgentRuleCatalogUpdateClient(store: agentRuleCatalogStore)
+            if let catalog = try await client.checkForUpdate(current: agentRuleCatalog) {
+                agentRuleCatalog = catalog
+                agentRuleCatalogSource = .signedBundle(agentRuleCatalogStore.installedBundleURL)
+                agentRuleCatalogDiagnostic = CNL10n.format("已验证并安装在线规则 %@；识别目录和图标已刷新。", String(describing: catalog.revision))
+                closeAgentWorkspaceDetail()
+                agentWorkspaceSnapshot = nil
+                selectedAgentWorkspaceCandidateIDs.removeAll()
+                await refreshAgentWorkspace()
+            } else {
+                agentRuleCatalogDiagnostic = "当前已是最新签名识别规则。"
+            }
+        } catch {
+            // A failed download or signature check never changes the last good
+            // catalog, uninstall scope or locally cached application icons.
+            agentRuleCatalogDiagnostic = CNL10n.format("在线规则未更新：%@。继续保留最近通过的规则。", String(describing: error.localizedDescription))
+        }
     }
 
     func importAgentRuleCatalog(from url: URL) async {
@@ -3431,10 +3506,15 @@ final class AppStore: ObservableObject {
                 applicationDependencyGraphIsLoading = false
             }
         }
+        let product = agentRuleCatalog.desktopProducts.first {
+            $0.verification == .verifiedOfficialSample
+                && $0.bundleIdentifiers.contains(application.bundleIdentifier ?? "")
+        }
         let graph = await applicationScanner.dependencyGraph(
             for: application,
             includeProtectedAppData: fullDiskAccessProbePassed,
-            applicationIsRunning: applicationIsRunning(application)
+            applicationIsRunning: applicationIsRunning(application),
+            desktopProduct: product
         )
         guard leftoverRequestID == requestID, selectedApplication?.id == application.id else { return }
         selectedApplicationDependencyGraph = graph
@@ -3486,6 +3566,22 @@ final class AppStore: ObservableObject {
               dependencyGraph.applicationID == application.id else {
             phase = .failed("依赖检查尚未完成，请稍后再试")
             return
+        }
+
+        if let productID = dependencyGraph.productID {
+            let product = agentRuleCatalog.desktopProducts.first { $0.id == productID }
+            let signature = AgentDesktopProductDetector.inspectSignature(at: application.url)
+            guard let product,
+                  product.verification == .verifiedOfficialSample,
+                  product.bundleIdentifiers.contains(application.bundleIdentifier ?? ""),
+                  signature.isValid,
+                  signature.signingIdentifier == application.bundleIdentifier,
+                  let team = signature.teamIdentifier,
+                  product.allowedTeamIdentifiers.contains(team),
+                  dependencyGraph.codeSignature.status == .valid else {
+                phase = .failed("Agent 签名或产品规则已经变化，未改动 App 或任何关联文件。请刷新后重试。")
+                return
+            }
         }
 
         applicationUninstallSession = ApplicationUninstallSession(
@@ -3843,7 +3939,7 @@ final class AppStore: ObservableObject {
         NSWorkspace.shared.openApplication(
             at: url,
             configuration: NSWorkspace.OpenConfiguration()
-        ) { _, error in
+        ) { [weak self] _, error in
             guard let error else { return }
             Task { @MainActor [weak self] in
                 self?.lastTechnicalDetail = CNL10n.format("所属 App 未能打开：%@", String(describing: error.localizedDescription))
@@ -4533,7 +4629,9 @@ final class AppStore: ObservableObject {
 
     func presentUpdateChecker() {
         showingUpdateChecker = true
-        guard !appUpdateState.isChecking else { return }
+        // Reopening a sheet is not a new network request. Existing Release and
+        // verified-package state stays visible until the user explicitly checks.
+        guard case .idle = appUpdateState else { return }
         Task { await checkForUpdates() }
     }
 
@@ -4546,7 +4644,7 @@ final class AppStore: ObservableObject {
             if appUpdateCheckIsAutomatic {
                 appUpdateCheckID = UUID()
                 appUpdateCheckIsAutomatic = false
-                appUpdateState = .idle
+                appUpdateState = lastSuccessfulAppUpdateState ?? .idle
             }
             return
         }
@@ -4554,12 +4652,21 @@ final class AppStore: ObservableObject {
     }
 
     func checkForUpdates(automatic: Bool = false) async {
-        guard !appUpdateState.isChecking else { return }
+        guard !appUpdateState.isChecking, !appUpdateDownloadState.isBusy else { return }
+        let now = Date()
+        if let nextAppUpdateAttemptAt, now < nextAppUpdateAttemptAt {
+            if !automatic {
+                appUpdateNotice = CNL10n.format(
+                    "请在 %@ 后再检查；等待期内不会重复请求 GitHub。",
+                    nextAppUpdateAttemptAt.formatted(date: .abbreviated, time: .shortened)
+                )
+            }
+            return
+        }
         if !automatic {
             automaticAppUpdateCheckTask?.cancel()
             automaticAppUpdateCheckTask = nil
         }
-        invalidateAppUpdateDownload(removeFile: true)
         guard let currentVersion = AppMetadata.shortVersion, !currentVersion.isEmpty else {
             appUpdateState = .failed(
                 currentVersion: CNL10n.string("开发构建"),
@@ -4572,8 +4679,9 @@ final class AppStore: ObservableObject {
         appUpdateCheckID = checkID
         appUpdateCheckIsAutomatic = automatic
         appUpdateState = .checking(currentVersion: currentVersion)
-        lastAppUpdateCheckAt = Date()
-        if !demoMode { settings.set(lastAppUpdateCheckAt, forKey: "lastAppUpdateCheckAt") }
+        appUpdateNotice = nil
+        lastAppUpdateCheckAt = now
+        if !demoMode { settings.set(now, forKey: "lastAppUpdateCheckAt") }
 
         if demoMode {
             appUpdateState = .updateAvailable(
@@ -4583,11 +4691,12 @@ final class AppStore: ObservableObject {
             return
         }
 
-
         do {
             guard let release = try await appUpdateClient.latestRelease() else {
                 guard appUpdateCheckID == checkID else { return }
                 appUpdateState = .noPublishedRelease(currentVersion: currentVersion)
+                lastSuccessfulAppUpdateState = appUpdateState
+                markAppUpdateCheckSucceeded(at: Date())
                 return
             }
 
@@ -4599,6 +4708,7 @@ final class AppStore: ObservableObject {
             switch decision {
             case .updateAvailable:
                 appUpdateState = .updateAvailable(currentVersion: currentVersion, release: release)
+                reconcileVerifiedPackage(with: release)
                 if automatic,
                    settings.string(forKey: "lastAutomaticUpdatePromptTag") != release.tagName {
                     settings.set(release.tagName, forKey: "lastAutomaticUpdatePromptTag")
@@ -4609,12 +4719,23 @@ final class AppStore: ObservableObject {
             case .localVersionAhead:
                 appUpdateState = .localVersionAhead(currentVersion: currentVersion, release: release)
             }
+            lastSuccessfulAppUpdateState = appUpdateState
+            markAppUpdateCheckSucceeded(at: Date())
         } catch {
             guard appUpdateCheckID == checkID else { return }
-            appUpdateState = .failed(
-                currentVersion: currentVersion,
-                message: localizedAppUpdateError(error)
-            )
+            let message = localizedAppUpdateError(error)
+            if case AppUpdateClientError.rateLimited(let retryAt) = error {
+                nextAppUpdateAttemptAt = retryAt ?? Date().addingTimeInterval(AppUpdateRateLimitPolicy.fallbackDelay)
+                settings.set(nextAppUpdateAttemptAt, forKey: "nextAppUpdateAttemptAt")
+            }
+            // A transient query failure never invalidates the last known Release
+            // or the separately persisted, verified download.
+            if let lastSuccessfulAppUpdateState {
+                appUpdateState = lastSuccessfulAppUpdateState
+                appUpdateNotice = message
+            } else {
+                appUpdateState = .failed(currentVersion: currentVersion, message: message)
+            }
         }
     }
 
@@ -4623,8 +4744,40 @@ final class AppStore: ObservableObject {
               let package = release.installerPackage,
               !appUpdateDownloadState.isBusy else { return }
 
-        invalidateAppUpdateDownload(removeFile: true)
         let downloadID = UUID()
+        appUpdateDownloadID = downloadID
+        if let verifiedAppUpdatePackage, verifiedAppUpdatePackage.matches(release: release) {
+            appUpdateDownloadState = .verifying(
+                packageURL: verifiedAppUpdatePackage.fileURL,
+                package: package
+            )
+            appUpdateDownloadTask = Task { [weak self] in
+                guard let self else { return }
+                do {
+                    try await Task.detached(priority: .utility) {
+                        try verifiedAppUpdatePackage.revalidate()
+                    }.value
+                    guard self.appUpdateDownloadID == downloadID else { return }
+                    self.appUpdateDownloadState = .readyToInstall(
+                        packageURL: verifiedAppUpdatePackage.fileURL,
+                        package: package
+                    )
+                } catch {
+                    guard self.appUpdateDownloadID == downloadID else { return }
+                    self.invalidateAppUpdateDownload(removeFile: true)
+                    self.appUpdateDownloadState = .failed(
+                        message: localizedAppUpdateError(error),
+                        package: package
+                    )
+                }
+                self.appUpdateDownloadTask = nil
+            }
+            return
+        }
+
+        // Only confirmed metadata for a different asset invalidates the old
+        // package. Reopening a window or an offline query never reaches here.
+        invalidateAppUpdateDownload(removeFile: true)
         appUpdateDownloadID = downloadID
         appUpdateDownloadState = .downloading(package: package)
         appUpdateDownloadTask = Task { [weak self] in
@@ -4649,19 +4802,22 @@ final class AppStore: ObservableObject {
                 }
 
                 let downloaded = try await self.appUpdateClient.downloadInstallerPackage(for: release)
-                guard self.appUpdateDownloadID == downloadID else {
-                    try? FileManager.default.removeItem(at: downloaded.packageURL)
-                    return
-                }
+                guard self.appUpdateDownloadID == downloadID else { return }
                 self.appUpdateDownloadState = .verifying(
                     packageURL: downloaded.packageURL,
                     package: downloaded.package
                 )
-                try await self.appUpdateInstallerValidator.validate(packageAt: downloaded.packageURL)
-                guard self.appUpdateDownloadID == downloadID else {
-                    try? FileManager.default.removeItem(at: downloaded.packageURL)
-                    return
-                }
+                let trust = try await self.appUpdateInstallerValidator.validate(packageAt: downloaded.packageURL)
+                let verified = try VerifiedAppUpdatePackage(
+                    releaseVersion: release.version.description,
+                    releaseBuild: downloaded.package.build ?? "",
+                    package: downloaded.package,
+                    fileURL: downloaded.packageURL,
+                    trust: trust
+                )
+                guard self.appUpdateDownloadID == downloadID else { return }
+                self.verifiedAppUpdatePackage = verified
+                self.persistVerifiedAppUpdatePackage()
                 self.appUpdateDownloadState = .readyToInstall(
                     packageURL: downloaded.packageURL,
                     package: downloaded.package
@@ -4672,6 +4828,8 @@ final class AppStore: ObservableObject {
                 if let packageURL = self.appUpdateDownloadState.packageURL {
                     try? FileManager.default.removeItem(at: packageURL)
                 }
+                self.verifiedAppUpdatePackage = nil
+                self.persistVerifiedAppUpdatePackage()
                 if error is CancellationError {
                     self.appUpdateDownloadState = .idle
                 } else {
@@ -4686,25 +4844,75 @@ final class AppStore: ObservableObject {
     }
 
     func openDownloadedUpdateInstaller() {
-        guard !demoMode else { return }
-        let packageURL: URL
-        let package: AppUpdatePackage
+        guard !demoMode, !appUpdateInstallerOpenIsInFlight,
+              !appUpdateDownloadState.isBusy else { return }
+        let candidate: (url: URL, package: AppUpdatePackage)?
         switch appUpdateDownloadState {
-        case .readyToInstall(let url, let downloadedPackage),
-             .installerOpened(let url, let downloadedPackage):
-            packageURL = url
-            package = downloadedPackage
+        case .readyToInstall(let url, let package),
+             .installerOpened(let url, let package):
+            candidate = (url, package)
+        case .failed(_, let package, let url?):
+            candidate = (url, package)
         default:
-            return
+            candidate = nil
         }
-        guard NSWorkspace.shared.open(packageURL) else {
-            appUpdateDownloadState = .failed(
-                message: AppUpdateClientError.installerOpenFailed.localizedDescription,
-                package: package
-            )
-            return
+        guard let candidate,
+              let verified = verifiedAppUpdatePackage,
+              verified.fileURL == candidate.url,
+              verified.package.isSameAsset(as: candidate.package) else { return }
+
+        appUpdateInstallerOpenIsInFlight = true
+        appUpdateDownloadState = .verifying(packageURL: candidate.url, package: candidate.package)
+        let openID = UUID()
+        appUpdateDownloadID = openID
+        appUpdateDownloadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await Task.detached(priority: .utility) {
+                    try verified.revalidate()
+                }.value
+                let trust = try await self.appUpdateInstallerValidator.validate(packageAt: candidate.url)
+                let reverified = try VerifiedAppUpdatePackage(
+                    releaseVersion: verified.releaseVersion,
+                    releaseBuild: verified.releaseBuild,
+                    package: verified.package,
+                    fileURL: candidate.url,
+                    trust: trust
+                )
+                try Task.checkCancellation()
+                guard self.appUpdateDownloadID == openID else { return }
+                self.verifiedAppUpdatePackage = reverified
+                self.persistVerifiedAppUpdatePackage()
+                guard NSWorkspace.shared.open(candidate.url) else {
+                    self.appUpdateDownloadState = .failed(
+                        message: AppUpdateClientError.installerOpenFailed.localizedDescription,
+                        package: candidate.package,
+                        packageURL: candidate.url
+                    )
+                    self.appUpdateInstallerOpenIsInFlight = false
+                    self.appUpdateDownloadTask = nil
+                    return
+                }
+                self.appUpdateDownloadState = .installerOpened(
+                    packageURL: candidate.url,
+                    package: candidate.package
+                )
+            } catch {
+                guard self.appUpdateDownloadID == openID else { return }
+                let integrityFailure = error is AppUpdateCachedPackageError
+                    || error is AppUpdatePackageVerificationError
+                if integrityFailure {
+                    self.invalidateAppUpdateDownload(removeFile: true)
+                }
+                self.appUpdateDownloadState = .failed(
+                    message: localizedAppUpdateError(error),
+                    package: candidate.package,
+                    packageURL: integrityFailure ? nil : candidate.url
+                )
+            }
+            self.appUpdateInstallerOpenIsInFlight = false
+            self.appUpdateDownloadTask = nil
         }
-        appUpdateDownloadState = .installerOpened(packageURL: packageURL, package: package)
     }
 
     func openLatestCleanNestRelease() {
@@ -4723,7 +4931,9 @@ final class AppStore: ObservableObject {
               automaticAppUpdateCheckTask == nil, !appUpdateState.isChecking,
               AppUpdateAutomaticCheckPolicy.shouldCheck(
                 isEnabled: automaticallyChecksForUpdates,
-                lastAttemptAt: lastAppUpdateCheckAt
+                lastAttemptAt: lastAppUpdateCheckAt,
+                lastSuccessfulAt: lastSuccessfulAppUpdateCheckAt,
+                nextAllowedAttemptAt: nextAppUpdateAttemptAt
               ) else { return }
 
         let startupDelay = hasScheduledInitialAppUpdateCheck ? 0 : 15
@@ -4747,12 +4957,91 @@ final class AppStore: ObservableObject {
         }
     }
 
+    private func markAppUpdateCheckSucceeded(at date: Date) {
+        lastSuccessfulAppUpdateCheckAt = date
+        nextAppUpdateAttemptAt = nil
+        settings.set(date, forKey: "lastSuccessfulAppUpdateCheckAt")
+        settings.removeObject(forKey: "nextAppUpdateAttemptAt")
+    }
+
+    private func reconcileVerifiedPackage(with release: GitHubReleaseInfo) {
+        guard let verified = verifiedAppUpdatePackage else { return }
+        guard verified.matches(release: release) else {
+            invalidateAppUpdateDownload(removeFile: true)
+            return
+        }
+        // Preserve an installer-open failure and its retry action. Otherwise a
+        // matching cached package can be shown immediately without downloading.
+        if appUpdateDownloadState.packageURL == nil {
+            appUpdateDownloadState = .readyToInstall(
+                packageURL: verified.fileURL,
+                package: verified.package
+            )
+        }
+    }
+
+    private func restoreVerifiedAppUpdatePackage() async {
+        guard let data = settings.data(forKey: "verifiedAppUpdatePackage"),
+              let cached = try? JSONDecoder().decode(VerifiedAppUpdatePackage.self, from: data) else {
+            return
+        }
+        guard isExpectedUpdateCacheURL(cached.fileURL) else {
+            verifiedAppUpdatePackage = nil
+            persistVerifiedAppUpdatePackage()
+            return
+        }
+        do {
+            try await Task.detached(priority: .utility) {
+                try cached.revalidate()
+            }.value
+            verifiedAppUpdatePackage = cached
+            if let release = appUpdateState.release, cached.matches(release: release) {
+                appUpdateDownloadState = .readyToInstall(
+                    packageURL: cached.fileURL,
+                    package: cached.package
+                )
+            }
+        } catch {
+            if isExpectedUpdateCacheURL(cached.fileURL) {
+                try? FileManager.default.removeItem(at: cached.fileURL)
+            }
+            verifiedAppUpdatePackage = nil
+            persistVerifiedAppUpdatePackage()
+        }
+    }
+
+    private func persistVerifiedAppUpdatePackage() {
+        guard let verifiedAppUpdatePackage else {
+            settings.removeObject(forKey: "verifiedAppUpdatePackage")
+            return
+        }
+        if let data = try? JSONEncoder().encode(verifiedAppUpdatePackage) {
+            settings.set(data, forKey: "verifiedAppUpdatePackage")
+        }
+    }
+
+    private func isExpectedUpdateCacheURL(_ url: URL) -> Bool {
+        guard let cacheRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+            return false
+        }
+        let expected = cacheRoot
+            .appendingPathComponent("CleanNest/Updates", isDirectory: true)
+            .standardizedFileURL
+        return url.standardizedFileURL.deletingLastPathComponent() == expected
+    }
+
     private func invalidateAppUpdateDownload(removeFile: Bool) {
         appUpdateDownloadID = UUID()
         appUpdateDownloadTask?.cancel()
         appUpdateDownloadTask = nil
-        if removeFile, let packageURL = appUpdateDownloadState.packageURL {
-            try? FileManager.default.removeItem(at: packageURL)
+        appUpdateInstallerOpenIsInFlight = false
+        if removeFile {
+            let packageURL = verifiedAppUpdatePackage?.fileURL ?? appUpdateDownloadState.packageURL
+            if let packageURL, isExpectedUpdateCacheURL(packageURL) {
+                try? FileManager.default.removeItem(at: packageURL)
+            }
+            verifiedAppUpdatePackage = nil
+            persistVerifiedAppUpdatePackage()
         }
         appUpdateDownloadState = .idle
     }

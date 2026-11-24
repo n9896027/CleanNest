@@ -144,6 +144,7 @@ public struct InstalledApplication: Identifiable, Hashable, Sendable {
     public let name: String
     public let bundleIdentifier: String?
     public let version: String?
+    public let buildVersion: String?
     public let url: URL
     public let allocatedBytes: Int64
     public let modifiedAt: Date?
@@ -153,6 +154,7 @@ public struct InstalledApplication: Identifiable, Hashable, Sendable {
         name: String,
         bundleIdentifier: String?,
         version: String?,
+        buildVersion: String? = nil,
         url: URL,
         allocatedBytes: Int64,
         modifiedAt: Date?,
@@ -162,6 +164,7 @@ public struct InstalledApplication: Identifiable, Hashable, Sendable {
         self.name = name
         self.bundleIdentifier = bundleIdentifier
         self.version = version
+        self.buildVersion = buildVersion
         self.url = url
         self.allocatedBytes = allocatedBytes
         self.modifiedAt = modifiedAt

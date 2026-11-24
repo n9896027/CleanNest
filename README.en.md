@@ -6,7 +6,7 @@
 
 CleanNest brings Agent workspaces, local model services, system alerts, and storage evidence into one on-device control surface. See first, understand second, decide last. Files go to the Trash by default, and AI can never authorize deletion.
 
-[简体中文](README.md) · **English** · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md)
+[简体中文](README.md) · **English** · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
 [![CI](https://github.com/n9896027/CleanNest/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/n9896027/CleanNest/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/n9896027/CleanNest/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/n9896027/CleanNest/actions/workflows/codeql.yml)
@@ -18,13 +18,15 @@ CleanNest brings Agent workspaces, local model services, system alerts, and stor
 
 </div>
 
-## 0.12.1: make cleanup candidates and explanations easier to use
+## 0.12.3: desktop Agent inventory and updates without developer tools
 
-The current development candidate is **0.12.1 (Build 51)**. Cleanup candidates now appear first, while protected-path evidence moves into grouped diagnostics below them. Hundreds of paths no longer obscure the actionable list. Only unreadable paths offer permission recovery and rescanning; symbolic-link, package-boundary, and scan-limit groups explain why an identical rescan would not help.
+**Version 0.12.3 (Build 53)** adds a separate desktop-client inventory to Agent Workspace. CleanNest identifies each installed copy by its exact Bundle ID, valid code signature, and allowed Team ID, then shows its Finder icon, version, build, and location. The official Grok Bot 1.2.3 sample (`com.anysphere.sand` / `DCNK4UB866`) passed production signature detection. No official Meta Muse Mac sample has been verified, so this release does not claim Muse support or guess its identity and folders.
 
-“Old logs” are now presented as “Application logs,” with per-item explanations of what they are, why they are candidates, what cleanup affects, and how to recover them. Batch selection asks for confirmation and nothing is preselected. All 0.12.0 protections remain, including active-file checks, path-specific safety boundaries, the execution ledger, recovery, and APFS reconciliation.
+“Uninstall Agent…” enters the existing app-uninstall preview, identity rechecks, six-stage execution, per-item retry, and Trash recovery flow. Grok Bot’s application-data folder stays read-only. Cloud accounts, bots, browser history, shared containers, and items without proven ownership are excluded. Signed online rules can add detection and read-only evidence, never a remote deletion path.
 
-The candidate has passed 292 tests, strict three-language audits, a local Debug build, and a read-only validation of the real cleanup page. It is not yet an official Universal 2 PKG; check [Releases](https://github.com/n9896027/CleanNest/releases) for actual public downloads.
+The update client now uses macOS-provided `pkgutil` and `spctl`, not `xcrun`, to check SHA-256, the Developer ID Installer signature, and Gatekeeper assessment. The release machine separately performs Apple notarization and ticket stapling. Verified downloads survive window reopening, temporary query failures, and installer-opening failures. Rate limits expose a bounded retry time. See the [0.12.3 verification record](docs/VERIFICATION-0.12.3.md).
+
+The clearer cleanup flow from 0.12.1 and user-confirmed updates from 0.12.2 remain. Automated tests and signed builds do not replace physical Intel, clean macOS 14 installation, or real Grok uninstall evidence; untested combinations are listed explicitly.
 
 ### 0.12.0 foundation: cleanup evidence, review, and recovery
 
@@ -118,14 +120,14 @@ CleanNest is not a conventional cleaner with AI copy added on top. It is designe
 - **Model Workbench** — run a minimal streaming request that contains no scan metadata, then see loopback health latency, time to first output, total time, the exact API model ID, and memory-headroom guidance.
 - **Data controls** — export or clear the activity log independently; restoring safe defaults resets preferences without silently erasing activity, learning rules, disk indexes, metric history, or macOS permissions.
 - **Built-in native engine** — cleanup, disk, system data, Agent, and system status work without Homebrew or any additional cleanup engine.
-- **Automatic checks, confirmed updates** — CleanNest checks the latest official GitHub Release every 24 hours while running, with an opt-out on the About page. It notifies only when a newer version exists. After your confirmation, it downloads the official PKG and verifies its size, SHA-256, Developer ID team signature, Apple notarization, and Gatekeeper assessment. You then open macOS Installer and make the final system confirmation; CleanNest never silently installs or replaces itself.
+- **Automatic checks, confirmed updates** — CleanNest checks the latest official GitHub Release every 24 hours after the last successful check while running, with an opt-out on the About page and bounded backoff after confirmed rate limiting. After your confirmation, it downloads the official PKG and uses macOS-provided tools—not Xcode or CLT—to verify size, SHA-256, the Developer ID Installer signature, and Gatekeeper assessment. The release machine separately verifies Apple notarization and ticket stapling. You open macOS Installer and make the final system confirmation; CleanNest never silently installs or replaces itself.
 - **Native macOS experience** — SwiftUI/AppKit interface, light and dark appearance, permission recovery guidance, activity history, and a safe demo mode.
 - **Read-only MCP** — expose bounded, redacted local evidence to a trusted AI client over bundled stdio only; no HTTP listener, deletion, process control, or settings tools.
 - **Three-language resources** — a String Catalog provides English, Simplified Chinese, and Traditional Chinese for core navigation and primary screens.
 
 ## Download and run
 
-If [Releases](https://github.com/n9896027/CleanNest/releases) contains an official PKG, install it into `/Applications` without Xcode or Terminal. Check the version, SHA-256, and known limitations listed with the release. If no public PKG is available, build from source using the steps below.
+Open the [latest official Release](https://github.com/n9896027/CleanNest/releases/latest), download `CleanNest-0.12.3-53.pkg`, verify its checksum against the accompanying `SHA256SUMS`, and confirm installation into `/Applications` in macOS Installer. The alternative App archive is `CleanNest-0.12.3-53.zip`. Built-in recognition rules work offline; `CleanNestAgentRules.zip` is only for later recognition updates. Neither Xcode nor Terminal is required for normal installation or use. If Build 52 stops at its older verification path, use this official PKG directly. Review the known limitations listed with the release.
 
 Requirements:
 
@@ -208,6 +210,7 @@ Detailed maintainer documentation is currently written primarily in Simplified C
 | [0.8.3 verification report](docs/VERIFICATION-0.8.3.md) | The learning page becomes Cleanup Habits: bureaucratic terms removed, enable button and flow diagram rewritten in plain language |
 | [0.8.4 verification report](docs/VERIFICATION-0.8.4.md) | Overview restructure: single hero action card, compact secondary rows, visual status tiles; audit columns and defensive disclaimers removed |
 | [0.11.0 candidate verification](docs/VERIFICATION-0.11.0.md) | Historical automated evidence and manual UI, installation, upgrade, model-platform, and real 48-hour boundaries |
+| [0.12.3 verification record](docs/VERIFICATION-0.12.3.md) | Dynamic Agents, the official Grok sample, update verification without developer tools, caching, and release boundaries |
 | [0.12.0 verification record](docs/VERIFICATION-0.12.0.md) | Active-file checks, path review, execution ledger, recovery, APFS, sparse files, and release boundaries |
 | [0.7 migration and rollback](docs/MIGRATION-0.7.md) | Honest compatibility boundaries for settings, metrics, activity, indexes, learning rules, and Agent recovery records |
 | [Localization status](docs/LOCALIZATION-STATUS.md) | Three-language Catalog, format placeholders, strict source audit, and pending manual acceptance |
@@ -250,6 +253,6 @@ Preview the UI with synthetic data only:
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-The current version is **0.12.0 (Build 50)**, focused on cleanup evidence, path-specific review, execution ledgers, recovery, and trusted distribution. An official PKG must be built from the same clean, checked `main` commit; actual public downloads remain subject to the Releases page. The real 48-hour soak, complete manual trilingual UI acceptance, Intel hardware, macOS 14, and clean-machine installation of 0.12.0 require separate evidence and cannot be inferred from CI compilation or notarization of an older build. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
+This iteration is **0.12.3 (Build 53)**, focused on desktop Agent detection and uninstall continuity, trusted update caching, and client verification without developer tools. An official PKG must be built from the same clean, checked `main` commit; use the [latest official Release](https://github.com/n9896027/CleanNest/releases/latest) for public downloads. Complete manual trilingual UI acceptance, physical Intel hardware, macOS 14, and clean-machine installation each require separate evidence and cannot be inferred from CI compilation or an older build’s notarization. Reproducible bug reports and feature proposals are welcome in [Issues](https://github.com/n9896027/CleanNest/issues); report security vulnerabilities privately.
 
 The English, Simplified Chinese, and Traditional Chinese String Catalogs, format placeholders, and strict direct-UI source audit now pass. This is not a substitute for manual acceptance: narrow windows, long copy, keyboard navigation, and VoiceOver still require separate evidence. Japanese and Korean currently provide project overviews, not complete app UI resources.
