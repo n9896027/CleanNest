@@ -8,16 +8,26 @@ public extension ApplicationDependencyGraph {
         _ product: AgentDesktopProductRule,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> ApplicationDependencyGraph {
+        let registeredPaths = Set(product.privateData.map {
+            $0.path.resolve(homeDirectory: homeDirectory).standardizedFileURL
+        })
         var expanded = nodes.map { node in
-            ApplicationDependencyNode(
+            // The generic application scanner may find additional name matches.
+            // They are useful evidence but cannot inherit this product's narrow
+            // cache/log deletion approval. Keep them visible and fail closed.
+            let isUnregisteredRemoval = node.action == .removeAfterApplication
+                && !registeredPaths.contains(node.url.standardizedFileURL)
+            return ApplicationDependencyNode(
                 id: node.id,
                 name: node.name,
                 url: node.url,
-                kind: node.kind,
-                ownership: node.ownership,
-                action: node.action,
+                kind: isUnregisteredRemoval ? .unverifiedItem : node.kind,
+                ownership: isUnregisteredRemoval ? .unverified : node.ownership,
+                action: isUnregisteredRemoval ? .readOnly : node.action,
                 allocatedBytes: node.allocatedBytes,
-                evidence: node.evidence,
+                evidence: node.evidence + (isUnregisteredRemoval ? [
+                    "不在桌面产品的精确缓存／日志白名单中，保持只读"
+                ] : []),
                 identity: node.identity,
                 productID: product.id
             )

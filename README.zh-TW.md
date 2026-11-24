@@ -31,7 +31,15 @@ CleanNest 不是替傳統清理器加上一層 AI 文案。它為同時使用 Co
 > [!IMPORTANT]
 > CleanNest 現已能在本機建置具 Developer ID 簽署、Apple 公證與票據裝訂的 Universal 2 PKG。實際公開下載以 [Releases](https://github.com/n9896027/CleanNest/releases) 為準；CI 的 ad-hoc 產物仍只用於驗證，不是正式安裝檔。
 
-## 0.12.3：桌面 Agent 清單與不依賴開發工具的更新
+## 開發中：0.12.4 本機桌面 Agent 完整盤點
+
+**0.12.4（Build 54，本機候選，尚未發佈）** 按實際功能盤點本機 23 個 App：ChatGPT、Claude、Doubao、Gemini、Grok Bot、Kimi、MiniMax Design、Muse、NewMax、Tabbit、ZCode、小雲雀共 12 個獨立 AI／Agent 用戶端通過樣本簽名識別，可進入既有解除安裝預覽；Hermes Studio、Pi Agent、WorkBuddy 3 個獨立用戶端因簽名完整性或 Apple 散佈信任不足，個別顯示原因且維持唯讀。
+
+每個安裝副本必須同時符合精確 Bundle ID、Signing ID、允許的 Team ID 與 `anchor apple generic` 信任要求；自簽憑證中的 Team ID 不能冒充官方用戶端。解除安裝預覽保留 Application Support、HTTPStorages、WebKit、偏好設定、視窗狀態、專案與憑證，只處理精確登記的可重建快取及日誌；線上規則不能新增刪除路徑。
+
+KimiCU 是 Kimi 附帶的自動化元件，CC Switch 是 API／提供商設定切換工具，都不是獨立 Agent。它們與 MiniMax Hub 2、WorkDaddy、Claude Code URL Handler、Hermes 輔助 shell、Ollama、YuanHub 共 8 個相關軟體單獨列出且唯讀；YuanHub 主體是內容營運工作台，Ollama 繼續由「本機模型」管理。完整 23 項分類、識別碼、簽名證據及限制見[本機桌面 Agent 盤點](docs/AGENT_DESKTOP_INVENTORY.md)。樣本識別及隔離目錄測試不等於第三方 App 真實解除安裝驗收，本輪沒有解除安裝任何用戶端。
+
+### 0.12.3 基礎：桌面 Agent 清單與不依賴開發工具的更新
 
 **0.12.3（Build 53）** 在 Agent 工作區新增獨立的桌面用戶端清單。透過精確 Bundle ID、有效程式碼簽名與允許的 Team ID 識別每個安裝副本，顯示真實圖示、版本、Build 與路徑。官方 Grok Bot 1.2.3 樣本（`com.anysphere.sand`／`DCNK4UB866`）已通過正式簽名識別測試。Meta Muse 尚無經核驗的官方 Mac 樣本，本版不宣稱支援，也不猜測其識別碼或目錄。
 
@@ -89,7 +97,7 @@ CleanNest 不是替傳統清理器加上一層 AI 文案。它為同時使用 Co
 - **空間清理**：掃描開發快取、記錄檔、安裝檔等候選項目，逐項選擇後移入 macOS 垃圾桶。
 - **桌面與掛載安裝媒體**：桌面及下載目錄中的 DMG、PKG、XIP、ISO 與安裝器 ZIP 會進入人工複核；已掛載的安裝映像會單獨顯示來源及安全推出入口，`/Volumes` 內容絕不會進入刪除清單。
 - **獨立掃描隔離**：清理、磁碟容量與證據建立由內嵌且獨立簽章的 XPC 服務執行。取消、中斷或掃描器異常不會拖垮主介面，也不會用半成品取代上一次完整結果。
-- **Agent 工作區**：為 Codex、Claude、Pi Agent、Kimi、WorkBuddy、Hermes、OpenClaw、Trae 與 MiniMax Hub 建立有界帳本；小雲雀沒有可靠樣本時維持待驗證，不猜測路徑。已安裝 Agent 直接使用本機 App Bundle 的真實圖示；純 CLI 或未安裝項目使用中性替代，CleanNest 不重新散布第三方圖示。0.6.4 會呈現應用程式、資料、程序、launchd、連接埠與本機模型的證據關係，只有已建立 TCP 連線才標示模型實連。安全處置仍硬性限制於 Codex/Claude 的靜置快取、暫存檔與日誌，其他 Agent、會話、索引、記憶、憑證與執行時維持唯讀。
+- **Agent 工作區**：為 Codex、Claude、Pi Agent、Kimi、WorkBuddy、Hermes、OpenClaw、Trae、MiniMax Hub 與小雲雀建立有界帳本，只登記具可靠證據的目錄。已安裝 Agent 直接使用本機 App Bundle 的真實圖示；純 CLI 或未安裝項目使用中性替代，CleanNest 不重新散布第三方圖示。0.6.4 會呈現應用程式、資料、程序、launchd、連接埠與本機模型的證據關係，只有已建立 TCP 連線才標示模型實連。0.12.4 的桌面產品清單另行管理可信安裝副本並解釋唯讀候選。工作區的備份優先處置仍硬性限制於 Codex/Claude 的靜置快取、暫存檔與日誌；其他工作區會話、索引、記憶、憑證與執行時維持唯讀，桌面產品解除安裝範圍以各產品獨立白名單為準。
 - **開發工具原生帳本**：使用 Git、Docker、Hugging Face、npm 與 pip 的官方檢視介面；只有具備 dry-run 的 Git 與 Hugging Face 會在再次預演後開放確認執行。
 - **下載、截圖、媒體與精確重複檔案**：常見 `ScreenShot`、`Screenshot`、`Screen Shot`、`ScreenCapture`、截屏及截圖檔名會直接進入獨立分組，可一鍵全選或取消全選；其他媒體仍按大小與時間篩選，重複內容以完整 SHA-256 確認。個人檔案不會預先勾選，執行前會再次核對檔案身分與保留副本。
 - **增量磁碟瀏覽**：掃描時持續顯示部分結果；15 分鐘內只重用中繼資料簽章未變的項目，並明確顯示快取命中、實際掃描與深度重新整理。
@@ -193,6 +201,6 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-本次迭代版本為 **0.12.3（Build 53）**，重點是桌面 Agent 識別與解除安裝銜接、可信更新快取及不依賴開發工具的用戶端校驗。正式 PKG 必須從通過檢查的乾淨 `main` 提交建置，實際公開下載仍以 Releases 為準。真實 48 小時、完整三語人工 UI、Intel 真機與 0.12.3 乾淨 Mac 實裝必須分別留下證據，不能以 CI 編譯或舊版本公證代替。歡迎透過 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可重現問題或功能建議；安全漏洞請私密回報。
+本次開發候選為 **0.12.4（Build 54，尚未發佈）**，重點是本機桌面 Agent 完整盤點、Apple 信任鏈簽名驗證及唯讀候選說明。最新正式版本仍是 0.12.3。正式 PKG 必須從通過檢查的乾淨 `main` 提交建置，實際公開下載仍以 Releases 為準。完整三語人工 UI、Intel 真機、macOS 14、乾淨 Mac 實裝及第三方用戶端真實解除安裝必須分別留下證據，不能以 CI 編譯或舊版本公證代替。歡迎透過 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可重現問題或功能建議；安全漏洞請私密回報。
 
 目前 App 介面與詳細維護文件仍以簡體中文為主。本繁體中文 README 用於正確說明專案範圍，不代表介面本地化已完成。

@@ -9,8 +9,8 @@ struct AgentDesktopInventorySection: View {
     var body: some View {
         SurfaceCard(prominence: .prominent, tint: CNTheme.accent) {
             ContentSectionHeader(
-                "本机 Agent 客户端",
-                detail: "Bundle ID、有效签名和开发者团队均已核实",
+                "本机 AI / Agent 客户端",
+                detail: "只列独立客户端；Bundle ID、有效签名和开发者团队均已核实",
                 symbol: "desktopcomputer",
                 tint: CNTheme.accent
             ) {

@@ -4,6 +4,37 @@
 
 ## [Unreleased]
 
+> **0.12.4（Build 54）本机候选，尚未发布。** 本机独立 AI／Agent 客户端与相关软件按实际功能分层管理；App、扫描服务、登录项和 MCP 统一为 0.12.4（Build 54）。
+
+### Added
+
+- 独立 AI／Agent 客户端清单包含 12 个经本机真实样本验证的产品：ChatGPT、Claude、Doubao、Gemini、Grok Bot、Kimi、MiniMax Design、Muse、NewMax、Tabbit、ZCode 与小云雀。每个副本均要求精确 Bundle ID、Apple 信任的有效签名及允许的 Team ID。
+- Hermes Studio、Pi Agent 与 WorkBuddy 作为 3 个独立但身份待核验的客户端显示；条目展示实际 App 名称、声明的产品、Bundle ID、签名信息和失败原因，不提供卸载按钮。
+- 新增独立的只读相关软件类型与“附带组件与相关工具”分组：CC Switch 是配置切换工具，KimiCU 是 Kimi 附带组件，MiniMax Hub 2 与 WorkDaddy 是启动器，Claude Code URL Handler 与 Hermes 是辅助工具，Ollama 是本地模型运行器，YuanHub 是内置 AI 助手的内容运营工作台。8 个 App 全部保留盘点，但不计入 Agent。
+- 增加全部 23 个真实样本、功能角色、跨类别 Bundle ID 防重叠及“有效签名不能提升相关软件为 Agent”的回归夹具。
+
+### Changed
+
+- 内置规则修订为 `builtin-2026.11.24.3`。产品功能分类与签名信任拆分，旧版 14＋6 的桌面 Agent 统计口径废止。
+- Kimi 工作区以只读方式观察 KimiCU 的精确 Bundle ID 及已索引的 `.kimi-cu`、`Application Support/KimiCU`、`Caches/ai.kimi.cu`、`HTTPStorages/ai.kimi.cu`；不因此增加删除路径。
+- MiniMax Hub 工作区规则保留 MiniMax Design 的日志根与精确 Bundle ID；小云雀保留已验证的桌面 Bundle ID。Ollama 继续由“本地模型”管理。
+
+### Security
+
+- Agent 产品签名检查新增 `anchor apple generic` 要求，自签名证书中的 Team ID 不再足以建立官方产品身份；App Store 与 Developer ID 的 Apple 信任链均可按实际样本验证。
+- 独立 Agent 安装副本、待核验独立 Agent 与相关软件使用不同结果类型。相关软件没有私有数据处置规则或 Agent 卸载动作，有效签名也不能改变功能分类或授予权限。
+- 每款可管理产品显式保留 Application Support、HTTPStorages、WebKit、偏好设置和窗口状态；只有精确登记的可再生缓存和日志可处理，在线规则不能新增删除路径。
+- 通用卸载扫描器额外发现的名称匹配目录不再继承产品删除权限；未登记路径强制显示为无法证明归属并保持只读，12 款可管理产品均有对应隔离目录回归夹具。
+
+### Verification and known limits
+
+- 15 项桌面产品与相关软件专项测试通过，真实样本验收覆盖 12 个已验证独立客户端、3 个待核验独立客户端、8 个相关软件及官方 Grok 1.2.3 样本；没有卸载或修改任何第三方 App 和私有数据。
+- 当前 Hermes Studio、Pi Agent、WorkBuddy 样本存在 App 包内运行后新增文件，完整签名校验未通过，均保持只读。相关软件的签名状态只作事实展示，不参与功能分类。
+- 全量 XCTest 执行 **318 项，0 失败，1 项需单独开启的 Ollama 服务测试按条件跳过**；内置安全自检通过。三语言严格审查通过，String Catalog、简体中文、English、繁體中文各 **2733** 个非空条目，源码静态及动态插值审计缺口均为 0。
+- `./build.sh debug` 通过，App、扫描服务、登录项均为 **0.12.4／54**，候选包 MCP 初始化实际返回 **0.12.4**；四个可执行组件均为 arm64，本地开发签名的完整校验通过。未生成正式 Universal 2 PKG，也未进行 Developer ID 分发签名或 Apple 公证。
+- 已在 **0.12.4／54** 的简体中文真实界面逐屏验收桌面清单：12 个已验证客户端均显示“卸载 Agent…”；3 个待核验客户端均只读且无卸载按钮；相关软件实际显示 **10 个安装副本（8 类，YuanHub 有 3 个副本）**，均只有 Finder 入口和“只读，不提供卸载”，没有 Agent 卸载权限。为避开已安装 0.12.3／53 与 `LSMultipleInstancesProhibited` 的单实例冲突，本轮使用同一构建在工作区复制、更改临时 Bundle ID 并本地重签的独立副本；只核对控件，没有点击卸载。
+- 没有替换 `/Applications/CleanNest.app`，没有进行第三方客户端卸载验收。独立验收副本出现“无法与帮助程序通信”，本轮仅验收独立于工作区扫描的桌面清单，不据此判定正式包的 Agent 占用扫描结果；Intel 真机、macOS 14、干净 Mac 安装、英文／繁体中文 UI、系统性窄窗口、键盘和 VoiceOver 验收仍未完成。完整 23 项分类和逐产品边界见 `docs/AGENT_DESKTOP_INVENTORY.md`。
+
 ## [0.12.3] - 2026-11-24
 
 > 桌面 Agent 识别与卸载衔接、无开发工具更新校验、可信下载复用及识别规则在线更新；App、扫描服务、登录项和 MCP 统一为 0.12.3（Build 53）。

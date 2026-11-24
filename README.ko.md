@@ -31,9 +31,17 @@ CleanNest는 기존 정리 도구에 AI 문구만 덧붙인 제품이 아닙니�
 > [!IMPORTANT]
 > CleanNest는 이제 Developer ID 서명, Apple 공증 및 티켓 스테이플링을 갖춘 Universal 2 PKG를 로컬에서 빌드할 수 있습니다. 실제 공개 다운로드는 [Releases](https://github.com/n9896027/CleanNest/releases)에서 확인하세요. CI ad-hoc 산출물은 검증 전용이며 공식 설치 파일이 아닙니다.
 
-## 0.12.1: 정리 후보와 설명을 더 쉽게
+## 개발 중: 0.12.4 로컬 데스크톱 Agent 전체 점검
 
-현재 개발 버전은 **0.12.3(Build 53)**입니다. 최신 설치 파일은 [공식 Release](https://github.com/n9896027/CleanNest/releases/latest)에서 제공하며, 새 기능과 검증 범위는 [English 0.12.3 안내](README.en.md)를 참조하세요. 아래는 0.12.1에서 도입된 정리 화면 개선 사항입니다. 정리 후보를 첫 화면에 바로 표시하고, 스캔으로 보호된 경로는 후보 아래에 이유별 진단으로 그룹화했습니다. 수백 개의 증거 경로가 처리 가능한 목록을 가리지 않습니다. 읽을 수 없는 경로에만 권한 복구와 재스캔을 제공하며, 심볼릭 링크, 패키지 경계, 스캔 한도는 실제 이유를 설명합니다.
+**0.12.4(Build 54, 로컬 후보이며 아직 출시하지 않음)**는 이 Mac의 App 23개를 실제 기능에 따라 분류합니다. ChatGPT, Claude, Doubao, Gemini, Grok Bot, Kimi, MiniMax Design, Muse, NewMax, Tabbit, ZCode, Xiaoyunque 등 12개는 독립 AI／Agent 클라이언트로서 로컬 샘플 서명 식별을 통과해 기존 제거 미리 보기로 진입할 수 있습니다. Hermes Studio, Pi Agent, WorkBuddy 3개는 독립 클라이언트이지만 서명 무결성 또는 Apple 기반 배포 신뢰가 부족하므로 이유를 표시하는 읽기 전용 항목입니다.
+
+관리 가능한 각 복사본은 정확한 Bundle ID, Signing ID, 허용된 Team ID와 `anchor apple generic` 요구 사항을 모두 충족해야 합니다. 자체 서명 인증서의 Team ID만으로 공식 클라이언트를 사칭할 수 없습니다. 제거 미리 보기는 Application Support, HTTPStorages, WebKit, 환경 설정, 창 상태, 프로젝트와 자격 증명을 보존하며, 명시적으로 등록된 재생성 가능한 캐시와 로그만 처리 대상으로 삼습니다. 온라인 규칙으로 삭제 경로를 추가할 수 없습니다.
+
+KimiCU는 Kimi에 딸린 자동화 구성 요소이고 CC Switch는 API／제공업체 설정 전환 도구이므로 둘 다 독립 Agent가 아닙니다. MiniMax Hub 2, WorkDaddy, Claude Code URL Handler, Hermes 보조 shell, Ollama, YuanHub와 함께 8개를 관련 소프트웨어로 구분해 읽기 전용으로 표시합니다. YuanHub의 본체는 콘텐츠 운영 워크벤치이며 Ollama는 계속 로컬 모델로 관리합니다. 23개 항목의 분류, 식별자, 서명 근거와 제한 사항은 [로컬 데스크톱 Agent 점검 기록](docs/AGENT_DESKTOP_INVENTORY.md)을 참고하세요. 샘플 식별과 격리된 경로 테스트는 실제 서드파티 App 제거 검증이 아니며, 이번 작업에서 클라이언트를 제거하지 않았습니다. 최신 공식 설치 파일은 여전히 0.12.3 Release에서 제공합니다.
+
+### 0.12.1: 정리 후보와 설명을 더 쉽게
+
+현재 개발 버전은 **0.12.4(Build 54)**입니다. 최신 설치 파일은 [공식 Release](https://github.com/n9896027/CleanNest/releases/latest)에서 제공하며, 새 기능과 검증 범위는 [English 0.12.3 안내](README.en.md)를 참조하세요. 아래는 0.12.1에서 도입된 정리 화면 개선 사항입니다. 정리 후보를 첫 화면에 바로 표시하고, 스캔으로 보호된 경로는 후보 아래에 이유별 진단으로 그룹화했습니다. 수백 개의 증거 경로가 처리 가능한 목록을 가리지 않습니다. 읽을 수 없는 경로에만 권한 복구와 재스캔을 제공하며, 심볼릭 링크, 패키지 경계, 스캔 한도는 실제 이유를 설명합니다.
 
 ‘오래된 로그’는 ‘애플리케이션 로그’로 표시하고, 무엇인지, 후보가 된 이유, 처리 영향과 복구 방법을 항목별로 설명합니다. 일괄 선택 전에 확인하며 기본적으로는 아무 항목도 선택하지 않습니다. 활성 파일 재검증, 경로별 안전 경계, 실행 원장, 복구와 APFS 대사 등 0.12.0의 보호 기능은 모두 유지합니다.
 
@@ -163,6 +171,7 @@ CleanNest는 로컬 `mlx_lm.server`에 연결해 정리 후보와 디스크 디�
 | [로컬 AI](docs/LOCAL_AI.md) | MLX 모델 선택·전환, 전송 메타데이터, 안전 경계 |
 | [문제 해결](docs/TROUBLESHOOTING.md) | 내장 엔진, 권한, AI, 빌드, 프로세스, 배터리 상태 문제 |
 | [아키텍처](docs/ARCHITECTURE.md) | 모듈, 데이터 흐름, 고위험 작업 경계 |
+| [로컬 데스크톱 Agent 점검 기록](docs/AGENT_DESKTOP_INVENTORY.md) | 23개 분류: 검증된 독립 클라이언트 12개, 읽기 전용 독립 클라이언트 3개, 관련 소프트웨어 8개. 서명 근거, 보호 경로와 검수 한계 |
 | [개인정보 보호](PRIVACY.md) | 로컬 데이터, 네트워크 접근, 보관, 삭제 |
 | [로드맵](ROADMAP.md) | 완료된 작업, 단기 우선순위, 명시적 비목표 |
 | [변경 내역](CHANGELOG.md) | 릴리스 및 미릴리스 변경 사항 |
@@ -188,6 +197,6 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-현재 버전은 **0.12.3(Build 53)**이며, 실행 전 활성 파일 확인, 경로별 검토, 실행 원장, 항목별 복구 및 신뢰할 수 있는 배포에 중점을 둡니다. 공식 PKG는 검사를 통과한 클린 `main` 커밋에서 빌드해야 하며 실제 공개 다운로드는 Releases에서 확인하세요. 실제 48시간 테스트, 완전한 3개 언어 수동 UI 검수, Intel 실기 및 0.12.3 클린 Mac 설치에는 각각의 증거가 필요하며 CI 빌드나 이전 버전 공증으로 대체할 수 없습니다. 재현 가능한 버그와 기능 제안은 [Issues](https://github.com/n9896027/CleanNest/issues)에 남기고, 보안 취약점은 비공개로 신고해 주세요.
+현재 개발 후보는 **0.12.4(Build 54, 미출시)**이며, 로컬 데스크톱 Agent 전체 점검, Apple 기반 서명 검증과 읽기 전용 후보 설명에 중점을 둡니다. 최신 공식 버전은 0.12.3입니다. 공식 PKG는 검사를 통과한 클린 `main` 커밋에서 빌드해야 하며 실제 공개 다운로드는 Releases에서 확인하세요. 완전한 3개 언어 수동 UI 검수, Intel 실기, macOS 14, 클린 Mac 설치와 실제 서드파티 클라이언트 제거에는 각각의 증거가 필요하며 CI 빌드나 이전 버전 공증으로 대체할 수 없습니다. 재현 가능한 버그와 기능 제안은 [Issues](https://github.com/n9896027/CleanNest/issues)에 남기고, 보안 취약점은 비공개로 신고해 주세요.
 
 앱 UI와 상세 유지 관리자 문서는 현재 주로 중국어 간체로 제공됩니다. 이 한국어 README는 프로젝트 범위를 정확히 설명하기 위한 것이며, 전체 UI 한국어 현지화가 완료되었다는 의미는 아닙니다.

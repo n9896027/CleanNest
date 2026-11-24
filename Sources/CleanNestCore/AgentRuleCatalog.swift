@@ -5,6 +5,10 @@ public enum AgentRuleBaseDirectory: String, Codable, CaseIterable, Sendable {
     case applicationSupport
     case caches
     case logs
+    case httpStorages
+    case preferences
+    case savedApplicationState
+    case webKit
 }
 
 public enum AgentAdapterVerification: String, Codable, Sendable {
@@ -46,6 +50,14 @@ public struct AgentRulePath: Codable, Equatable, Hashable, Sendable {
             baseURL = home.appendingPathComponent("Library/Caches", isDirectory: true)
         case .logs:
             baseURL = home.appendingPathComponent("Library/Logs", isDirectory: true)
+        case .httpStorages:
+            baseURL = home.appendingPathComponent("Library/HTTPStorages", isDirectory: true)
+        case .preferences:
+            baseURL = home.appendingPathComponent("Library/Preferences", isDirectory: true)
+        case .savedApplicationState:
+            baseURL = home.appendingPathComponent("Library/Saved Application State", isDirectory: true)
+        case .webKit:
+            baseURL = home.appendingPathComponent("Library/WebKit", isDirectory: true)
         }
         return baseURL.appendingPathComponent(relativePath, isDirectory: true).standardizedFileURL
     }
@@ -154,29 +166,32 @@ public struct AgentRuleCatalog: Codable, Equatable, Sendable {
     public let issuedAt: Date
     public let providers: [AgentProviderRule]
     public let desktopProducts: [AgentDesktopProductRule]
+    public let relatedSoftware: [AgentRelatedSoftwareRule]
 
     public init(
         schemaVersion: Int = supportedSchemaVersion,
         revision: String,
         issuedAt: Date,
         providers: [AgentProviderRule],
-        desktopProducts: [AgentDesktopProductRule] = []
+        desktopProducts: [AgentDesktopProductRule] = [],
+        relatedSoftware: [AgentRelatedSoftwareRule] = []
     ) throws {
         self.schemaVersion = schemaVersion
         self.revision = revision
         self.issuedAt = issuedAt
         self.providers = providers
         self.desktopProducts = desktopProducts
+        self.relatedSoftware = relatedSoftware
         try validate()
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, revision, issuedAt, providers, desktopProducts
+        case schemaVersion, revision, issuedAt, providers, desktopProducts, relatedSoftware
     }
 
-    /// Schema 1 bundles predate dynamic desktop products. Their signed legacy
-    /// workspace rules remain valid, while new built-in products are supplied
-    /// locally. No missing field can disable a product or invent file authority.
+    /// Schema 1 bundles predate dynamic desktop products and related software.
+    /// Their signed legacy workspace rules remain valid, while new built-in
+    /// entries are supplied locally. No missing field can grant file authority.
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
@@ -184,6 +199,7 @@ public struct AgentRuleCatalog: Codable, Equatable, Sendable {
         issuedAt = try values.decode(Date.self, forKey: .issuedAt)
         providers = try values.decode([AgentProviderRule].self, forKey: .providers)
         desktopProducts = try values.decodeIfPresent([AgentDesktopProductRule].self, forKey: .desktopProducts) ?? []
+        relatedSoftware = try values.decodeIfPresent([AgentRelatedSoftwareRule].self, forKey: .relatedSoftware) ?? []
         try validate()
     }
 
@@ -194,6 +210,7 @@ public struct AgentRuleCatalog: Codable, Equatable, Sendable {
     public func mergingBuiltInBaseline() throws -> AgentRuleCatalog {
         let importedProviders = Dictionary(uniqueKeysWithValues: providers.map { ($0.provider, $0) })
         let importedProductIDs = Set(desktopProducts.map(\.id))
+        let importedRelatedIDs = Set(relatedSoftware.map(\.id))
         return try AgentRuleCatalog(
             schemaVersion: schemaVersion,
             revision: revision,
@@ -201,7 +218,8 @@ public struct AgentRuleCatalog: Codable, Equatable, Sendable {
             providers: AgentWorkspaceProvider.allCases.map { provider in
                 importedProviders[provider] ?? Self.builtIn.providers.first { $0.provider == provider }!
             },
-            desktopProducts: desktopProducts + Self.builtIn.desktopProducts.filter { !importedProductIDs.contains($0.id) }
+            desktopProducts: desktopProducts + Self.builtIn.desktopProducts.filter { !importedProductIDs.contains($0.id) },
+            relatedSoftware: relatedSoftware + Self.builtIn.relatedSoftware.filter { !importedRelatedIDs.contains($0.id) }
         )
     }
 
@@ -242,13 +260,37 @@ public struct AgentRuleCatalog: Codable, Equatable, Sendable {
         for provider in AgentWorkspaceProvider.allCases where !seen.contains(provider) {
             throw AgentRuleCatalogError.missingProvider(provider.displayName)
         }
-        guard desktopProducts.count <= 32 else { throw AgentRuleCatalogError.oversizedCatalog }
+        guard desktopProducts.count <= 32, relatedSoftware.count <= 32 else {
+            throw AgentRuleCatalogError.oversizedCatalog
+        }
         var productIDs = Set<String>()
+        var productBundleIdentifiers = Set<String>()
         for product in desktopProducts {
             guard productIDs.insert(product.id).inserted else {
                 throw AgentRuleCatalogError.duplicateProvider(product.id)
             }
+            for identifier in product.bundleIdentifiers {
+                guard productBundleIdentifiers.insert(identifier).inserted else {
+                    throw AgentRuleCatalogError.duplicateProvider(identifier)
+                }
+            }
             try product.validate()
+        }
+        var relatedIDs = Set<String>()
+        var relatedBundleIdentifiers = Set<String>()
+        for software in relatedSoftware {
+            guard relatedIDs.insert(software.id).inserted,
+                  !productIDs.contains(software.id),
+                  relatedBundleIdentifiers.insert(software.bundleIdentifier).inserted,
+                  !productBundleIdentifiers.contains(software.bundleIdentifier) else {
+                throw AgentRuleCatalogError.duplicateProvider(software.id)
+            }
+            if let owner = software.owningProductID {
+                guard productIDs.contains(owner) else {
+                    throw AgentRuleCatalogError.missingProvider(owner)
+                }
+            }
+            try software.validate()
         }
     }
 
@@ -288,7 +330,7 @@ public struct AgentRuleCatalog: Codable, Equatable, Sendable {
             .init(kind: .runtime, contains: ["runtime", "plugin", "extension"])
         ]
         let catalog = try! AgentRuleCatalog(
-            revision: "builtin-2026.11.24.1",
+            revision: "builtin-2026.11.24.3",
             issuedAt: Date(timeIntervalSince1970: 1_795_478_400),
             providers: [
                 .init(
@@ -348,14 +390,18 @@ public struct AgentRuleCatalog: Codable, Equatable, Sendable {
                     verification: .verifiedReadOnly,
                     roots: [
                         .init(base: .home, relativePath: ".kimi"),
+                        .init(base: .home, relativePath: ".kimi-cu"),
                         .init(base: .applicationSupport, relativePath: "kimi-desktop"),
+                        .init(base: .applicationSupport, relativePath: "KimiCU"),
                         .init(base: .caches, relativePath: "kimi-code", defaultKind: .caches),
                         .init(base: .caches, relativePath: "kimi-desktop-updater", defaultKind: .caches),
-                        .init(base: .logs, relativePath: "kimi-desktop", defaultKind: .logs)
+                        .init(base: .caches, relativePath: "ai.kimi.cu", defaultKind: .caches),
+                        .init(base: .logs, relativePath: "kimi-desktop", defaultKind: .logs),
+                        .init(base: .httpStorages, relativePath: "ai.kimi.cu", defaultKind: .stateAndIndexes)
                     ],
-                    bundleIdentifiers: ["com.moonshot.kimichat"],
-                    applicationNames: ["Kimi"],
-                    processMarkers: ["kimi", "kimi-cli"],
+                    bundleIdentifiers: ["com.moonshot.kimichat", "ai.kimi.cu"],
+                    applicationNames: ["Kimi", "KimiCU"],
+                    processMarkers: ["kimi", "kimi-cli", "kimi-cu"],
                     artifactRules: [.init(kind: .activeSessions, contains: ["session", "conversation", "chat"])] + shared
                 ),
                 .init(
@@ -419,9 +465,10 @@ public struct AgentRuleCatalog: Codable, Equatable, Sendable {
                     verification: .verifiedReadOnly,
                     roots: [
                         .init(base: .logs, relativePath: "MiniMax Hub", defaultKind: .logs),
-                        .init(base: .logs, relativePath: "MiniMax Hub Twin", defaultKind: .logs)
+                        .init(base: .logs, relativePath: "MiniMax Hub Twin", defaultKind: .logs),
+                        .init(base: .logs, relativePath: "MiniMax Design", defaultKind: .logs)
                     ],
-                    bundleIdentifiers: ["local.zone.minimax-hub2", "com.minimax.hub"],
+                    bundleIdentifiers: ["local.zone.minimax-hub2", "com.minimax.hub", "com.minimax.hub.global"],
                     applicationNames: ["MiniMax Hub 2", "MiniMax Design"],
                     processMarkers: ["minimax hub", "minimax design"],
                     artifactRules: shared
@@ -430,6 +477,7 @@ public struct AgentRuleCatalog: Codable, Equatable, Sendable {
                     provider: .xiaoyunque,
                     verification: .detectionOnly,
                     roots: [],
+                    bundleIdentifiers: ["com.bytedance.pippit.xiaoyunque"],
                     applicationNames: ["小云雀"],
                     processMarkers: ["xiaoyunque", "小云雀"],
                     artifactRules: shared
@@ -437,29 +485,217 @@ public struct AgentRuleCatalog: Codable, Equatable, Sendable {
             ],
             desktopProducts: [
                 AgentDesktopProductRule(
-                    id: "grok-bot",
-                    displayName: "Grok Bot",
+                    id: "chatgpt", displayName: "ChatGPT",
+                    bundleIdentifiers: ["com.openai.codex"],
+                    allowedTeamIdentifiers: ["2DC432GLL2"],
+                    applicationNames: ["ChatGPT"], verification: .verifiedOfficialSample,
+                    legacyProvider: .codex,
+                    privateData: agentDesktopData(
+                        "com.openai.codex", applicationSupport: ["Codex", "OpenAI"], home: [".codex"],
+                        logs: ["com.openai.codex"]
+                    )
+                ),
+                AgentDesktopProductRule(
+                    id: "claude", displayName: "Claude",
+                    bundleIdentifiers: ["com.anthropic.claudefordesktop"],
+                    allowedTeamIdentifiers: ["Q6L2SF6YDW"],
+                    applicationNames: ["Claude"], verification: .verifiedOfficialSample,
+                    legacyProvider: .claude,
+                    privateData: agentDesktopData(
+                        "com.anthropic.claudefordesktop", applicationSupport: ["Claude"], home: [".claude"],
+                        logs: ["Claude"]
+                    )
+                ),
+                AgentDesktopProductRule(
+                    id: "doubao", displayName: "Doubao",
+                    bundleIdentifiers: ["com.bot.neotix.doubao"],
+                    allowedTeamIdentifiers: ["96L78H6LMH"],
+                    applicationNames: ["Doubao"], verification: .verifiedOfficialSample,
+                    privateData: agentDesktopData("com.bot.neotix.doubao", applicationSupport: ["Doubao"])
+                ),
+                AgentDesktopProductRule(
+                    id: "gemini", displayName: "Gemini",
+                    bundleIdentifiers: ["com.google.GeminiMacOS"],
+                    allowedTeamIdentifiers: ["EQHXZ8M8AV"],
+                    applicationNames: ["Gemini"], verification: .verifiedOfficialSample,
+                    privateData: agentDesktopData("com.google.GeminiMacOS", home: [".gemini"])
+                ),
+                AgentDesktopProductRule(
+                    id: "grok-bot", displayName: "Grok Bot",
                     bundleIdentifiers: ["com.anysphere.sand"],
                     allowedTeamIdentifiers: ["DCNK4UB866"],
-                    applicationNames: ["Grok Bot"],
-                    verification: .verifiedOfficialSample,
-                    privateData: [
-                        AgentDesktopDataRule(
-                            path: AgentRulePath(base: .caches, relativePath: "com.anysphere.sand", defaultKind: .caches),
-                            disposition: .regenerable
-                        ),
-                        AgentDesktopDataRule(
-                            path: AgentRulePath(base: .logs, relativePath: "com.anysphere.sand", defaultKind: .logs),
-                            disposition: .regenerable
-                        ),
-                        AgentDesktopDataRule(
-                            path: AgentRulePath(base: .applicationSupport, relativePath: "Grok Bot"),
-                            disposition: .retained
-                        )
-                    ]
+                    applicationNames: ["Grok Bot"], verification: .verifiedOfficialSample,
+                    privateData: agentDesktopData(
+                        "com.anysphere.sand", applicationSupport: ["Grok Bot"], home: [".grok", ".grokbot"],
+                        logs: ["com.anysphere.sand"]
+                    )
+                ),
+                AgentDesktopProductRule(
+                    id: "hermes-studio", displayName: "Hermes Studio",
+                    bundleIdentifiers: ["com.hermeswebui.studio"],
+                    allowedTeamIdentifiers: ["74J93F4W83"],
+                    applicationNames: ["Hermes Studio"], verification: .pendingOfficialSample,
+                    legacyProvider: .hermes
+                ),
+                AgentDesktopProductRule(
+                    id: "kimi", displayName: "Kimi",
+                    bundleIdentifiers: ["com.moonshot.kimichat"],
+                    allowedTeamIdentifiers: ["2J9472RW75"],
+                    applicationNames: ["Kimi"], verification: .verifiedOfficialSample,
+                    legacyProvider: .kimi,
+                    privateData: agentDesktopData(
+                        "com.moonshot.kimichat", applicationSupport: ["Kimi", "kimi-desktop"], home: [".kimi"],
+                        logs: ["kimi-desktop"]
+                    )
+                ),
+                AgentDesktopProductRule(
+                    id: "minimax-design", displayName: "MiniMax Design",
+                    bundleIdentifiers: ["com.minimax.hub.global"],
+                    allowedTeamIdentifiers: ["5Y7L83QLXD"],
+                    applicationNames: ["MiniMax Design"], verification: .verifiedOfficialSample,
+                    legacyProvider: .miniMaxHub,
+                    privateData: agentDesktopData(
+                        "com.minimax.hub.global", applicationSupport: ["MiniMax Design"], logs: ["MiniMax Design"]
+                    )
+                ),
+                AgentDesktopProductRule(
+                    id: "muse", displayName: "Muse",
+                    bundleIdentifiers: ["com.meta.endo"],
+                    allowedTeamIdentifiers: ["V9WTTPBFK9"],
+                    applicationNames: ["Muse"], verification: .verifiedOfficialSample,
+                    privateData: agentDesktopData("com.meta.endo")
+                ),
+                AgentDesktopProductRule(
+                    id: "newmax", displayName: "NewMax",
+                    bundleIdentifiers: ["cc.newmax.desktop"],
+                    allowedTeamIdentifiers: ["22HUP6KLKD"],
+                    applicationNames: ["NewMax"], verification: .verifiedOfficialSample,
+                    privateData: agentDesktopData(
+                        "cc.newmax.desktop", applicationSupport: ["NewmaxAI"], home: [".newmax"]
+                    )
+                ),
+                AgentDesktopProductRule(
+                    id: "pi-agent", displayName: "Pi Agent",
+                    bundleIdentifiers: ["com.abcwyc.pi-agent"],
+                    allowedTeamIdentifiers: [],
+                    applicationNames: ["Pi Agent"], verification: .pendingOfficialSample,
+                    legacyProvider: .piAgent
+                ),
+                AgentDesktopProductRule(
+                    id: "tabbit", displayName: "Tabbit",
+                    bundleIdentifiers: ["com.tabbit-ai.Tabbit"],
+                    allowedTeamIdentifiers: ["2DE8QTFYGR"],
+                    applicationNames: ["Tabbit"], verification: .verifiedOfficialSample,
+                    privateData: agentDesktopData(
+                        "com.tabbit-ai.Tabbit", applicationSupport: ["Tabbit"], caches: ["Tabbit"]
+                    )
+                ),
+                AgentDesktopProductRule(
+                    id: "workbuddy", displayName: "WorkBuddy",
+                    bundleIdentifiers: ["com.workbuddy.workbuddy"],
+                    allowedTeamIdentifiers: ["FN2V63AD2J"],
+                    applicationNames: ["WorkBuddy"], verification: .pendingOfficialSample,
+                    legacyProvider: .workBuddy
+                ),
+                AgentDesktopProductRule(
+                    id: "zcode", displayName: "ZCode",
+                    bundleIdentifiers: ["dev.zcode.app"],
+                    allowedTeamIdentifiers: ["8A5X4JJ39T"],
+                    applicationNames: ["ZCode"], verification: .verifiedOfficialSample,
+                    privateData: agentDesktopData("dev.zcode.app", applicationSupport: ["ZCode"], home: [".zcode"])
+                ),
+                AgentDesktopProductRule(
+                    id: "xiaoyunque", displayName: "小云雀",
+                    bundleIdentifiers: ["com.bytedance.pippit.xiaoyunque"],
+                    allowedTeamIdentifiers: ["JH23ZR9LF5"],
+                    applicationNames: ["小云雀"], verification: .verifiedOfficialSample,
+                    legacyProvider: .xiaoyunque,
+                    privateData: agentDesktopData("com.bytedance.pippit.xiaoyunque", applicationSupport: ["小云雀"])
+                )
+            ],
+            relatedSoftware: [
+                AgentRelatedSoftwareRule(
+                    id: "cc-switch", displayName: "CC Switch",
+                    bundleIdentifier: "com.ccswitch.desktop", role: .configurationTool
+                ),
+                AgentRelatedSoftwareRule(
+                    id: "claude-code-url-handler", displayName: "Claude Code URL Handler",
+                    bundleIdentifier: "com.anthropic.claude-code-url-handler", role: .urlHandler,
+                    owningProductID: "claude"
+                ),
+                AgentRelatedSoftwareRule(
+                    id: "hermes-helper-shell", displayName: "Hermes",
+                    bundleIdentifier: "com.tianshu.hermes.shell", role: .helperShell,
+                    owningProductID: "hermes-studio"
+                ),
+                AgentRelatedSoftwareRule(
+                    id: "kimi-cu", displayName: "KimiCU",
+                    bundleIdentifier: "ai.kimi.cu", role: .bundledComponent,
+                    owningProductID: "kimi"
+                ),
+                AgentRelatedSoftwareRule(
+                    id: "minimax-hub-2-launcher", displayName: "MiniMax Hub 2",
+                    bundleIdentifier: "local.zone.minimax-hub2", role: .localLauncher
+                ),
+                AgentRelatedSoftwareRule(
+                    id: "ollama", displayName: "Ollama",
+                    bundleIdentifier: "com.electron.ollama", role: .localModelRunner
+                ),
+                AgentRelatedSoftwareRule(
+                    id: "workdaddy", displayName: "WorkDaddy",
+                    bundleIdentifier: "com.workdaddy.launcher", role: .automationLauncher,
+                    owningProductID: "workbuddy"
+                ),
+                AgentRelatedSoftwareRule(
+                    id: "yuanhub", displayName: "YuanHub",
+                    bundleIdentifier: "io.github.creatorhub.desktop", role: .automationWorkbench
                 )
             ]
         )
         return catalog
     }()
+}
+
+/// Every desktop product retains the standard locations that can contain login
+/// state, cookies, preferences or browsing data. Only exact cache/log roots are
+/// regenerable; all other evidence remains read-only during product uninstall.
+private func agentDesktopData(
+    _ bundleIdentifier: String,
+    applicationSupport: [String] = [],
+    home: [String] = [],
+    caches: [String]? = nil,
+    logs: [String] = []
+) -> [AgentDesktopDataRule] {
+    var rules = ([bundleIdentifier] + applicationSupport).map {
+        AgentDesktopDataRule(path: AgentRulePath(base: .applicationSupport, relativePath: $0), disposition: .retained)
+    }
+    rules += home.map {
+        AgentDesktopDataRule(path: AgentRulePath(base: .home, relativePath: $0), disposition: .retained)
+    }
+    rules += [
+        AgentDesktopDataRule(
+            path: AgentRulePath(base: .httpStorages, relativePath: bundleIdentifier), disposition: .retained
+        ),
+        AgentDesktopDataRule(
+            path: AgentRulePath(base: .preferences, relativePath: bundleIdentifier + ".plist"), disposition: .retained
+        ),
+        AgentDesktopDataRule(
+            path: AgentRulePath(base: .savedApplicationState, relativePath: bundleIdentifier + ".savedState"),
+            disposition: .retained
+        ),
+        AgentDesktopDataRule(
+            path: AgentRulePath(base: .webKit, relativePath: bundleIdentifier), disposition: .retained
+        )
+    ]
+    rules += (caches ?? [bundleIdentifier]).map {
+        AgentDesktopDataRule(
+            path: AgentRulePath(base: .caches, relativePath: $0, defaultKind: .caches), disposition: .regenerable
+        )
+    }
+    rules += logs.map {
+        AgentDesktopDataRule(
+            path: AgentRulePath(base: .logs, relativePath: $0, defaultKind: .logs), disposition: .regenerable
+        )
+    }
+    return rules
 }

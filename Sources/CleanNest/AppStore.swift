@@ -373,6 +373,17 @@ final class AppStore: ObservableObject {
     var agentDesktopInstallations: [AgentDesktopInstallation] {
         agentWorkspaceState.desktopInstallations
     }
+    var agentDesktopCandidates: [AgentDesktopCandidate] {
+        agentWorkspaceState.desktopCandidates
+    }
+    var agentRelatedSoftware: [AgentRelatedSoftwareInstallation] {
+        agentWorkspaceState.relatedSoftware
+    }
+    var agentDesktopInventoryIsEmpty: Bool {
+        agentWorkspaceState.desktopInstallations.isEmpty
+            && agentWorkspaceState.desktopCandidates.isEmpty
+            && agentWorkspaceState.relatedSoftware.isEmpty
+    }
     var agentDesktopInventoryIsRefreshing: Bool {
         agentWorkspaceState.desktopInventoryIsRefreshing
     }
@@ -993,9 +1004,11 @@ final class AppStore: ObservableObject {
         agentWorkspaceState.desktopInventoryIsRefreshing = true
         defer { agentWorkspaceState.desktopInventoryIsRefreshing = false }
         let catalog = agentRuleCatalog
-        let installations = await agentDesktopProductInventory.scan(catalog: catalog)
+        let inventory = await agentDesktopProductInventory.scan(catalog: catalog)
         guard agentDesktopInventoryID == requestID, agentRuleCatalog.revision == catalog.revision else { return }
-        agentWorkspaceState.desktopInstallations = installations
+        agentWorkspaceState.desktopInstallations = inventory.installations
+        agentWorkspaceState.desktopCandidates = inventory.candidates
+        agentWorkspaceState.relatedSoftware = inventory.relatedSoftware
     }
 
     func openAgentProductUninstall(_ installation: AgentDesktopInstallation) async {

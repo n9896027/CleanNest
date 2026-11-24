@@ -116,38 +116,140 @@ public struct AgentDesktopSignatureEvidence: Equatable, Sendable {
     }
 }
 
+public enum AgentDesktopCandidateIssue: Equatable, Sendable {
+    case invalidSignature
+    case unexpectedSigner
+    case pendingOfficialSample
+}
+
+/// A bundle that declares a known product identifier but cannot be managed
+/// safely. It remains visible without inheriting the product's trusted name or
+/// receiving any mutation authority.
+public struct AgentDesktopCandidate: Identifiable, Equatable, Sendable {
+    public let productID: String
+    public let copyID: String
+    public let displayName: String
+    public let expectedProductName: String
+    public let application: InstalledApplication
+    public let issue: AgentDesktopCandidateIssue
+    public let signingIdentifier: String?
+    public let teamIdentifier: String?
+
+    public init(
+        rule: AgentDesktopProductRule,
+        application: InstalledApplication,
+        issue: AgentDesktopCandidateIssue,
+        signature: AgentDesktopSignatureEvidence
+    ) {
+        productID = rule.id
+        copyID = rule.id + ":" + application.id
+        displayName = application.name
+        expectedProductName = rule.displayName
+        self.application = application
+        self.issue = issue
+        signingIdentifier = signature.signingIdentifier
+        teamIdentifier = signature.teamIdentifier
+    }
+
+    public var id: String { copyID }
+}
+
+public struct AgentDesktopInventorySnapshot: Equatable, Sendable {
+    public let installations: [AgentDesktopInstallation]
+    public let candidates: [AgentDesktopCandidate]
+    public let relatedSoftware: [AgentRelatedSoftwareInstallation]
+
+    public init(
+        installations: [AgentDesktopInstallation],
+        candidates: [AgentDesktopCandidate],
+        relatedSoftware: [AgentRelatedSoftwareInstallation] = []
+    ) {
+        self.installations = installations
+        self.candidates = candidates
+        self.relatedSoftware = relatedSoftware
+    }
+}
+
 public enum AgentDesktopProductDetector {
-    /// Exact metadata, valid code signature and an allow-listed signer are all
-    /// mandatory. Names, websites, caches and process names never establish an
-    /// installed desktop product by themselves.
+    /// Exact metadata, an Apple-anchored valid signature and an allow-listed
+    /// signer are mandatory for Agent management. Related software is detected
+    /// separately by functional role; its signature never promotes it to Agent.
+    public static func inventory(
+        catalog: AgentRuleCatalog,
+        applications: [InstalledApplication],
+        signature: (URL) -> AgentDesktopSignatureEvidence = inspectSignature
+    ) -> AgentDesktopInventorySnapshot {
+        var installations: [AgentDesktopInstallation] = []
+        var candidates: [AgentDesktopCandidate] = []
+        var relatedSoftware: [AgentRelatedSoftwareInstallation] = []
+        var seenPaths = Set<String>()
+        for rule in catalog.desktopProducts {
+            for application in applications where rule.bundleIdentifiers.contains(application.bundleIdentifier ?? "") {
+                let path = application.url.resolvingSymlinksInPath().standardizedFileURL.path
+                guard seenPaths.insert(path).inserted else { continue }
+                let evidence = signature(application.url)
+                let expectedIdentity = evidence.signingIdentifier == application.bundleIdentifier
+                let allowedSigner = evidence.teamIdentifier.map(rule.allowedTeamIdentifiers.contains) == true
+                if rule.verification == .verifiedOfficialSample,
+                   evidence.isValid, expectedIdentity, allowedSigner, let team = evidence.teamIdentifier {
+                    installations.append(AgentDesktopInstallation(
+                        rule: rule,
+                        application: application,
+                        teamIdentifier: team,
+                        ruleRevision: catalog.revision
+                    ))
+                    continue
+                }
+                let issue: AgentDesktopCandidateIssue
+                if !evidence.isValid {
+                    issue = .invalidSignature
+                } else if !expectedIdentity || !allowedSigner {
+                    issue = .unexpectedSigner
+                } else {
+                    issue = .pendingOfficialSample
+                }
+                candidates.append(AgentDesktopCandidate(
+                    rule: rule,
+                    application: application,
+                    issue: issue,
+                    signature: evidence
+                ))
+            }
+        }
+        for rule in catalog.relatedSoftware {
+            for application in applications where application.bundleIdentifier == rule.bundleIdentifier {
+                let path = application.url.resolvingSymlinksInPath().standardizedFileURL.path
+                guard seenPaths.insert(path).inserted else { continue }
+                relatedSoftware.append(AgentRelatedSoftwareInstallation(
+                    rule: rule,
+                    application: application,
+                    signature: signature(application.url)
+                ))
+            }
+        }
+        return AgentDesktopInventorySnapshot(
+            installations: installations.sorted { $0.copyID < $1.copyID },
+            candidates: candidates.sorted { $0.copyID < $1.copyID },
+            relatedSoftware: relatedSoftware.sorted { $0.copyID < $1.copyID }
+        )
+    }
+
     public static func installations(
         catalog: AgentRuleCatalog,
         applications: [InstalledApplication],
         signature: (URL) -> AgentDesktopSignatureEvidence = inspectSignature
     ) -> [AgentDesktopInstallation] {
-        var results: [AgentDesktopInstallation] = []
-        var seenPaths = Set<String>()
-        for rule in catalog.desktopProducts where rule.verification == .verifiedOfficialSample {
-            let candidates = applications.filter {
-                guard let identifier = $0.bundleIdentifier else { return false }
-                return rule.bundleIdentifiers.contains(identifier)
-            }
-            for application in candidates
-            where seenPaths.insert(application.url.resolvingSymlinksInPath().standardizedFileURL.path).inserted {
-                let evidence = signature(application.url)
-                guard evidence.isValid,
-                      evidence.signingIdentifier == application.bundleIdentifier,
-                      let team = evidence.teamIdentifier,
-                      rule.allowedTeamIdentifiers.contains(team) else { continue }
-                results.append(AgentDesktopInstallation(
-                    rule: rule,
-                    application: application,
-                    teamIdentifier: team,
-                    ruleRevision: catalog.revision
-                ))
-            }
-        }
-        return results.sorted { $0.copyID < $1.copyID }
+        inventory(catalog: catalog, applications: applications, signature: signature).installations
+    }
+
+    /// Read-only discovery deliberately uses a separate result type. A pending
+    /// product or failed signature never receives uninstall authority.
+    public static func unverifiedCandidates(
+        catalog: AgentRuleCatalog,
+        applications: [InstalledApplication],
+        signature: (URL) -> AgentDesktopSignatureEvidence = inspectSignature
+    ) -> [AgentDesktopCandidate] {
+        inventory(catalog: catalog, applications: applications, signature: signature).candidates
     }
 
     public static func inspectSignature(at url: URL) -> AgentDesktopSignatureEvidence {
@@ -155,10 +257,21 @@ public enum AgentDesktopProductDetector {
         guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess, let code else {
             return AgentDesktopSignatureEvidence(isValid: false, signingIdentifier: nil, teamIdentifier: nil)
         }
+        // A Team ID in an arbitrary self-signed certificate is not proof of an
+        // official product. Require an Apple-anchored distribution chain first;
+        // callers then compare the exact signing identifier and allowed team.
+        var requirement: SecRequirement?
+        guard SecRequirementCreateWithString(
+            "anchor apple generic" as CFString,
+            SecCSFlags(rawValue: 0),
+            &requirement
+        ) == errSecSuccess, let requirement else {
+            return AgentDesktopSignatureEvidence(isValid: false, signingIdentifier: nil, teamIdentifier: nil)
+        }
         let validation = SecStaticCodeCheckValidity(
             code,
             SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckAllArchitectures),
-            nil
+            requirement
         )
         var raw: CFDictionary?
         let copied = SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &raw)
@@ -178,11 +291,12 @@ public struct AgentDesktopProductInventory: Sendable {
         self.homeDirectory = homeDirectory.standardizedFileURL
     }
 
-    public func scan(catalog: AgentRuleCatalog) async -> [AgentDesktopInstallation] {
+    public func scan(catalog: AgentRuleCatalog) async -> AgentDesktopInventorySnapshot {
         await Task.detached(priority: .userInitiated) {
             var applications = await ApplicationScanner(homeDirectory: homeDirectory).scan()
             var knownPaths = Set(applications.map { $0.url.resolvingSymlinksInPath().standardizedFileURL.path })
             let identifiers = Set(catalog.desktopProducts.flatMap(\.bundleIdentifiers))
+                .union(catalog.relatedSoftware.map(\.bundleIdentifier))
             for identifier in identifiers {
                 guard let raw = LSCopyApplicationURLsForBundleIdentifier(identifier as CFString, nil)?.takeRetainedValue(),
                       let urls = raw as? [URL] else { continue }
@@ -193,7 +307,7 @@ public struct AgentDesktopProductInventory: Sendable {
                     applications.append(application)
                 }
             }
-            return AgentDesktopProductDetector.installations(catalog: catalog, applications: applications)
+            return AgentDesktopProductDetector.inventory(catalog: catalog, applications: applications)
         }.value
     }
 
