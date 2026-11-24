@@ -29,12 +29,14 @@ public struct ApplicationScanner: Sendable {
                     let displayName = bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
                     let bundleName = bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
                     let version = bundle?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+                    let buildVersion = bundle?.object(forInfoDictionaryKey: "CFBundleVersion") as? String
 
                     applications.append(
                         InstalledApplication(
                             name: displayName ?? bundleName ?? url.deletingPathExtension().lastPathComponent,
                             bundleIdentifier: bundle?.bundleIdentifier,
                             version: version,
+                            buildVersion: buildVersion,
                             url: url,
                             allocatedBytes: FileTree.allocatedSize(of: url),
                             modifiedAt: resourceValues?.contentModificationDate,
@@ -74,12 +76,17 @@ public struct ApplicationScanner: Sendable {
     public func dependencyGraph(
         for application: InstalledApplication,
         includeProtectedAppData: Bool = false,
-        applicationIsRunning: Bool? = nil
+        applicationIsRunning: Bool? = nil,
+        desktopProduct: AgentDesktopProductRule? = nil
     ) async -> ApplicationDependencyGraph {
-        await dependencyGraphBuilder.build(
+        let graph = await dependencyGraphBuilder.build(
             for: application,
             includeProtectedAppData: includeProtectedAppData,
             applicationIsRunning: applicationIsRunning
         )
+        guard let desktopProduct,
+              let identifier = application.bundleIdentifier,
+              desktopProduct.bundleIdentifiers.contains(identifier) else { return graph }
+        return graph.includingDesktopProduct(desktopProduct, homeDirectory: homeDirectory)
     }
 }

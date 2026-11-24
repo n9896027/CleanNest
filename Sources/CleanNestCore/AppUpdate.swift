@@ -100,12 +100,35 @@ public struct AppUpdatePackage: Equatable, Sendable {
     public let downloadURL: URL
     public let byteCount: Int64
     public let sha256: String
+    /// Asset identity is more precise than the marketing version alone. These
+    /// optional fields keep older callers source-compatible while official
+    /// Release packages always carry both values.
+    public let version: String?
+    public let build: String?
 
-    public init(name: String, downloadURL: URL, byteCount: Int64, sha256: String) {
+    public init(
+        name: String,
+        downloadURL: URL,
+        byteCount: Int64,
+        sha256: String,
+        version: String? = nil,
+        build: String? = nil
+    ) {
         self.name = name
         self.downloadURL = downloadURL
         self.byteCount = byteCount
         self.sha256 = sha256
+        self.version = version
+        self.build = build
+    }
+
+    public func isSameAsset(as other: AppUpdatePackage) -> Bool {
+        name == other.name
+            && downloadURL == other.downloadURL
+            && byteCount == other.byteCount
+            && sha256.lowercased() == other.sha256.lowercased()
+            && version == other.version
+            && build == other.build
     }
 }
 
@@ -304,11 +327,14 @@ public enum GitHubReleaseParser {
               let downloadURL = URL(string: asset.browserDownloadURL) else {
             throw GitHubReleaseParsingError.invalidInstallerPackage
         }
+        let build = String(asset.name.dropFirst(expectedPrefix.count).dropLast(4))
         let package = AppUpdatePackage(
             name: asset.name,
             downloadURL: downloadURL,
             byteCount: asset.size,
-            sha256: sha256
+            sha256: sha256,
+            version: version.description,
+            build: build
         )
         guard isTrustedPackageURL(
             downloadURL,
@@ -387,12 +413,59 @@ public enum AppUpdateAutomaticCheckPolicy {
     public static func shouldCheck(
         isEnabled: Bool,
         lastAttemptAt: Date?,
+        lastSuccessfulAt: Date? = nil,
+        nextAllowedAttemptAt: Date? = nil,
         now: Date = Date()
     ) -> Bool {
         guard isEnabled else { return false }
-        guard let lastAttemptAt else { return true }
-        return now.timeIntervalSince(lastAttemptAt) >= interval
-            || now.timeIntervalSince(lastAttemptAt) < 0
+        if let nextAllowedAttemptAt, now < nextAllowedAttemptAt { return false }
+        // Success, not a transient offline attempt, starts the normal 24-hour
+        // cadence. Once any success timestamp exists, attempts and expired retry
+        // deadlines never replace that reference. Legacy settings without a
+        // success timestamp retain their previous last-attempt fallback.
+        let reference = lastSuccessfulAt ?? (nextAllowedAttemptAt == nil ? lastAttemptAt : nil)
+        guard let reference else { return true }
+        return now.timeIntervalSince(reference) >= interval
+            || now.timeIntervalSince(reference) < 0
+    }
+}
+
+public enum AppUpdateRateLimitPolicy {
+    public static let fallbackDelay: TimeInterval = 15 * 60
+    public static let maximumDelay: TimeInterval = 24 * 60 * 60
+
+    /// A normal 403 is not a rate limit. GitHub's remaining=0, Retry-After and
+    /// HTTP 429 are the explicit signals used here.
+    public static func retryAt(
+        statusCode: Int,
+        headers: [String: String],
+        now: Date = Date()
+    ) -> Date? {
+        let normalized = Dictionary(uniqueKeysWithValues: headers.map {
+            ($0.key.lowercased(), $0.value.trimmingCharacters(in: .whitespacesAndNewlines))
+        })
+        let retryAfter = normalized["retry-after"]
+        let remainingIsZero = normalized["x-ratelimit-remaining"] == "0"
+        guard statusCode == 429 || (statusCode == 403 && (remainingIsZero || retryAfter != nil)) else {
+            return nil
+        }
+
+        if let retryAfter {
+            if let seconds = TimeInterval(retryAfter), seconds >= 0 {
+                return now.addingTimeInterval(min(seconds, maximumDelay))
+            }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = "EEE',' dd MMM yyyy HH':'mm':'ss zzz"
+            if let date = formatter.date(from: retryAfter) { return date }
+        }
+        if remainingIsZero,
+           let rawReset = normalized["x-ratelimit-reset"],
+           let epoch = TimeInterval(rawReset) {
+            return Date(timeIntervalSince1970: epoch)
+        }
+        return now.addingTimeInterval(fallbackDelay)
     }
 }
 

@@ -34,13 +34,18 @@ struct AgentWorkspaceView: View {
                     }
                 }
 
+                if !showingNativeTools, store.selectedAgentWorkspaceProvider == nil,
+                   !store.agentDesktopInstallations.isEmpty {
+                    desktopAgentInventory
+                }
+
                 if let snapshot = store.agentWorkspaceSnapshot {
                     if showingNativeTools {
                         nativeToolCenter
                     } else if let provider = store.selectedAgentWorkspaceProvider,
                               let agent = snapshot.agents.first(where: { $0.provider == provider }) {
                         agentDetail(agent, snapshot: snapshot)
-                    } else if snapshot.detectedAgents.isEmpty {
+                    } else if snapshot.detectedAgents.isEmpty, store.agentDesktopInstallations.isEmpty {
                         EmptyPanel(
                             symbol: "folder.badge.questionmark",
                             title: "没有发现已验证的 Agent 数据根",
@@ -66,7 +71,7 @@ struct AgentWorkspaceView: View {
                     }
                     if store.agentWorkspacePhase.isScanning {
                         loadingPanel
-                    } else if store.agentWorkspaceSummary == nil {
+                    } else if store.agentWorkspaceSummary == nil, store.agentDesktopInstallations.isEmpty {
                         EmptyPanel(
                             symbol: "sparkle.magnifyingglass",
                             title: "还没有扫描过 Agent 占用",
@@ -224,6 +229,15 @@ struct AgentWorkspaceView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var desktopAgentInventory: some View {
+        AgentDesktopInventorySection(
+            installations: store.agentDesktopInstallations,
+            isRefreshing: store.agentDesktopInventoryIsRefreshing
+        ) { installation in
+            Task { await store.openAgentProductUninstall(installation) }
         }
     }
 
@@ -616,10 +630,18 @@ struct AgentWorkspaceView: View {
     private var ruleCatalogActions: some View {
         HStack(spacing: 8) {
             Button {
+                Task { await store.checkForAgentRuleUpdates() }
+            } label: {
+                Label(store.agentWorkspaceState.ruleCatalogUpdateIsRunning ? "正在检查…" : "检查识别规则", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .disabled(store.agentWorkspaceState.ruleCatalogUpdateIsRunning)
+            .help("仅从官方 Release 获取与 CleanNest 同签名者的规则包；失败不会改变现有规则")
+            Button {
                 chooseAgentRuleBundle()
             } label: {
                 Label("导入签名规则…", systemImage: "checkmark.shield")
             }
+            .disabled(store.agentWorkspaceState.ruleCatalogUpdateIsRunning)
             .help("只接受与当前 CleanNest 同一签名者签署、且通过严格路径校验的规则包")
             if store.agentRuleCatalogSource.isExternal {
                 Button("恢复内置") {

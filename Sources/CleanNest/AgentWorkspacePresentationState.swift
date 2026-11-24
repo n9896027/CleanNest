@@ -23,6 +23,9 @@ final class AgentWorkspacePresentationState: ObservableObject {
     @Published var ruleCatalog = AgentRuleCatalog.builtIn
     @Published var ruleCatalogSource: AgentRuleCatalogSource = .builtIn
     @Published var ruleCatalogDiagnostic = "正在使用内置规则。"
+    @Published var ruleCatalogUpdateIsRunning = false
+    @Published var desktopInstallations: [AgentDesktopInstallation] = []
+    @Published var desktopInventoryIsRefreshing = false
     @Published var dependencyGraph = AgentDependencyGraphSnapshot.empty
     @Published var dependencyGraphIsRefreshing = false
     @Published var nativeDeveloperStorageSnapshot: NativeDeveloperStorageSnapshot?

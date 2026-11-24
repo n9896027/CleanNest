@@ -6,7 +6,7 @@
 
 把 Agent 工作區、本機模型服務、系統告警與磁碟占用放進同一份裝置端證據鏈。先看見、再理解、最後由你決定；檔案預設移到垃圾桶，AI 永遠不能替你授權刪除。
 
-[简体中文](README.md) · [English](README.en.md) · **繁體中文** · [日本語](README.ja.md) · [한국어](README.ko.md)
+[简体中文](README.md) · [English](README.en.md) · **繁體中文** · [日本語](README.ja.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
 [![CI](https://github.com/n9896027/CleanNest/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/n9896027/CleanNest/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/n9896027/CleanNest/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/n9896027/CleanNest/actions/workflows/codeql.yml)
@@ -31,13 +31,15 @@ CleanNest 不是替傳統清理器加上一層 AI 文案。它為同時使用 Co
 > [!IMPORTANT]
 > CleanNest 現已能在本機建置具 Developer ID 簽署、Apple 公證與票據裝訂的 Universal 2 PKG。實際公開下載以 [Releases](https://github.com/n9896027/CleanNest/releases) 為準；CI 的 ad-hoc 產物仍只用於驗證，不是正式安裝檔。
 
-## 0.12.1：更清楚的清理候選與說明
+## 0.12.3：桌面 Agent 清單與不依賴開發工具的更新
 
-目前開發候選為 **0.12.1（Build 51）**。清理候選直接顯示在首屏，掃描保護路徑移至候選後方並按原因分組，不再讓大量證據掩蓋待處理項目。只有無法讀取的路徑提供授權後重新掃描；符號連結、套件邊界與掃描上限會說明真正原因。
+**0.12.3（Build 53）** 在 Agent 工作區新增獨立的桌面用戶端清單。透過精確 Bundle ID、有效程式碼簽名與允許的 Team ID 識別每個安裝副本，顯示真實圖示、版本、Build 與路徑。官方 Grok Bot 1.2.3 樣本（`com.anysphere.sand`／`DCNK4UB866`）已通過正式簽名識別測試。Meta Muse 尚無經核驗的官方 Mac 樣本，本版不宣稱支援，也不猜測其識別碼或目錄。
 
-「舊日誌」改稱「應用程式日誌」，逐項解釋用途、成為候選的原因、處理影響與復原方式；批次選擇前先確認，預設仍不勾選。0.12.0 的活躍檔案複核、逐路徑安全邊界、執行帳本、復原與 APFS 對帳能力全部保留。
+「解除安裝 Agent…」沿用現有的預覽、身分複核、六階段執行、逐項重試與垃圾桶復原流程。Grok Bot 的應用程式資料目錄保持唯讀；雲端帳號、機器人、瀏覽記錄、共享容器及無法證明歸屬的內容不在處理範圍內。線上識別規則只能擴充識別及唯讀證據，不能遠端新增刪除路徑。
 
-目前已通過 292 項測試、嚴格三語審計、本機 Debug 建置與真實清理頁唯讀驗收；尚未產生正式 Universal 2 PKG。
+更新用戶端改用 macOS 內建的 `pkgutil` 與 `spctl`，不再呼叫 `xcrun`；核對 SHA-256、Developer ID Installer 簽名與 Gatekeeper 系統評估。發佈機另行執行 Apple 公證及票據裝訂。已驗證的下載可在關窗、暫時查詢失敗或開啟安裝器失敗後繼續使用，限流時會顯示可重試時間。詳見 [0.12.3 驗證記錄](docs/VERIFICATION-0.12.3.md)。
+
+0.12.1 的候選優先清理頁及 0.12.2 的使用者確認更新全部保留。自動化測試與簽名建置不等同於 Intel 實機、macOS 14 乾淨首裝或真實 Grok 解除安裝驗收；未測情境均單獨披露。
 
 ## 不只是清理器
 
@@ -102,12 +104,14 @@ CleanNest 不是替傳統清理器加上一層 AI 文案。它為同時使用 Co
 - **模型工作台**：用不含檔案中繼資料的最小請求實測健康延遲、首字回應、總耗時、實際 API 模型短名與記憶體餘量。
 - **資料控制**：活動記錄可匯出 JSON 或單獨清除；恢復安全預設值不會混同清除學習、索引、歷史指標或 macOS 權限。
 - **內建原生引擎**：清理、磁碟、系統資料、Agent 和系統狀態均無需 Homebrew 或額外清理引擎。
-- **自動檢查與確認更新**：App 執行期間預設每 24 小時檢查 GitHub 最新正式 Release，可在「關於」頁關閉；發現新版本才提醒。你確認後才下載官方 PKG，並核對檔案大小、SHA-256、Developer ID 團隊簽名、Apple 公證與 Gatekeeper；全部通過後再由你開啟 macOS 安裝器並最終確認，不會靜默安裝或自動取代 App。
+- **自動檢查與確認更新**：App 執行期間預設按最近成功檢查時間每 24 小時查詢 GitHub 最新正式 Release，可在「關於」頁關閉；確認限流後採有界退避。你確認後才下載官方 PKG，CleanNest 使用 macOS 內建工具核對檔案大小、SHA-256、Developer ID Installer 簽名與 Gatekeeper 系統評估，不依賴 Xcode／CLT；之後由你開啟 macOS 安裝器並最終確認。發佈機另行核驗 Apple 公證與票據裝訂，不會靜默安裝或自動取代 App。
 - **原生體驗**：SwiftUI/AppKit 介面、明暗模式、權限恢復引導、活動記錄與安全展示模式。
 - **唯讀 MCP**：透過 App 內建的 stdio 程序提供有界、脫敏的本機證據；沒有 HTTP、刪除、程序控制或設定工具。
 - **三語資源**：核心導覽與主要頁面以 String Catalog 提供 English、简体中文與繁體中文。
 
 ## 下載與執行
+
+開啟 [最新正式 Release](https://github.com/n9896027/CleanNest/releases/latest)，下載 `CleanNest-0.12.3-53.pkg`，依同頁 `SHA256SUMS` 核對摘要，再於 macOS 安裝器中確認安裝至 `/Applications`。備用 App ZIP 為 `CleanNest-0.12.3-53.zip`；內建識別規則離線可用，`CleanNestAgentRules.zip` 僅供後續識別更新。一般安裝與使用不需要 Xcode 或終端機。若 Build 52 的 App 內更新卡在舊版校驗，請直接使用正式 PKG。
 
 系統需求：
 
@@ -189,6 +193,6 @@ swift run CleanNestSelfTest
 CLEANNEST_DEMO=1 swift run CleanNest
 ```
 
-目前版本為 **0.12.0（Build 50）**，重點是清理前活躍檔案複核、逐路徑复核、執行帳本、單項復原與可信發佈。正式 PKG 必須從通過檢查的乾淨 `main` 提交建置，實際公開下載仍以 Releases 為準。真實 48 小時、完整三語人工 UI、Intel 真機與 0.12.0 乾淨 Mac 實裝必須分別留下證據，不能以 CI 編譯或舊版本公證代替。歡迎透過 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可重現問題或功能建議；安全漏洞請私密回報。
+本次迭代版本為 **0.12.3（Build 53）**，重點是桌面 Agent 識別與解除安裝銜接、可信更新快取及不依賴開發工具的用戶端校驗。正式 PKG 必須從通過檢查的乾淨 `main` 提交建置，實際公開下載仍以 Releases 為準。真實 48 小時、完整三語人工 UI、Intel 真機與 0.12.3 乾淨 Mac 實裝必須分別留下證據，不能以 CI 編譯或舊版本公證代替。歡迎透過 [Issues](https://github.com/n9896027/CleanNest/issues) 提交可重現問題或功能建議；安全漏洞請私密回報。
 
 目前 App 介面與詳細維護文件仍以簡體中文為主。本繁體中文 README 用於正確說明專案範圍，不代表介面本地化已完成。

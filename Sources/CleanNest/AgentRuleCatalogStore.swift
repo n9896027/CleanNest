@@ -48,8 +48,8 @@ enum AgentRuleCatalogStoreError: LocalizedError {
 /// Installs only a code-signed bundle whose leaf certificate matches the
 /// currently running CleanNest bundle. Catalog data can extend read-only
 /// detection; mutation authority is not represented in this format.
-struct AgentRuleCatalogStore {
-    private let fileManager = FileManager.default
+struct AgentRuleCatalogStore: Sendable {
+    private var fileManager: FileManager { .default }
 
     var installedBundleURL: URL {
         CleanNestDataPaths.applicationSupportDirectory()
@@ -66,6 +66,14 @@ struct AgentRuleCatalogStore {
         } catch {
             return (.builtIn, .rejectedBundle(installedBundleURL), CNL10n.format("外部规则未通过校验，已失败关闭并回退内置规则：%@", String(describing: error.localizedDescription)))
         }
+    }
+
+    func inspect(source: URL) throws -> AgentRuleCatalog {
+        let source = source.standardizedFileURL
+        let values = try source.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard values.isDirectory == true else { throw AgentRuleCatalogStoreError.invalidBundle }
+        guard values.isSymbolicLink != true else { throw AgentRuleCatalogStoreError.symbolicLink }
+        return try verifiedCatalog(at: source)
     }
 
     func install(from source: URL) throws -> AgentRuleCatalog {
@@ -139,7 +147,7 @@ struct AgentRuleCatalogStore {
         decoder.dateDecodingStrategy = .iso8601
         let catalog = try decoder.decode(AgentRuleCatalog.self, from: data)
         try catalog.validate()
-        return catalog
+        return try catalog.mergingBuiltInBaseline()
     }
 
     private func verifySignature(_ candidateURL: URL) throws {

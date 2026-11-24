@@ -153,22 +153,56 @@ public struct AgentRuleCatalog: Codable, Equatable, Sendable {
     public let revision: String
     public let issuedAt: Date
     public let providers: [AgentProviderRule]
+    public let desktopProducts: [AgentDesktopProductRule]
 
     public init(
         schemaVersion: Int = supportedSchemaVersion,
         revision: String,
         issuedAt: Date,
-        providers: [AgentProviderRule]
+        providers: [AgentProviderRule],
+        desktopProducts: [AgentDesktopProductRule] = []
     ) throws {
         self.schemaVersion = schemaVersion
         self.revision = revision
         self.issuedAt = issuedAt
         self.providers = providers
+        self.desktopProducts = desktopProducts
+        try validate()
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, revision, issuedAt, providers, desktopProducts
+    }
+
+    /// Schema 1 bundles predate dynamic desktop products. Their signed legacy
+    /// workspace rules remain valid, while new built-in products are supplied
+    /// locally. No missing field can disable a product or invent file authority.
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        revision = try values.decode(String.self, forKey: .revision)
+        issuedAt = try values.decode(Date.self, forKey: .issuedAt)
+        providers = try values.decode([AgentProviderRule].self, forKey: .providers)
+        desktopProducts = try values.decodeIfPresent([AgentDesktopProductRule].self, forKey: .desktopProducts) ?? []
         try validate()
     }
 
     public func rule(for provider: AgentWorkspaceProvider) -> AgentProviderRule? {
         providers.first { $0.provider == provider }
+    }
+
+    public func mergingBuiltInBaseline() throws -> AgentRuleCatalog {
+        let importedProviders = Dictionary(uniqueKeysWithValues: providers.map { ($0.provider, $0) })
+        let importedProductIDs = Set(desktopProducts.map(\.id))
+        return try AgentRuleCatalog(
+            schemaVersion: schemaVersion,
+            revision: revision,
+            issuedAt: issuedAt,
+            providers: AgentWorkspaceProvider.allCases.map { provider in
+                importedProviders[provider] ?? Self.builtIn.providers.first { $0.provider == provider }!
+            },
+            desktopProducts: desktopProducts + Self.builtIn.desktopProducts.filter { !importedProductIDs.contains($0.id) }
+        )
     }
 
     public func validate() throws {
@@ -208,6 +242,18 @@ public struct AgentRuleCatalog: Codable, Equatable, Sendable {
         for provider in AgentWorkspaceProvider.allCases where !seen.contains(provider) {
             throw AgentRuleCatalogError.missingProvider(provider.displayName)
         }
+        guard desktopProducts.count <= 32 else { throw AgentRuleCatalogError.oversizedCatalog }
+        var productIDs = Set<String>()
+        for product in desktopProducts {
+            guard productIDs.insert(product.id).inserted else {
+                throw AgentRuleCatalogError.duplicateProvider(product.id)
+            }
+            try product.validate()
+        }
+    }
+
+    public static func validate(dataPath: String) throws {
+        try validate(relativePath: dataPath)
     }
 
     private static func validate(relativePath rawPath: String) throws {
@@ -242,8 +288,8 @@ public struct AgentRuleCatalog: Codable, Equatable, Sendable {
             .init(kind: .runtime, contains: ["runtime", "plugin", "extension"])
         ]
         let catalog = try! AgentRuleCatalog(
-            revision: "builtin-2026.08.27.2",
-            issuedAt: Date(timeIntervalSince1970: 1_787_803_200),
+            revision: "builtin-2026.11.24.1",
+            issuedAt: Date(timeIntervalSince1970: 1_795_478_400),
             providers: [
                 .init(
                     provider: .codex,
@@ -387,6 +433,30 @@ public struct AgentRuleCatalog: Codable, Equatable, Sendable {
                     applicationNames: ["小云雀"],
                     processMarkers: ["xiaoyunque", "小云雀"],
                     artifactRules: shared
+                )
+            ],
+            desktopProducts: [
+                AgentDesktopProductRule(
+                    id: "grok-bot",
+                    displayName: "Grok Bot",
+                    bundleIdentifiers: ["com.anysphere.sand"],
+                    allowedTeamIdentifiers: ["DCNK4UB866"],
+                    applicationNames: ["Grok Bot"],
+                    verification: .verifiedOfficialSample,
+                    privateData: [
+                        AgentDesktopDataRule(
+                            path: AgentRulePath(base: .caches, relativePath: "com.anysphere.sand", defaultKind: .caches),
+                            disposition: .regenerable
+                        ),
+                        AgentDesktopDataRule(
+                            path: AgentRulePath(base: .logs, relativePath: "com.anysphere.sand", defaultKind: .logs),
+                            disposition: .regenerable
+                        ),
+                        AgentDesktopDataRule(
+                            path: AgentRulePath(base: .applicationSupport, relativePath: "Grok Bot"),
+                            disposition: .retained
+                        )
+                    ]
                 )
             ]
         )

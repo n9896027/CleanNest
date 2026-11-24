@@ -33,7 +33,9 @@ enum AppUpdateDownloadState: Equatable {
     case verifying(packageURL: URL, package: AppUpdatePackage)
     case readyToInstall(packageURL: URL, package: AppUpdatePackage)
     case installerOpened(packageURL: URL, package: AppUpdatePackage)
-    case failed(message: String, package: AppUpdatePackage)
+    /// An installer-open failure retains the verified URL. Verification or
+    /// integrity failures pass nil and require a fresh download.
+    case failed(message: String, package: AppUpdatePackage, packageURL: URL? = nil)
 
     var isBusy: Bool {
         switch self {
@@ -50,17 +52,27 @@ enum AppUpdateDownloadState: Equatable {
              .verifying(_, let package),
              .readyToInstall(_, let package),
              .installerOpened(_, let package),
-             .failed(_, let package):
+             .failed(_, let package, _):
             return package
         }
     }
 
     var packageURL: URL? {
         switch self {
-        case .verifying(let url, _), .readyToInstall(let url, _), .installerOpened(let url, _):
+        case .verifying(let url, _),
+             .readyToInstall(let url, _),
+             .installerOpened(let url, _),
+             .failed(_, _, let url?):
             return url
         default:
             return nil
+        }
+    }
+
+    var canRetryOpeningInstaller: Bool {
+        switch self {
+        case .failed(_, _, .some): return true
+        default: return false
         }
     }
 }
@@ -71,11 +83,11 @@ enum AppUpdateClientError: LocalizedError {
     case untrustedResponseOrigin
     case untrustedDownloadOrigin
     case downloadCacheUnavailable
-    case rateLimited
+    case rateLimited(retryAt: Date?)
     case serverError(Int)
     case signatureValidationFailed
-    case notarizationValidationFailed
     case gatekeeperValidationFailed
+    case validationUnavailable(String)
     case installerOpenFailed
 
     var errorDescription: String? {
@@ -90,18 +102,24 @@ enum AppUpdateClientError: LocalizedError {
             return CNL10n.string("安装包下载被重定向到不受信任的地址，已停止下载。")
         case .downloadCacheUnavailable:
             return CNL10n.string("无法创建 CleanNest 更新缓存目录。")
-        case .rateLimited:
+        case .rateLimited(let retryAt):
+            if let retryAt {
+                return CNL10n.format(
+                    "GitHub 暂时限制了检查频率，可在 %@ 后重试。",
+                    retryAt.formatted(date: .abbreviated, time: .shortened)
+                )
+            }
             return CNL10n.string("GitHub 暂时限制了检查频率，请稍后再试。")
         case .serverError(let statusCode):
             return CNL10n.format("GitHub 更新服务暂时不可用（HTTP %d）。", statusCode)
         case .signatureValidationFailed:
             return CNL10n.string("安装包未通过 CleanNest 团队的 Developer ID Installer 签名校验，已停止安装。")
-        case .notarizationValidationFailed:
-            return CNL10n.string("安装包未通过 Apple 公证票据校验，已停止安装。")
         case .gatekeeperValidationFailed:
-            return CNL10n.string("安装包未通过 macOS Gatekeeper 评估，已停止安装。")
+            return CNL10n.string("macOS 已拒绝此安装包的 Gatekeeper 评估，已停止安装。")
+        case .validationUnavailable(let detail):
+            return CNL10n.format("此 Mac 无法完成安装包校验：%@。这不是“已验证”；可前往官方 Release 页核对后使用系统安装器。", detail)
         case .installerOpenFailed:
-            return CNL10n.string("无法打开 macOS 安装器。安装包仍保留在更新缓存中，你可以重试。")
+            return CNL10n.string("无法打开 macOS 安装器。已验证的安装包仍保留在更新缓存中，你可以重试打开。")
         }
     }
 }
@@ -190,9 +208,17 @@ struct GitHubAppUpdateClient: Sendable {
             )
         case 404:
             return nil
-        case 403, 429:
-            throw AppUpdateClientError.rateLimited
         default:
+            var headers: [String: String] = [:]
+            for (key, value) in httpResponse.allHeaderFields {
+                headers[String(describing: key)] = String(describing: value)
+            }
+            if let retryAt = AppUpdateRateLimitPolicy.retryAt(
+                statusCode: httpResponse.statusCode,
+                headers: headers
+            ) {
+                throw AppUpdateClientError.rateLimited(retryAt: retryAt)
+            }
             throw AppUpdateClientError.serverError(httpResponse.statusCode)
         }
     }
@@ -220,7 +246,19 @@ struct GitHubAppUpdateClient: Sendable {
         try FileManager.default.createDirectory(at: updatesDirectory, withIntermediateDirectories: true)
         let uniqueName = UUID().uuidString
         let partialURL = updatesDirectory.appendingPathComponent("\(uniqueName).download")
-        let packageURL = updatesDirectory.appendingPathComponent("\(uniqueName)-\(package.name)")
+        let packageURL = updatesDirectory.appendingPathComponent(
+            "\(package.sha256.prefix(16))-\(package.name)"
+        )
+        if FileManager.default.fileExists(atPath: packageURL.path) {
+            do {
+                try await Task.detached(priority: .utility) {
+                    try AppUpdatePackageVerifier.verify(fileAt: packageURL, package: package)
+                }.value
+                return (packageURL, package)
+            } catch {
+                try? FileManager.default.removeItem(at: packageURL)
+            }
+        }
 
         let downloadDelegate = AppUpdateDownloadSessionDelegate(
             package: package,
@@ -357,7 +395,11 @@ struct AppUpdateInstallerValidator: Sendable {
         self.commandRunner = commandRunner
     }
 
-    func validate(packageAt url: URL) async throws {
+    /// Uses only /usr/sbin tools shipped with macOS. In particular, this path
+    /// never invokes xcrun and therefore cannot trigger a CLT installation
+    /// prompt on a clean Mac. Gatekeeper acceptance is evidence of system trust,
+    /// not proof that a notarization ticket is stapled locally.
+    func validate(packageAt url: URL) async throws -> AppUpdateInstallerTrustEvidence {
         do {
             let result = try await commandRunner.runChecked(
                 executable: URL(fileURLWithPath: "/usr/sbin/pkgutil"),
@@ -376,18 +418,10 @@ struct AppUpdateInstallerValidator: Sendable {
             }
         } catch let error as AppUpdateClientError {
             throw error
-        } catch {
+        } catch CommandRunnerError.nonZeroExit {
             throw AppUpdateClientError.signatureValidationFailed
-        }
-
-        do {
-            _ = try await commandRunner.runChecked(
-                executable: URL(fileURLWithPath: "/usr/bin/xcrun"),
-                arguments: ["stapler", "validate", url.path],
-                timeout: 60
-            )
         } catch {
-            throw AppUpdateClientError.notarizationValidationFailed
+            throw AppUpdateClientError.validationUnavailable(error.localizedDescription)
         }
 
         do {
@@ -396,8 +430,17 @@ struct AppUpdateInstallerValidator: Sendable {
                 arguments: ["--assess", "--type", "install", url.path],
                 timeout: 60
             )
-        } catch {
+        } catch CommandRunnerError.nonZeroExit(let result) {
+            let detail = (result.standardOutput + "\n" + result.standardError).lowercased()
+            if detail.contains("assessment unavailable") || detail.contains("-67030") {
+                throw AppUpdateClientError.validationUnavailable(
+                    result.standardError.isEmpty ? "Gatekeeper 评估服务不可用" : result.standardError
+                )
+            }
             throw AppUpdateClientError.gatekeeperValidationFailed
+        } catch {
+            throw AppUpdateClientError.validationUnavailable(error.localizedDescription)
         }
+        return AppUpdateInstallerTrustEvidence(teamIdentifier: Self.expectedTeamIdentifier)
     }
 }

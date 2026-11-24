@@ -12,8 +12,47 @@ struct AgentProviderIcon: View {
     let fallbackTint: Color
 
     var body: some View {
+        AgentLocalAppIcon(size: size, fallbackSymbol: fallbackSymbol, fallbackTint: fallbackTint) {
+            AgentAppIconResolver.icon(for: provider, rule: rule)
+        }
+    }
+
+    private var fallbackSymbol: String {
+        switch provider {
+        case .codex: return "chevron.left.forwardslash.chevron.right"
+        case .claude: return "terminal"
+        case .piAgent: return "circle.hexagongrid"
+        case .kimi: return "moon.stars"
+        case .workBuddy: return "person.2"
+        case .hermes: return "wing"
+        case .openClaw: return "pawprint.fill"
+        case .trae: return "chevron.left.forwardslash.chevron.right"
+        case .miniMaxHub: return "square.grid.2x2"
+        case .xiaoyunque: return "bird.fill"
+        }
+    }
+}
+
+struct AgentDesktopProductIcon: View {
+    let installation: AgentDesktopInstallation
+    let size: CGFloat
+
+    var body: some View {
+        AgentLocalAppIcon(size: size, fallbackSymbol: "desktopcomputer", fallbackTint: CNTheme.accent) {
+            AgentAppIconResolver.icon(for: installation)
+        }
+    }
+}
+
+private struct AgentLocalAppIcon: View {
+    let size: CGFloat
+    let fallbackSymbol: String
+    let fallbackTint: Color
+    let resolve: () -> NSImage?
+
+    var body: some View {
         Group {
-            if let icon = AgentAppIconResolver.icon(for: provider, rule: rule) {
+            if let icon = resolve() {
                 Image(nsImage: icon)
                     .resizable()
                     .interpolation(.high)
@@ -33,42 +72,41 @@ struct AgentProviderIcon: View {
         .frame(width: size, height: size)
         .accessibilityHidden(true)
     }
-
-    private var fallbackSymbol: String {
-        switch provider {
-        case .codex: return "chevron.left.forwardslash.chevron.right"
-        case .claude: return "terminal"
-        case .piAgent: return "circle.hexagongrid"
-        case .kimi: return "moon.stars"
-        case .workBuddy: return "person.2"
-        case .hermes: return "wing"
-        case .openClaw: return "pawprint.fill"
-        case .trae: return "chevron.left.forwardslash.chevron.right"
-        case .miniMaxHub: return "square.grid.2x2"
-        case .xiaoyunque: return "bird.fill"
-        }
-    }
 }
 
 @MainActor
 private enum AgentAppIconResolver {
-    private static var cache: [String: NSImage] = [:]
-    private static var misses = Set<String>()
+    private struct Cached {
+        let signature: String
+        let image: NSImage?
+    }
+
+    private static var cache: [String: Cached] = [:]
+    private static var ruleRevision = AgentRuleCatalog.builtIn.revision
+
+    static func refreshRules(revision: String) {
+        guard ruleRevision != revision else { return }
+        ruleRevision = revision
+        cache.removeAll()
+    }
+
+    static func icon(for installation: AgentDesktopInstallation) -> NSImage? {
+        refreshRules(revision: installation.ruleRevision)
+        let signature = fileSignature(at: installation.application.url)
+        return cached(
+            key: installation.cacheKey,
+            signature: signature,
+            appURL: installation.application.url
+        )
+    }
 
     static func icon(for provider: AgentWorkspaceProvider, rule suppliedRule: AgentProviderRule?) -> NSImage? {
-        let rule = suppliedRule ?? AgentRuleCatalog.builtIn.rule(for: provider)
-        guard let rule else { return nil }
-        let key = ([provider.rawValue] + rule.bundleIdentifiers + rule.applicationNames)
-            .joined(separator: "|")
-            .lowercased()
-        if let cached = cache[key] { return cached }
-        if misses.contains(key) { return nil }
-
+        guard let rule = suppliedRule ?? AgentRuleCatalog.builtIn.rule(for: provider) else { return nil }
         for identifier in rule.bundleIdentifiers {
-            if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier),
-               let image = icon(at: appURL) {
-                cache[key] = image
-                return image
+            if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) {
+                let key = ([provider.rawValue, identifier, appURL.standardizedFileURL.path] + [ruleRevision])
+                    .joined(separator: "|")
+                return cached(key: key, signature: fileSignature(at: appURL), appURL: appURL)
             }
         }
 
@@ -79,20 +117,33 @@ private enum AgentAppIconResolver {
         for name in rule.applicationNames {
             for root in applicationRoots {
                 let appURL = root.appendingPathComponent(name).appendingPathExtension("app")
-                if let image = icon(at: appURL) {
-                    cache[key] = image
-                    return image
-                }
+                guard FileManager.default.fileExists(atPath: appURL.path) else { continue }
+                let key = ([provider.rawValue, name, appURL.standardizedFileURL.path, ruleRevision]).joined(separator: "|")
+                return cached(key: key, signature: fileSignature(at: appURL), appURL: appURL)
             }
         }
-
-        misses.insert(key)
         return nil
     }
 
-    private static func icon(at appURL: URL) -> NSImage? {
+    private static func cached(key: String, signature: String, appURL: URL) -> NSImage? {
+        if let cached = cache[key], cached.signature == signature { return cached.image }
+        cache.removeValue(forKey: key)
         guard appURL.pathExtension.caseInsensitiveCompare("app") == .orderedSame,
-              FileManager.default.fileExists(atPath: appURL.path) else { return nil }
-        return NSWorkspace.shared.icon(forFile: appURL.path)
+              FileManager.default.fileExists(atPath: appURL.path) else {
+            cache[key] = Cached(signature: signature, image: nil)
+            return nil
+        }
+        let image = NSWorkspace.shared.icon(forFile: appURL.path)
+        cache[key] = Cached(signature: signature, image: image)
+        return image
+    }
+
+    private static func fileSignature(at url: URL) -> String {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let file = (attributes?[.systemFileNumber] as? NSNumber)?.stringValue ?? "missing"
+        let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let bundle = Bundle(url: url)
+        let build = bundle?.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        return [file, String(modified), build].joined(separator: ":")
     }
 }

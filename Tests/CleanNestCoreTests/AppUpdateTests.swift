@@ -240,6 +240,140 @@ final class AppUpdateTests: XCTestCase {
         }
     }
 
+    func testRateLimitPolicyDistinguishesOrdinary403AndHonorsRetrySignals() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        XCTAssertNil(AppUpdateRateLimitPolicy.retryAt(
+            statusCode: 403,
+            headers: ["X-RateLimit-Remaining": "17"],
+            now: now
+        ))
+        XCTAssertEqual(
+            AppUpdateRateLimitPolicy.retryAt(
+                statusCode: 403,
+                headers: ["retry-after": "120"],
+                now: now
+            ),
+            now.addingTimeInterval(120)
+        )
+        XCTAssertEqual(
+            AppUpdateRateLimitPolicy.retryAt(
+                statusCode: 429,
+                headers: [:],
+                now: now
+            ),
+            now.addingTimeInterval(AppUpdateRateLimitPolicy.fallbackDelay)
+        )
+        XCTAssertEqual(
+            AppUpdateRateLimitPolicy.retryAt(
+                statusCode: 403,
+                headers: [
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": "2000000300"
+                ],
+                now: now
+            ),
+            Date(timeIntervalSince1970: 2_000_000_300)
+        )
+    }
+
+    func testAutomaticPolicyUsesSuccessAndRetryDeadlineRatherThanBlockingOnFailure() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let failedAttempt = now.addingTimeInterval(-60)
+        XCTAssertTrue(AppUpdateAutomaticCheckPolicy.shouldCheck(
+            isEnabled: true,
+            lastAttemptAt: failedAttempt,
+            lastSuccessfulAt: now.addingTimeInterval(-25 * 3_600),
+            now: now
+        ))
+        XCTAssertFalse(AppUpdateAutomaticCheckPolicy.shouldCheck(
+            isEnabled: true,
+            lastAttemptAt: failedAttempt,
+            lastSuccessfulAt: now.addingTimeInterval(-3_600),
+            now: now
+        ))
+        XCTAssertFalse(AppUpdateAutomaticCheckPolicy.shouldCheck(
+            isEnabled: true,
+            lastAttemptAt: failedAttempt,
+            nextAllowedAttemptAt: now.addingTimeInterval(60),
+            now: now
+        ))
+        XCTAssertTrue(AppUpdateAutomaticCheckPolicy.shouldCheck(
+            isEnabled: true,
+            lastAttemptAt: failedAttempt,
+            nextAllowedAttemptAt: now.addingTimeInterval(-1),
+            now: now
+        ))
+    }
+
+    func testVerifiedPackagePersistsTrustAndRejectsMissingChangedOrDifferentAsset() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CleanNestVerifiedPackageTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("CleanNest-0.12.3-53.pkg")
+        let bytes = Data("signed package fixture".utf8)
+        try bytes.write(to: url)
+        let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let package = AppUpdatePackage(
+            name: url.lastPathComponent,
+            downloadURL: URL(string: "https://github.com/n9896027/CleanNest/releases/download/v0.12.3/CleanNest-0.12.3-53.pkg")!,
+            byteCount: Int64(bytes.count),
+            sha256: digest,
+            version: "0.12.3",
+            build: "53"
+        )
+        let release = GitHubReleaseInfo(
+            version: SemanticVersion(parsing: "0.12.3")!,
+            tagName: "v0.12.3",
+            title: "CleanNest 0.12.3",
+            notes: "fixture",
+            pageURL: URL(string: "https://github.com/n9896027/CleanNest/releases/tag/v0.12.3")!,
+            publishedAt: nil,
+            installerPackage: package
+        )
+        let verified = try VerifiedAppUpdatePackage(
+            releaseVersion: "0.12.3",
+            releaseBuild: "53",
+            package: package,
+            fileURL: url,
+            trust: AppUpdateInstallerTrustEvidence(teamIdentifier: "NC33STD88A")
+        )
+        XCTAssertTrue(verified.matches(release: release))
+        XCTAssertNoThrow(try verified.revalidate())
+        let decoded = try JSONDecoder().decode(
+            VerifiedAppUpdatePackage.self,
+            from: JSONEncoder().encode(verified)
+        )
+        XCTAssertNoThrow(try decoded.revalidate())
+        XCTAssertFalse(decoded.trust.developerIDInstallerVerified == false)
+
+        let changedPackage = AppUpdatePackage(
+            name: "CleanNest-0.12.3-54.pkg",
+            downloadURL: URL(string: "https://github.com/n9896027/CleanNest/releases/download/v0.12.3/CleanNest-0.12.3-54.pkg")!,
+            byteCount: package.byteCount,
+            sha256: package.sha256,
+            version: "0.12.3",
+            build: "54"
+        )
+        let changedRelease = GitHubReleaseInfo(
+            version: release.version,
+            tagName: release.tagName,
+            title: release.title,
+            notes: release.notes,
+            pageURL: release.pageURL,
+            publishedAt: nil,
+            installerPackage: changedPackage
+        )
+        XCTAssertFalse(verified.matches(release: changedRelease))
+
+        try Data(repeating: 0, count: bytes.count).write(to: url)
+        XCTAssertThrowsError(try verified.revalidate())
+        try FileManager.default.removeItem(at: url)
+        XCTAssertThrowsError(try verified.revalidate()) { error in
+            XCTAssertEqual(error as? AppUpdateCachedPackageError, .missingOrChanged)
+        }
+    }
+
     private func assertInvalidPackage(
         assets: [[String: Any]],
         file: StaticString = #filePath,

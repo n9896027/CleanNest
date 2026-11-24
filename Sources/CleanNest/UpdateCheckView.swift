@@ -36,6 +36,14 @@ struct UpdateCheckView: View {
                 }
             }
 
+            if let notice = store.appUpdateNotice {
+                Label(notice, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(CNTheme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 12)
+            }
+
             if let release = store.appUpdateState.release,
                !release.notes.isEmpty,
                shouldShowReleaseNotes {
@@ -109,7 +117,7 @@ struct UpdateCheckView: View {
         } message: {
             if let package = store.appUpdateState.release?.installerPackage {
                 Text(CNL10n.format(
-                    "将从 CleanNest 官方 GitHub Release 下载 %@ 安装包，核对 SHA-256、Developer ID 签名、Apple 公证和 Gatekeeper。全部通过后仍需你点击“打开安装器”，并在 macOS 安装器中最终确认。",
+                    "将从 CleanNest 官方 GitHub Release 下载 %@ 安装包，核对 SHA-256 与 Developer ID Installer 签名，并进行 macOS Gatekeeper 系统评估。校验通过后仍需你点击“打开安装器”，并在 macOS 安装器中最终确认。",
                     CleanNestFormatting.bytes(package.byteCount)
                 ))
             }
@@ -151,18 +159,18 @@ struct UpdateCheckView: View {
             case .verifying:
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
-                    Text("正在校验 SHA-256、Developer ID 签名、Apple 公证与 Gatekeeper…")
+                    Text("正在校验 SHA-256、Developer ID Installer 签名与 Gatekeeper 系统评估…")
                         .fixedSize(horizontal: false, vertical: true)
                 }
             case .readyToInstall:
-                Label("全部安全校验已通过。点击“打开安装器”后，由 macOS 安装器继续。", systemImage: "checkmark.seal.fill")
+                Label("摘要、Developer ID Installer 签名及 Gatekeeper 系统评估已通过。点击“打开安装器”后，由 macOS 安装器继续。", systemImage: "checkmark.seal.fill")
                     .foregroundStyle(CNTheme.success)
                     .fixedSize(horizontal: false, vertical: true)
             case .installerOpened:
                 Label("macOS 安装器已打开。请在安装器中核对版本并完成系统确认。", systemImage: "arrow.up.forward.app.fill")
                     .foregroundStyle(CNTheme.accent)
                     .fixedSize(horizontal: false, vertical: true)
-            case .failed(let message, _):
+            case .failed(let message, _, _):
                 Label(message, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(CNTheme.danger)
                     .fixedSize(horizontal: false, vertical: true)
@@ -179,12 +187,26 @@ struct UpdateCheckView: View {
         if case .updateAvailable(_, let release) = store.appUpdateState,
            release.installerPackage != nil {
             switch store.appUpdateDownloadState {
-            case .idle, .failed:
+            case .idle:
                 Button("下载并安装…") {
                     showsDownloadConfirmation = true
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
+            case .failed(_, _, let packageURL):
+                if packageURL != nil {
+                    Button("重试打开安装器") {
+                        store.openDownloadedUpdateInstaller()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("重新下载并校验…") {
+                        showsDownloadConfirmation = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                }
             case .downloading:
                 Button("正在下载…") { }
                     .buttonStyle(.borderedProminent)

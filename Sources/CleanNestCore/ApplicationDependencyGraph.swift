@@ -182,6 +182,7 @@ public struct ApplicationDependencyNode: Identifiable, Hashable, Sendable {
     public let allocatedBytes: Int64
     public let evidence: [String]
     public let identity: ApplicationDependencyIdentity?
+    public let productID: String?
 
     public init(
         id: String? = nil,
@@ -192,7 +193,8 @@ public struct ApplicationDependencyNode: Identifiable, Hashable, Sendable {
         action: ApplicationDependencyAction,
         allocatedBytes: Int64,
         evidence: [String],
-        identity: ApplicationDependencyIdentity?
+        identity: ApplicationDependencyIdentity?,
+        productID: String? = nil
     ) {
         self.id = id ?? "\(kind.rawValue):\(url.standardizedFileURL.path)"
         self.name = name
@@ -203,6 +205,7 @@ public struct ApplicationDependencyNode: Identifiable, Hashable, Sendable {
         self.allocatedBytes = max(0, allocatedBytes)
         self.evidence = evidence
         self.identity = identity
+        self.productID = productID
     }
 
     public var isReadOnly: Bool { action == .readOnly }
@@ -215,6 +218,7 @@ public struct ApplicationDependencyGraph: Sendable {
     public let registration: ApplicationRegistrationEvidence
     public let nodes: [ApplicationDependencyNode]
     public let diagnostic: String
+    public let productID: String?
 
     public init(
         applicationID: String,
@@ -222,7 +226,8 @@ public struct ApplicationDependencyGraph: Sendable {
         codeSignature: ApplicationCodeSignatureEvidence,
         registration: ApplicationRegistrationEvidence,
         nodes: [ApplicationDependencyNode],
-        diagnostic: String
+        diagnostic: String,
+        productID: String? = nil
     ) {
         self.applicationID = applicationID
         self.capturedAt = capturedAt
@@ -230,6 +235,7 @@ public struct ApplicationDependencyGraph: Sendable {
         self.registration = registration
         self.nodes = nodes
         self.diagnostic = diagnostic
+        self.productID = productID
     }
 
     public var separatelyRemovableNodes: [ApplicationDependencyNode] {
