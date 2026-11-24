@@ -67,6 +67,26 @@ final class MCPServerTests: XCTestCase {
         XCTAssertEqual(decoded.objectValue?["error"]?.objectValue?["code"], .number(-32600))
     }
 
+    func testVersionMatchesDistributionPropertyLists() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let plistPaths = [
+            "Resources/Info.plist",
+            "Resources/CleanNestLoginItem-Info.plist",
+            "Resources/CleanNestScanner-Info.plist",
+        ]
+        for relativePath in plistPaths {
+            let data = try Data(contentsOf: projectRoot.appendingPathComponent(relativePath))
+            let plist = try XCTUnwrap(
+                try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+            )
+            XCTAssertEqual(plist["CFBundleShortVersionString"] as? String, CleanNestVersion.current, relativePath)
+            XCTAssertEqual(plist["CFBundleVersion"] as? String, CleanNestVersion.build, relativePath)
+        }
+    }
+
     private func makeServer(root: URL, metrics: URL) -> ReadOnlyMCPServer {
         ReadOnlyMCPServer(
             metricsDatabaseURL: metrics,

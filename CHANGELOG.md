@@ -30,7 +30,7 @@
 
 ### Verification and known limits
 
-- 完整 XCTest 共 310 项，0 失败、1 项条件跳过；内置自检通过。String Catalog、简体中文、English、繁體中文各 2705 个非空条目，严格源码静态及动态插值审计缺口均为 0。
+- 完整 XCTest 共 311 项，0 失败、1 项条件跳过；内置自检通过。String Catalog、简体中文、English、繁體中文各 2705 个非空条目，严格源码静态及动态插值审计缺口均为 0。
 - 官方 Grok Bot 样本为 arm64，版本／Build 均为 1.2.3，已验证签名与装订票据。没有在本机真实安装、登录或卸载 Grok Bot，未把合成测试当作真实卸载。
 - Intel 真机、macOS 14 干净首装、无 Xcode／CLT 系统、旧自签名副本迁移及完整三语言人工 UI 未以本版编译结果替代；真实发布包与在线规则下载以最终验收记录和 Release 证据为准。
 

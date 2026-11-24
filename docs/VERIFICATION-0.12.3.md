@@ -12,7 +12,7 @@
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
 
-2026-11-24 最终结果：**310 项测试，0 失败，1 项条件跳过**。跳过项是需要显式开启的本机 Ollama 空服务生命周期检查，未设置 `CLEANNEST_RUN_OLLAMA_INTEGRATION=1`，没有伪造通过结果。
+2026-11-24 最终结果：**311 项测试，0 失败，1 项条件跳过**。跳过项是需要显式开启的本机 Ollama 空服务生命周期检查，未设置 `CLEANNEST_RUN_OLLAMA_INTEGRATION=1`，没有伪造通过结果。
 
 覆盖包括：精确 Bundle ID／签名者／有效签名的共同约束、多副本、同名伪 App、错误 Team ID、旧 schema 1 规则兼容与基线合并、动态第三品牌识别、外部规则不得新增删除路径、Grok 应用数据只读、更新缓存匹配与变更拒绝、限流退避、自动检查调度及原有清理／恢复／卸载安全边界。
 
