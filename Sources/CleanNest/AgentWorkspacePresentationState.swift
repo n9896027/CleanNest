@@ -25,6 +25,8 @@ final class AgentWorkspacePresentationState: ObservableObject {
     @Published var ruleCatalogDiagnostic = "正在使用内置规则。"
     @Published var ruleCatalogUpdateIsRunning = false
     @Published var desktopInstallations: [AgentDesktopInstallation] = []
+    @Published var desktopCandidates: [AgentDesktopCandidate] = []
+    @Published var relatedSoftware: [AgentRelatedSoftwareInstallation] = []
     @Published var desktopInventoryIsRefreshing = false
     @Published var dependencyGraph = AgentDependencyGraphSnapshot.empty
     @Published var dependencyGraphIsRefreshing = false

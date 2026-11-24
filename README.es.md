@@ -8,7 +8,15 @@ CleanNest reúne espacios de trabajo de Agentes, modelos locales, servicios, est
 
 [Descargar la versión oficial](https://github.com/n9896027/CleanNest/releases/latest) · [Verificación de 0.12.3](docs/VERIFICATION-0.12.3.md) · [Privacidad](PRIVACY.md) · [Seguridad](SECURITY.md)
 
-## 0.12.3 — Build 53
+## En desarrollo: inventario local completo de Agentes en 0.12.4
+
+**0.12.4 (Build 54), candidato local aún no publicado**, clasifica las 23 apps de este Mac según su función real. Doce clientes independientes de IA/Agentes superaron la identificación por firma con muestras locales y pueden abrir la vista previa de desinstalación existente: ChatGPT, Claude, Doubao, Gemini, Grok Bot, Kimi, MiniMax Design, Muse, NewMax, Tabbit, ZCode y Xiaoyunque. Hermes Studio, Pi Agent y WorkBuddy son clientes independientes, pero permanecen en solo lectura con el motivo concreto de integridad de firma o confianza de distribución Apple insuficiente.
+
+Cada copia gestionable debe coincidir con el Bundle ID, Signing ID y Team ID permitidos y cumplir `anchor apple generic`. Un Team ID en un certificado autofirmado no basta para hacerse pasar por un cliente oficial. La vista previa conserva Application Support, HTTPStorages, WebKit, preferencias, estado de ventanas, proyectos y credenciales; solo admite cachés y registros regenerables expresamente registrados. Las reglas en línea no pueden añadir rutas de eliminación.
+
+Ocho apps relacionadas siguen visibles en un grupo separado de solo lectura, sin presentarlas como Agentes: CC Switch (selector de configuración API/proveedor), KimiCU (componente de automatización incluido con Kimi), MiniMax Hub 2 (iniciador local), WorkDaddy (iniciador de automatización de WorkBuddy), Claude Code URL Handler, shell auxiliar Hermes, Ollama (ejecutor de modelos locales) y YuanHub (banco de operaciones de contenido con asistente de IA integrado). Consulta el [inventario local de Agentes de escritorio](docs/AGENT_DESKTOP_INVENTORY.md) para ver las 23 clasificaciones, identificadores, pruebas de firma y límites. Reconocer muestras y probar rutas aisladas no equivale a desinstalar aplicaciones reales; no se desinstaló ningún cliente en esta iteración.
+
+### Base de 0.12.3 — Build 53
 
 - **Inventario de Agentes de escritorio.** Reconoce cada copia mediante el Bundle ID exacto, una firma válida y un Team ID permitido. Muestra el icono real del Finder, la versión, el build y la ruta.
 - **Grok Bot verificado.** La muestra oficial 1.2.3 (`com.anysphere.sand` / `DCNK4UB866`) superó la detección con validación de firma de producción. No se ha verificado una muestra oficial de Meta Muse para Mac; esta versión no afirma compatibilidad ni inventa identificadores o carpetas.
@@ -35,7 +43,8 @@ La actualización siempre requiere que confirmes la descarga, que abras el insta
 - Limpieza revisable de cachés de desarrollo, registros, instaladores y otros candidatos.
 - Protección de archivos activos, comprobación de identidad y Papelera antes de una eliminación definitiva.
 - Libro de ejecución persistente, recuperación por elemento y comprobación del espacio APFS real.
-- Espacios de trabajo de Codex, Claude, Pi Agent, Kimi, WorkBuddy, Hermes, OpenClaw, Trae y MiniMax Hub.
+- Espacios de trabajo de Codex, Claude, Pi Agent, Kimi, WorkBuddy, Hermes, OpenClaw, Trae, MiniMax Hub y Xiaoyunque, con directorios registrados solo cuando existe evidencia fiable.
+- Inventario por niveles de 23 apps: 12 clientes independientes verificados, 3 clientes independientes de solo lectura y 8 componentes o herramientas relacionadas; la vista previa de desinstalación conserva los datos privados descritos en el inventario.
 - Procesos, puertos, modelos, clientes y servicios launchd de oMLX, Ollama, LM Studio y otros servicios locales.
 - Métricas de CPU, memoria, disco, red, GPU, temperatura, ventiladores y batería.
 - Navegador de almacenamiento, desinstalador de aplicaciones, mantenimiento y MCP local de solo lectura.

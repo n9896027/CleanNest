@@ -44,6 +44,28 @@ struct AgentDesktopProductIcon: View {
     }
 }
 
+struct AgentDesktopCandidateIcon: View {
+    let candidate: AgentDesktopCandidate
+    let size: CGFloat
+
+    var body: some View {
+        AgentLocalAppIcon(size: size, fallbackSymbol: "questionmark.app.dashed", fallbackTint: CNTheme.warning) {
+            AgentAppIconResolver.icon(for: candidate)
+        }
+    }
+}
+
+struct AgentRelatedSoftwareIcon: View {
+    let software: AgentRelatedSoftwareInstallation
+    let size: CGFloat
+
+    var body: some View {
+        AgentLocalAppIcon(size: size, fallbackSymbol: "puzzlepiece.extension", fallbackTint: CNTheme.cyan) {
+            AgentAppIconResolver.icon(for: software)
+        }
+    }
+}
+
 private struct AgentLocalAppIcon: View {
     let size: CGFloat
     let fallbackSymbol: String
@@ -97,6 +119,22 @@ private enum AgentAppIconResolver {
             key: installation.cacheKey,
             signature: signature,
             appURL: installation.application.url
+        )
+    }
+
+    static func icon(for candidate: AgentDesktopCandidate) -> NSImage? {
+        cached(
+            key: "candidate:" + candidate.copyID,
+            signature: fileSignature(at: candidate.application.url),
+            appURL: candidate.application.url
+        )
+    }
+
+    static func icon(for software: AgentRelatedSoftwareInstallation) -> NSImage? {
+        cached(
+            key: "related:" + software.copyID,
+            signature: fileSignature(at: software.application.url),
+            appURL: software.application.url
         )
     }
 

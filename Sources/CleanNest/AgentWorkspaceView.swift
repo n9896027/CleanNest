@@ -35,7 +35,7 @@ struct AgentWorkspaceView: View {
                 }
 
                 if !showingNativeTools, store.selectedAgentWorkspaceProvider == nil,
-                   !store.agentDesktopInstallations.isEmpty {
+                   !store.agentDesktopInventoryIsEmpty {
                     desktopAgentInventory
                 }
 
@@ -45,7 +45,7 @@ struct AgentWorkspaceView: View {
                     } else if let provider = store.selectedAgentWorkspaceProvider,
                               let agent = snapshot.agents.first(where: { $0.provider == provider }) {
                         agentDetail(agent, snapshot: snapshot)
-                    } else if snapshot.detectedAgents.isEmpty, store.agentDesktopInstallations.isEmpty {
+                    } else if snapshot.detectedAgents.isEmpty, store.agentDesktopInventoryIsEmpty {
                         EmptyPanel(
                             symbol: "folder.badge.questionmark",
                             title: "没有发现已验证的 Agent 数据根",
@@ -71,7 +71,7 @@ struct AgentWorkspaceView: View {
                     }
                     if store.agentWorkspacePhase.isScanning {
                         loadingPanel
-                    } else if store.agentWorkspaceSummary == nil, store.agentDesktopInstallations.isEmpty {
+                    } else if store.agentWorkspaceSummary == nil, store.agentDesktopInventoryIsEmpty {
                         EmptyPanel(
                             symbol: "sparkle.magnifyingglass",
                             title: "还没有扫描过 Agent 占用",
@@ -233,11 +233,24 @@ struct AgentWorkspaceView: View {
     }
 
     private var desktopAgentInventory: some View {
-        AgentDesktopInventorySection(
-            installations: store.agentDesktopInstallations,
-            isRefreshing: store.agentDesktopInventoryIsRefreshing
-        ) { installation in
-            Task { await store.openAgentProductUninstall(installation) }
+        VStack(alignment: .leading, spacing: 16) {
+            if !store.agentDesktopInstallations.isEmpty {
+                AgentDesktopInventorySection(
+                    installations: store.agentDesktopInstallations,
+                    isRefreshing: store.agentDesktopInventoryIsRefreshing
+                ) { installation in
+                    Task { await store.openAgentProductUninstall(installation) }
+                }
+            }
+            if !store.agentDesktopCandidates.isEmpty {
+                AgentDesktopCandidateInventorySection(candidates: store.agentDesktopCandidates)
+            }
+            if !store.agentRelatedSoftware.isEmpty {
+                AgentRelatedSoftwareInventorySection(
+                    software: store.agentRelatedSoftware,
+                    catalog: store.agentRuleCatalog
+                )
+            }
         }
     }
 
